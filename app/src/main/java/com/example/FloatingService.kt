@@ -13,6 +13,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.PorterDuff
@@ -46,6 +47,7 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.example.database.ClipEntry
 import com.example.database.NoteEntry
@@ -109,6 +111,12 @@ class FloatingService : Service() {
     }
 
     private var isFlashlightOn = false
+    private var isUpdateReceiverRegistered = false
+    private var isFloatingViewAdded = false
+    private var popupSessionJob: Job? = null
+
+    // Isolated controller for Screen Text Copy (lazily created only when triggered)
+    private var screenTextCopyController: ScreenTextCopyController? = null
 
     companion object {
         const val ACTION_UPDATE_SETTINGS = "com.example.UPDATE_SETTINGS"
@@ -136,22 +144,60 @@ class FloatingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         createNotificationChannel()
-        startForeground(1001, getForegroundNotification())
-
-        if (!isRunning) {
-            isRunning = true
-            windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-
-            // Register system config settings broadcast receiver
-            val filter = IntentFilter(ACTION_UPDATE_SETTINGS)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                registerReceiver(updateReceiver, filter, RECEIVER_EXPORTED)
+        try {
+            val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
             } else {
-                registerReceiver(updateReceiver, filter)
+                0
             }
-
-            setupFloatingWidget()
+            ServiceCompat.startForeground(this, 1001, getForegroundNotification(), fgsType)
+        } catch (e: Exception) {
+            Log.e("FloatingService", "Failed starting foreground service", e)
+            isRunning = false
+            stopSelf()
+            return START_NOT_STICKY
         }
+
+        if (!Settings.canDrawOverlays(this)) {
+            Log.w("FloatingService", "SYSTEM_ALERT_WINDOW permission not granted; stopping overlay service.")
+            isRunning = false
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        if (!::windowManager.isInitialized) {
+            windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        }
+
+        if (!isUpdateReceiverRegistered) {
+            val filter = IntentFilter(ACTION_UPDATE_SETTINGS)
+            try {
+                ContextCompat.registerReceiver(
+                    this,
+                    updateReceiver,
+                    filter,
+                    ContextCompat.RECEIVER_EXPORTED
+                )
+                isUpdateReceiverRegistered = true
+            } catch (e: Exception) {
+                Log.e("FloatingService", "Failed registering settings updateReceiver", e)
+            }
+        }
+
+        val needsOverlaySetup = !isRunning ||
+            !::floatingView.isInitialized ||
+            (!isFloatingViewAdded && !floatingView.isAttachedToWindow)
+
+        if (needsOverlaySetup) {
+            val attached = setupFloatingWidget()
+            isRunning = attached
+            if (!attached) {
+                Log.e("FloatingService", "Overlay setup failed; stopping service so state stays accurate.")
+                stopSelf()
+                return START_NOT_STICKY
+            }
+        }
+
         return START_STICKY
     }
 
@@ -188,7 +234,14 @@ class FloatingService : Service() {
             .build()
     }
 
-    private fun setupFloatingWidget() {
+    private fun setupFloatingWidget(): Boolean {
+        if (::floatingView.isInitialized && (isFloatingViewAdded || floatingView.isAttachedToWindow)) {
+            try {
+                windowManager.removeView(floatingView)
+            } catch (_: Exception) {}
+            isFloatingViewAdded = false
+        }
+
         floatingView = LayoutInflater.from(this).inflate(R.layout.floating_dot_layout, null)
         imgFloatingDot = floatingView.findViewById(R.id.img_floating_dot)
 
@@ -219,7 +272,7 @@ class FloatingService : Service() {
         params.x = lastX
         params.y = lastY
 
-        applyCustomizables()
+        applyDotCustomizables()
 
         imgFloatingDot.setOnTouchListener(object : View.OnTouchListener {
             private var maxX = 0
@@ -241,8 +294,8 @@ class FloatingService : Service() {
                         val metrics = resources.displayMetrics
                         val dotWidth = floatingView.width.coerceAtLeast((56 * density).toInt())
                         val dotHeight = floatingView.height.coerceAtLeast((56 * density).toInt())
-                        maxX = metrics.widthPixels - dotWidth
-                        maxY = metrics.heightPixels - dotHeight
+                        maxX = (metrics.widthPixels - dotWidth).coerceAtLeast(0)
+                        maxY = (metrics.heightPixels - dotHeight).coerceAtLeast(0)
                         return true
                     }
                     MotionEvent.ACTION_MOVE -> {
@@ -289,12 +342,17 @@ class FloatingService : Service() {
             }
         })
 
-        try {
+        val dotAdded = try {
             windowManager.addView(floatingView, params)
+            isFloatingViewAdded = true
+            true
         } catch (e: Exception) {
             Log.e("FloatingService", "Failed rendering handle overlays on display.", e)
+            isFloatingViewAdded = false
+            false
         }
         setupSidebarWidget()
+        return dotAdded || sidebarView != null
     }
 
     private fun handleDotClick() {
@@ -406,130 +464,167 @@ class FloatingService : Service() {
         isPopupAlignedToEdge = alignToEdge
         Log.i("FloatingService", "Popup opened.")
 
-        val inflater = getSystemService(Context.LAYOUT_INFLATER_SERVICE) as LayoutInflater
-        val popupView = inflater.inflate(R.layout.floating_popup_layout, null)
-
-        val popupWidthDp = prefs.getInt("menu_width_dp", 280)
-        val popupHeightDp = prefs.getInt("menu_height_dp", 460)
-
-        val density = resources.displayMetrics.density
-        val popupWidth = (popupWidthDp * density).toInt()
-        val popupHeight = (popupHeightDp * density).toInt()
-
-        val popupWindow = PopupWindow(
-            popupView,
-            popupWidth,
-            popupHeight,
-            true
-        )
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            popupWindow.windowLayoutType = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        } else {
-            @Suppress("DEPRECATION")
-            popupWindow.windowLayoutType = WindowManager.LayoutParams.TYPE_PHONE
-        }
-
-        popupWindow.isOutsideTouchable = true
-        popupWindow.isFocusable = true
-        popupWindow.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-
-        popupWindow.setOnDismissListener {
-            lastDismissTime = System.currentTimeMillis()
+        if (activePopupWindow?.isShowing == true) {
+            try {
+                activePopupWindow?.dismiss()
+            } catch (_: Exception) {}
             activePopupWindow = null
         }
+        popupSessionJob?.cancel()
+        popupSessionJob = Job(serviceScope.coroutineContext[Job])
 
-        // Active Theme/Accent setup
-        val activeThemeName = prefs.getString("theme_name", "Cosmic Cyan") ?: "Cosmic Cyan"
-        val accentColorHex = prefs.getString("dot_color", "#00E5FF") ?: "#00E5FF"
-        val activeAccentColor = Color.parseColor(accentColorHex)
-
-        // Custom Visual styling configurations from SharedPrefs
-        val iconPackStyle = prefs.getString("icon_pack", "Neo Glow") ?: "Neo Glow"
-
-        // Configure Layout background dynamically for themes
-        val container = popupView.findViewById<LinearLayout>(R.id.ll_popup_container)
-        container.layoutParams = container.layoutParams?.apply {
-            width = popupWidth
-            height = popupHeight
-        } ?: LinearLayout.LayoutParams(popupWidth, popupHeight)
-
-        val drawableBackground = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            setColor(Color.parseColor("#F20F172A")) // Rich trans-glass panel
-            cornerRadius = 16 * density
-            // Stroke customization dependent on Icon packs chosen
-            val strokeThick = if (iconPackStyle == "Cyber Outline") 3.5f else 1.5f
-            val strokeColor = if (iconPackStyle == "Minimal White") Color.WHITE else activeAccentColor
-            setStroke((strokeThick * density).toInt(), strokeColor)
-        }
-        container.background = drawableBackground
-
-        // Bind all Tab togglers & components
-        bindSidebarTabs(popupView, activeAccentColor, density)
-        bindCustomShortcutsGrid(popupView, activeAccentColor, density)
-        bindClipboardTab(popupView, activeAccentColor)
-        bindNotesTab(popupView, activeAccentColor)
-        bindCalculatorTab(popupView, activeAccentColor)
-        bindTranslateTab(popupView, activeAccentColor)
-
-        // Positions
-        val screenWidth = resources.displayMetrics.widthPixels
-        val screenHeight = resources.displayMetrics.heightPixels
-        val spacingPx = (8 * density).toInt()
-
-        var posX = 0
-        var posY = 0
-
-        if (alignToEdge) {
-            val sidebarEdge = prefs.getString("sidebar_edge", "Right") ?: "Right"
-            posX = if (sidebarEdge == "Left") {
-                (4 * density).toInt()
-            } else {
-                screenWidth - popupWidth - (4 * density).toInt()
-            }
-            
-            // Align next to the current vertical drag position of the sidebar handle
-            val spar = sidebarParams
-            if (spar != null) {
-                val currentY = spar.y
-                val handleHeight = (130 * density).toInt()
-                val centerY = currentY + handleHeight / 2
-                val marginPx = (16 * density).toInt()
-                posY = (centerY - popupHeight / 2).coerceIn(marginPx, screenHeight - popupHeight - marginPx - 40)
-            } else {
-                posY = (screenHeight - popupHeight) / 2
-            }
+        val anchorToken: View? = if (alignToEdge) {
+            sidebarView?.takeIf { it.isAttachedToWindow }
+                ?: (if (::imgFloatingDot.isInitialized && imgFloatingDot.isAttachedToWindow) imgFloatingDot else null)
         } else {
-            // Position alignment next to the floating dot safely
-            val pX = if (lastX + imgFloatingDot.width / 2 < screenWidth / 2) {
-                lastX + imgFloatingDot.width + spacingPx
-            } else {
-                lastX - popupWidth - spacingPx
-            }
-            posX = pX
-            val marginPx = (16 * density).toInt()
-            var pY = lastY + (imgFloatingDot.height / 2) - (popupHeight / 2)
-            posY = pY.coerceIn(marginPx, screenHeight - popupHeight - marginPx - 40)
+            (if (::imgFloatingDot.isInitialized && imgFloatingDot.isAttachedToWindow) imgFloatingDot else null)
+                ?: sidebarView?.takeIf { it.isAttachedToWindow }
+        }
+        if (anchorToken == null) {
+            Log.w("FloatingService", "Cannot show sidebar popup: overlay anchor view is not attached.")
+            return
         }
 
-        // Launch expansion animation
-        val panel = popupView.findViewById<LinearLayout>(R.id.ll_popup_container)
-        panel.alpha = 0f
-        panel.scaleX = 0.5f
-        panel.scaleY = 0.5f
+        try {
+            val inflater = getSystemService(Context.LAYOUT_INFLATER_SERVICE) as LayoutInflater
+            val popupView = inflater.inflate(R.layout.floating_popup_layout, null)
 
-        activePopupWindow = popupWindow
-        val anchorToken = if (alignToEdge) (sidebarView ?: imgFloatingDot) else imgFloatingDot
-        popupWindow.showAtLocation(anchorToken, Gravity.TOP or Gravity.START, posX, posY)
+            val screenWidth = resources.displayMetrics.widthPixels
+            val screenHeight = resources.displayMetrics.heightPixels
+            val currentDensity = resources.displayMetrics.density
 
-        panel.animate()
-            .alpha(1f)
-            .scaleX(1f)
-            .scaleY(1f)
-            .setDuration(200)
-            .setInterpolator(OvershootInterpolator(1.05f))
-            .start()
+            val popupWidthDp = prefs.getInt("menu_width_dp", 280)
+            val popupHeightDp = prefs.getInt("menu_height_dp", 460)
+
+            val marginPx = (16 * currentDensity).toInt()
+            val popupWidth = (popupWidthDp * currentDensity).toInt().coerceAtMost((screenWidth - marginPx).coerceAtLeast(100))
+            val popupHeight = (popupHeightDp * currentDensity).toInt().coerceAtMost((screenHeight - marginPx).coerceAtLeast(100))
+
+            val popupWindow = PopupWindow(
+                popupView,
+                popupWidth,
+                popupHeight,
+                true
+            )
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                popupWindow.windowLayoutType = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                popupWindow.windowLayoutType = WindowManager.LayoutParams.TYPE_PHONE
+            }
+
+            popupWindow.isOutsideTouchable = true
+            popupWindow.isFocusable = true
+            popupWindow.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+
+            popupWindow.setOnDismissListener {
+                lastDismissTime = System.currentTimeMillis()
+                if (activePopupWindow === popupWindow) {
+                    activePopupWindow = null
+                    popupSessionJob?.cancel()
+                    popupSessionJob = null
+                }
+            }
+
+            // Active Theme/Accent setup
+            val accentColorHex = prefs.getString("dot_color", "#00E5FF") ?: "#00E5FF"
+            val activeAccentColor = try {
+                Color.parseColor(accentColorHex)
+            } catch (_: Exception) {
+                Color.parseColor("#00E5FF")
+            }
+
+            // Custom Visual styling configurations from SharedPrefs
+            val iconPackStyle = prefs.getString("icon_pack", "Neo Glow") ?: "Neo Glow"
+
+            // Configure Layout background dynamically for themes
+            val container = popupView.findViewById<LinearLayout>(R.id.ll_popup_container)
+            container.layoutParams = container.layoutParams?.apply {
+                width = popupWidth
+                height = popupHeight
+            } ?: LinearLayout.LayoutParams(popupWidth, popupHeight)
+
+            val drawableBackground = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(Color.parseColor("#F20F172A")) // Rich trans-glass panel
+                cornerRadius = 16 * currentDensity
+                // Stroke customization dependent on Icon packs chosen
+                val strokeThick = if (iconPackStyle == "Cyber Outline") 3.5f else 1.5f
+                val strokeColor = if (iconPackStyle == "Minimal White") Color.WHITE else activeAccentColor
+                setStroke((strokeThick * currentDensity).toInt(), strokeColor)
+            }
+            container.background = drawableBackground
+
+            // Bind all Tab togglers & components
+            bindSidebarTabs(popupView, activeAccentColor, currentDensity)
+            bindCustomShortcutsGrid(popupView, activeAccentColor, currentDensity)
+            bindClipboardTab(popupView, activeAccentColor)
+            bindNotesTab(popupView, activeAccentColor)
+            bindCalculatorTab(popupView, activeAccentColor)
+            bindTranslateTab(popupView, activeAccentColor)
+
+            // Positions
+            val spacingPx = (8 * currentDensity).toInt()
+            val minPosY = marginPx
+            val maxPosY = (screenHeight - popupHeight - marginPx - 40).coerceAtLeast(minPosY)
+            val maxPosX = (screenWidth - popupWidth).coerceAtLeast(0)
+
+            var posX = 0
+            var posY = 0
+
+            if (alignToEdge) {
+                val sidebarEdge = prefs.getString("sidebar_edge", "Right") ?: "Right"
+                posX = if (sidebarEdge == "Left") {
+                    (4 * currentDensity).toInt()
+                } else {
+                    (screenWidth - popupWidth - (4 * currentDensity).toInt()).coerceAtLeast(0)
+                }
+
+                // Align next to the current vertical drag position of the sidebar handle
+                val spar = sidebarParams
+                if (spar != null) {
+                    val currentY = spar.y
+                    val handleHeight = (130 * currentDensity).toInt()
+                    val centerY = currentY + handleHeight / 2
+                    posY = (centerY - popupHeight / 2).coerceIn(minPosY, maxPosY)
+                } else {
+                    posY = ((screenHeight - popupHeight) / 2).coerceIn(minPosY, maxPosY)
+                }
+            } else {
+                // Position alignment next to the floating dot safely
+                val dotW = if (::imgFloatingDot.isInitialized) imgFloatingDot.width else (56 * currentDensity).toInt()
+                val dotH = if (::imgFloatingDot.isInitialized) imgFloatingDot.height else (56 * currentDensity).toInt()
+                val pX = if (lastX + dotW / 2 < screenWidth / 2) {
+                    lastX + dotW + spacingPx
+                } else {
+                    lastX - popupWidth - spacingPx
+                }
+                posX = pX.coerceIn(0, maxPosX)
+                val pY = lastY + (dotH / 2) - (popupHeight / 2)
+                posY = pY.coerceIn(minPosY, maxPosY)
+            }
+
+            // Launch expansion animation
+            val panel = popupView.findViewById<LinearLayout>(R.id.ll_popup_container)
+            panel.alpha = 0f
+            panel.scaleX = 0.5f
+            panel.scaleY = 0.5f
+
+            activePopupWindow = popupWindow
+            popupWindow.showAtLocation(anchorToken, Gravity.TOP or Gravity.START, posX, posY)
+
+            panel.animate()
+                .alpha(1f)
+                .scaleX(1f)
+                .scaleY(1f)
+                .setDuration(200)
+                .setInterpolator(OvershootInterpolator(1.05f))
+                .start()
+        } catch (e: Exception) {
+            Log.e("FloatingService", "Failed opening assistant sidebar popup", e)
+            activePopupWindow = null
+        }
     }
 
     // -------------------------------------------------------------
@@ -633,6 +728,7 @@ class FloatingService : Service() {
             "back" -> R.drawable.ic_radial_back
             "recent_apps" -> R.drawable.ic_radial_recents
             "screenshot" -> R.drawable.ic_radial_screenshot
+            "screen_copy" -> R.drawable.ic_screen_text_copy
             "notifications" -> R.drawable.ic_radial_notifications
             "quick_settings" -> R.drawable.ic_radial_quick_settings
             "settings" -> R.drawable.ic_radial_settings
@@ -674,6 +770,7 @@ class FloatingService : Service() {
             "back" -> "Back"
             "recent_apps" -> "Recents"
             "screenshot" -> "Screenshot"
+            "screen_copy" -> "Text Copy"
             "screen_record" -> "Screen Rec"
             "notifications" -> "Notif"
             "quick_settings" -> "Quick Set"
@@ -732,6 +829,7 @@ class FloatingService : Service() {
                 "back" -> performGlobalActionSafety(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
                 "recent_apps" -> performGlobalActionSafety(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS)
                 "screenshot" -> triggerScreenshot()
+                "screen_copy" -> startScreenTextCopy()
                 "screen_record" -> {
                     val intent = Intent().apply {
                         action = "android.settings.SCREEN_RECORD"
@@ -1239,6 +1337,19 @@ class FloatingService : Service() {
     private fun bindClipboardTab(popupView: View, accentColor: Int) {
         val scrollerContainer = popupView.findViewById<LinearLayout>(R.id.ll_clipboard_scroller)
         val btnClear = popupView.findViewById<TextView>(R.id.btn_clear_clipboard)
+        val btnScanScreen = popupView.findViewById<Button>(R.id.btn_clipboard_scan_screen)
+
+        btnScanScreen?.apply {
+            backgroundTintList = null
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(accentColor)
+                cornerRadius = 8f * resources.displayMetrics.density
+            }
+            setOnClickListener {
+                startScreenTextCopy()
+            }
+        }
 
         btnClear.setOnClickListener {
             serviceScope.launch {
@@ -1249,8 +1360,9 @@ class FloatingService : Service() {
             }
         }
 
-        // Reactive DB collect streaming updates right inside background Service scope
-        serviceScope.launch {
+        // Reactive DB collect streaming updates right inside active popup session scope
+        val flowJob = popupSessionJob ?: serviceScope.coroutineContext[Job]
+        serviceScope.launch(flowJob ?: Dispatchers.Main) {
             SmartDotDatabase.getDatabase(this@FloatingService).smartDotDao().getAllClipsFlow()
                 .collectLatest { clipList ->
                     scrollerContainer.removeAllViews()
@@ -1361,6 +1473,9 @@ class FloatingService : Service() {
         val clip = clipboardManager.primaryClip
         if (clip != null && clip.itemCount > 0) {
             val text = clip.getItemAt(0).text?.toString() ?: ""
+            if (screenTextCopyController?.shouldSkipClipboardEcho(text) == true) {
+                return
+            }
             if (text.isNotEmpty() && text.length < 500) { // Keep storage bounds optimized
                 serviceScope.launch {
                     withContext(Dispatchers.IO) {
@@ -1371,6 +1486,42 @@ class FloatingService : Service() {
                 }
             }
         }
+    }
+
+    private fun setOverlayViewsVisible(visible: Boolean) {
+        val visibility = if (visible) View.VISIBLE else View.INVISIBLE
+        if (::floatingView.isInitialized) {
+            floatingView.visibility = visibility
+        }
+        sidebarView?.visibility = visibility
+    }
+
+    private fun getOrCreateScreenTextCopyController(): ScreenTextCopyController {
+        return screenTextCopyController ?: ScreenTextCopyController(
+            context = this,
+            serviceScope = serviceScope,
+            clipboardManager = clipboardManager,
+            getAccentColor = {
+                val hex = prefs.getString("dot_color", "#00E5FF") ?: "#00E5FF"
+                try {
+                    Color.parseColor(hex)
+                } catch (_: Exception) {
+                    Color.parseColor("#00E5FF")
+                }
+            },
+            dismissActivePopup = {
+                if (activePopupWindow?.isShowing == true) {
+                    activePopupWindow?.dismiss()
+                }
+            },
+            setHostOverlaysVisible = { visible ->
+                setOverlayViewsVisible(visible)
+            }
+        ).also { screenTextCopyController = it }
+    }
+
+    private fun startScreenTextCopy() {
+        getOrCreateScreenTextCopyController().start()
     }
 
     // -------------------------------------------------------------
@@ -1401,7 +1552,8 @@ class FloatingService : Service() {
         }
 
         // Handle streaming DB updates
-        serviceScope.launch {
+        val flowJob = popupSessionJob ?: serviceScope.coroutineContext[Job]
+        serviceScope.launch(flowJob ?: Dispatchers.Main) {
             SmartDotDatabase.getDatabase(this@FloatingService).smartDotDao().getAllNotesFlow()
                 .collectLatest { notesList ->
                     notesScroller.removeAllViews()
@@ -1911,7 +2063,9 @@ class FloatingService : Service() {
             .apply()
     }
 
-    private fun applyCustomizables() {
+    private fun applyDotCustomizables() {
+        if (!::imgFloatingDot.isInitialized) return
+
         val sizeDp = prefs.getInt("dot_size", 56)
         val alpha = prefs.getFloat("dot_transparency", 0.9f)
         val colorHex = prefs.getString("dot_color", "#00E5FF") ?: "#00E5FF"
@@ -1932,7 +2086,10 @@ class FloatingService : Service() {
         } catch (e: Exception) {
             imgFloatingDot.clearColorFilter()
         }
+    }
 
+    private fun applyCustomizables() {
+        applyDotCustomizables()
         setupSidebarWidget()
     }
 
@@ -1940,7 +2097,11 @@ class FloatingService : Service() {
         val sidebarEnabled = prefs.getBoolean("sidebar_enabled", true)
         val sidebarEdge = prefs.getString("sidebar_edge", "Right") ?: "Right"
         val accentColorHex = prefs.getString("dot_color", "#00E5FF") ?: "#00E5FF"
-        val activeColor = Color.parseColor(accentColorHex)
+        val activeColor = try {
+            Color.parseColor(accentColorHex)
+        } catch (_: Exception) {
+            Color.parseColor("#00E5FF")
+        }
 
         // Customizable attributes with defaults
         val sidebarHeight = prefs.getInt("sidebar_height", 130)
@@ -2030,7 +2191,7 @@ class FloatingService : Service() {
                         
                         // Precalculate the sidebar limits on touch down once per gesture
                         val screenHeight = resources.displayMetrics.heightPixels
-                        maxY = screenHeight - handleHeight
+                        maxY = (screenHeight - handleHeight).coerceAtLeast(0)
                         
                         if (sidebarVibration) {
                             try {
@@ -2118,6 +2279,8 @@ class FloatingService : Service() {
             windowManager.addView(handle, sparams)
         } catch (e: Exception) {
             Log.e("FloatingService", "Failed rendering sidebar overlay", e)
+            sidebarView = null
+            sidebarParams = null
         }
     }
 
@@ -2132,12 +2295,20 @@ class FloatingService : Service() {
             Log.e("FloatingService", "Clip listener unregister fail", e)
         }
 
-        try {
-            unregisterReceiver(updateReceiver)
-        } catch (e: Exception) {
-            Log.e("FloatingService", "Receiver clean failed", e)
+        if (isUpdateReceiverRegistered) {
+            try {
+                unregisterReceiver(updateReceiver)
+            } catch (e: Exception) {
+                Log.e("FloatingService", "Receiver clean failed", e)
+            }
+            isUpdateReceiverRegistered = false
         }
 
+        screenTextCopyController?.release()
+        screenTextCopyController = null
+
+        popupSessionJob?.cancel()
+        popupSessionJob = null
         if (activePopupWindow?.isShowing == true) {
             activePopupWindow?.dismiss()
         }
@@ -2149,6 +2320,7 @@ class FloatingService : Service() {
                 Log.e("FloatingService", "Removing floating dot fail", e)
             }
         }
+        isFloatingViewAdded = false
 
         sidebarView?.let {
             try {

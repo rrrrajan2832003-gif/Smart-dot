@@ -322,7 +322,9 @@ fun SmartDotScreen(
     fun updateServiceStyle() {
         // Broadcaster action update
         if (FloatingService.isRunning) {
-            val intent = Intent(FloatingService.ACTION_UPDATE_SETTINGS)
+            val intent = Intent(FloatingService.ACTION_UPDATE_SETTINGS).apply {
+                setPackage(context.packageName)
+            }
             context.sendBroadcast(intent)
         }
     }
@@ -1647,6 +1649,7 @@ private fun getActionName(actionId: String): String {
         "back" -> "Back"
         "recent_apps" -> "Recents"
         "screenshot" -> "Screenshot"
+        "screen_copy" -> "Text Copy"
         "screen_record" -> "Screen Rec"
         "notifications" -> "Notif"
         "quick_settings" -> "Quick Set"
@@ -1696,6 +1699,7 @@ val ACTION_LIST = listOf(
     AvailableAction("back", "Back", "System Shortcuts", "Go back to previous screen"),
     AvailableAction("recent_apps", "Recent Apps", "System Shortcuts", "Open system Recents screen"),
     AvailableAction("screenshot", "Screenshot", "System Shortcuts", "Capture system screen shot"),
+    AvailableAction("screen_copy", "Screen Text Copy", "System Shortcuts", "Capture screen and copy English or Hindi text via OCR"),
     AvailableAction("screen_record", "Screen Record", "System Shortcuts", "Trigger device screen recorder"),
     AvailableAction("notifications", "Notifications", "System Shortcuts", "Expand status bar notification panel"),
     AvailableAction("quick_settings", "Quick Settings", "System Shortcuts", "Expand status bar quick settings panel"),

@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.example.InlineOverlayRootLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/inline_ocr_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/transparent">
+
+    <!-- Full-screen transparent selection canvas aligned 1:1 over live screen -->
+    <com.example.InlineTextSelectionView
+        android:id="@+id/inline_ocr_selection_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="Transparent screen text selection overlay" />
+
+    <!-- Compact Top-Right Controls Pill (Rescan + Close) -->
+    <LinearLayout
+        android:id="@+id/inline_ocr_controls_pill"
+        android:layout_width="wrap_content"
+        android:layout_height="48dp"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="10dp"
+        android:layout_marginEnd="12dp"
+        android:elevation="8dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="4dp"
+        android:paddingEnd="8dp">
+
+        <ImageButton
+            android:id="@+id/btn_inline_ocr_rescan"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/screen_copy_rescan"
+            android:padding="12dp"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_ocr_refresh" />
+
+        <LinearLayout
+            android:id="@+id/btn_inline_ocr_close"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:contentDescription="@string/screen_copy_close"
+            android:focusable="true"
+            android:gravity="center"
+            android:minWidth="48dp"
+            android:orientation="horizontal"
+            android:paddingStart="6dp"
+            android:paddingEnd="8dp">
+
+            <ImageView
+                android:layout_width="16dp"
+                android:layout_height="16dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_app_close" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:text="@string/screen_copy_close"
+                android:textColor="#F8FAFC"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Floating Copy Action Pill anchored next to the selected text -->
+    <LinearLayout
+        android:id="@+id/btn_inline_ocr_copy"
+        android:layout_width="wrap_content"
+        android:layout_height="48dp"
+        android:layout_gravity="top|start"
+        android:clickable="true"
+        android:contentDescription="@string/screen_copy_action"
+        android:elevation="10dp"
+        android:focusable="true"
+        android:gravity="center"
+        android:minWidth="88dp"
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingEnd="18dp"
+        android:visibility="gone">
+
+        <ImageView
+            android:id="@+id/iv_inline_ocr_copy_icon"
+            android:layout_width="18dp"
+            android:layout_height="18dp"
+            android:contentDescription="@null"
+            android:src="@drawable/ic_ocr_copy" />
+
+        <TextView
+            android:id="@+id/tv_inline_ocr_copy_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:text="@string/screen_copy_action"
+            android:textColor="#0F172A"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+</com.example.InlineOverlayRootLayout>
