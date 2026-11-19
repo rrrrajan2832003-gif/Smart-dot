@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Arrow Back main contour -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M20,11H7.83l5.59,-5.59c0.39,-0.39 0.39,-1.02 0,-1.41s-1.02,-0.39 -1.41,0l-7.3,7.3c-0.39,0.39 -0.39,1.02 0,1.41l7.3,7.3c0.39,0.39 1.02,0.39 1.41,0s0.39,-1.02 0,-1.41L7.83,13H20c0.55,0 1,-0.45 1,-1S20.55,11 20,11z" />
+    <!-- Secondary decorative glowing circle or dot represented as path -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M 4, 12 m -1.5, 0 a 1.5,1.5 0 1,0 3,0 a 1.5,1.5 0 1,0 -3,0" />
+</vector>

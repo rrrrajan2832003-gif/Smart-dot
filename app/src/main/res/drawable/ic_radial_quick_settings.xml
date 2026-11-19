@@ -1,0 +1,21 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Slider track 1 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M3,17h10v2H3z M3,5h18v2H3z M13,11h8v2h-8z" />
+    <!-- Slider track 2 with cyan control nodes -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M17,15h2v6h-2z" />
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M7,9h2v6H7z" />
+    <!-- Node circles -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M6,11h4v2H6z M16,17h4v2h-4z" />
+</vector>

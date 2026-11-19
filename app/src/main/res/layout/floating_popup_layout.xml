@@ -1,0 +1,717 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/ll_popup_container"
+    android:layout_width="280dp"
+    android:layout_height="460dp"
+    android:orientation="vertical"
+    android:background="@drawable/bg_popup_panel"
+    android:padding="4dp"
+    android:elevation="14dp">
+
+    <!-- 6-Tab Navigation Bar -->
+    <LinearLayout
+        android:id="@+id/tab_bar"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:layout_marginBottom="4dp">
+
+        <ImageView
+            android:id="@+id/tab_btn_actions"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:src="@drawable/ic_tab_actions"
+            android:tint="#00E5FF"
+            android:padding="10dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:focusable="true"
+            android:contentDescription="Actions Tab" />
+
+        <ImageView
+            android:id="@+id/tab_btn_apps"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:src="@drawable/ic_tab_apps"
+            android:tint="#64748B"
+            android:padding="10dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:focusable="true"
+            android:contentDescription="Apps Tab" />
+
+        <ImageView
+            android:id="@+id/tab_btn_clipboard"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:src="@drawable/ic_tab_clipboard"
+            android:tint="#64748B"
+            android:padding="10dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:focusable="true"
+            android:contentDescription="Clipboard Tab" />
+
+        <ImageView
+            android:id="@+id/tab_btn_notes"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:src="@drawable/ic_tab_notes"
+            android:tint="#64748B"
+            android:padding="10dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:focusable="true"
+            android:contentDescription="Notes Tab" />
+
+        <ImageView
+            android:id="@+id/tab_btn_calc"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:src="@drawable/ic_tab_calc"
+            android:tint="#64748B"
+            android:padding="10dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:focusable="true"
+            android:contentDescription="Calculator Tab" />
+
+        <ImageView
+            android:id="@+id/tab_btn_translate"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:src="@drawable/ic_tab_translate"
+            android:tint="#64748B"
+            android:padding="10dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:focusable="true"
+            android:contentDescription="Translate Tab" />
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#15FFFFFF"
+        android:layout_marginBottom="6dp" />
+
+    <!-- Tab Contents Frames Area -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp"
+        android:paddingBottom="4dp">
+
+        <!-- Tab 1: System Navigation Actions (Horizontal Pager) -->
+        <LinearLayout
+            android:id="@+id/layout_tab_actions"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:visibility="visible">
+
+            <androidx.viewpager.widget.ViewPager
+                android:id="@+id/vp_shortcuts_pager"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:overScrollMode="never" />
+
+            <LinearLayout
+                android:id="@+id/page_indicators_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:orientation="horizontal"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp" />
+        </LinearLayout>
+
+        <!-- Tab 2: Apps Shortcuts Panel (Grid/Collection layout) -->
+        <ScrollView
+            android:id="@+id/layout_tab_apps"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone"
+            android:scrollbars="none"
+            android:overScrollMode="never">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="4dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Utility Shortcuts"
+                    android:textColor="#94A3B8"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:layout_marginBottom="8dp" />
+
+                <!-- Grid Item: Chrome -->
+                <LinearLayout
+                    android:id="@+id/row_chrome"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:background="?android:attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:layout_marginBottom="4dp">
+                    <ImageView
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:src="@drawable/ic_radial_chrome"
+                        android:tint="#00E5FF" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Chrome"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13sp"
+                        android:textStyle="bold"
+                        android:layout_marginStart="12dp" />
+                </LinearLayout>
+
+                <!-- Grid Item: WhatsApp -->
+                <LinearLayout
+                    android:id="@+id/row_whatsapp"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:background="?android:attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:layout_marginBottom="4dp">
+                    <ImageView
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:src="@drawable/ic_radial_whatsapp"
+                        android:tint="#00E5FF" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="WhatsApp"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13sp"
+                        android:textStyle="bold"
+                        android:layout_marginStart="12dp" />
+                </LinearLayout>
+
+                <!-- Grid Item: Built-in Calculator App -->
+                <LinearLayout
+                    android:id="@+id/row_calculator"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:background="?android:attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:paddingStart="10dp"
+                    android:paddingEnd="10dp"
+                    android:layout_marginBottom="12dp">
+                    <ImageView
+                        android:layout_width="20dp"
+                        android:layout_height="20dp"
+                        android:src="@drawable/ic_radial_calculator"
+                        android:tint="#00E5FF" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="System Calculator"
+                        android:textColor="#FFFFFF"
+                        android:textSize="13sp"
+                        android:textStyle="bold"
+                        android:layout_marginStart="12dp" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="App Launcher"
+                    android:textColor="#94A3B8"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:layout_marginBottom="8dp" />
+
+                <!-- Container to hold any loaded user system apps shortcuts dynamically -->
+                <LinearLayout
+                    android:id="@+id/dynamic_app_shortcuts"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" />
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- Tab 3: Clipboard History Manager -->
+        <LinearLayout
+            android:id="@+id/layout_tab_clipboard"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginBottom="8dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Active Clipboard History"
+                    android:textColor="#94A3B8"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/btn_clear_clipboard"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:padding="6dp"
+                    android:text="Clear All"
+                    android:textColor="#EF4444"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:background="?android:attr/selectableItemBackground" />
+            </LinearLayout>
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scrollbars="vertical"
+                android:fadeScrollbars="true">
+
+                <LinearLayout
+                    android:id="@+id/ll_clipboard_scroller"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" />
+            </ScrollView>
+        </LinearLayout>
+
+        <!-- Tab 4: Quick Dynamic Notes -->
+        <LinearLayout
+            android:id="@+id/layout_tab_notes"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:background="#20FFFFFF"
+                android:backgroundTint="#0F172A"
+                android:padding="4dp"
+                android:layout_marginBottom="8dp">
+
+                <EditText
+                    android:id="@+id/et_note_input"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="Jot down a quick note..."
+                    android:textColorHint="#627D98"
+                    android:textColor="#FFFFFF"
+                    android:textSize="13sp"
+                    android:background="@android:color/transparent"
+                    android:padding="8dp"
+                    android:maxLines="3"
+                    android:inputType="textShortMessage|textAutoCorrect" />
+
+                <ImageView
+                    android:id="@+id/btn_save_note"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:src="@android:drawable/ic_menu_save"
+                    android:tint="#00E5FF"
+                    android:padding="6dp"
+                    android:layout_marginEnd="4dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:contentDescription="Save Note" />
+            </LinearLayout>
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scrollbars="vertical">
+
+                <LinearLayout
+                    android:id="@+id/ll_notes_scroller"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" />
+            </ScrollView>
+        </LinearLayout>
+
+        <!-- Tab 5: Built-in Interactive Mini Calculator -->
+        <LinearLayout
+            android:id="@+id/layout_tab_calc"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:visibility="gone"
+            android:gravity="center_horizontal"
+            android:padding="4dp">
+
+            <!-- Calc Screen -->
+            <TextView
+                android:id="@+id/tv_calc_screen"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:background="#1E293B"
+                android:gravity="end|center_vertical"
+                android:padding="10dp"
+                android:textColor="#00E5FF"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:maxLines="1"
+                android:text="0"
+                android:layout_marginBottom="10dp" />
+
+            <!-- Keypad Matrix (Rows) -->
+            <GridLayout
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:columnCount="4"
+                android:rowCount="5"
+                android:alignmentMode="alignBounds">
+
+                <!-- Row 1 -->
+                <Button
+                    android:id="@+id/btn_calc_clear"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="C"
+                    android:textColor="#EF4444"
+                    android:textStyle="bold"
+                    android:backgroundTint="#2C2F3C"
+                    style="?android:attr/buttonStyleSmall" />
+                <Button
+                    android:id="@+id/btn_calc_back"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="←"
+                    android:textColor="#00E5FF"
+                    android:textStyle="bold"
+                    android:backgroundTint="#2C2F3C"
+                    style="?android:attr/buttonStyleSmall" />
+                <Button
+                    android:id="@+id/btn_calc_percent"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="%"
+                    android:textColor="#00E5FF"
+                    android:textStyle="bold"
+                    android:backgroundTint="#2C2F3C"
+                    style="?android:attr/buttonStyleSmall" />
+                <Button
+                    android:id="@+id/btn_calc_div"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="/"
+                    android:textColor="#00E5FF"
+                    android:textStyle="bold"
+                    android:backgroundTint="#2C2F3C"
+                    style="?android:attr/buttonStyleSmall" />
+
+                <!-- Row 2 -->
+                <Button
+                    android:id="@+id/btn_calc_7"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="7"
+                    android:textColor="#FFFFFF"
+                    android:backgroundTint="#111B30"
+                    style="?android:attr/buttonStyleSmall" />
+                <Button
+                    android:id="@+id/btn_calc_8"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="8"
+                    android:textColor="#FFFFFF"
+                    android:backgroundTint="#111B30"
+                    style="?android:attr/buttonStyleSmall" />
+                <Button
+                    android:id="@+id/btn_calc_9"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="9"
+                    android:textColor="#FFFFFF"
+                    android:backgroundTint="#111B30"
+                    style="?android:attr/buttonStyleSmall" />
+                <Button
+                    android:id="@+id/btn_calc_mul"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="*"
+                    android:textColor="#00E5FF"
+                    android:textStyle="bold"
+                    android:backgroundTint="#2C2F3C"
+                    style="?android:attr/buttonStyleSmall" />
+
+                <!-- Row 3 -->
+                <Button
+                    android:id="@+id/btn_calc_4"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="4"
+                    android:textColor="#FFFFFF"
+                    android:backgroundTint="#111B30"
+                    style="?android:attr/buttonStyleSmall" />
+                <Button
+                    android:id="@+id/btn_calc_5"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="5"
+                    android:textColor="#FFFFFF"
+                    android:backgroundTint="#111B30"
+                    style="?android:attr/buttonStyleSmall" />
+                <Button
+                    android:id="@+id/btn_calc_6"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="6"
+                    android:textColor="#FFFFFF"
+                    android:backgroundTint="#111B30"
+                    style="?android:attr/buttonStyleSmall" />
+                <Button
+                    android:id="@+id/btn_calc_sub"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="-"
+                    android:textColor="#00E5FF"
+                    android:textStyle="bold"
+                    android:backgroundTint="#2C2F3C"
+                    style="?android:attr/buttonStyleSmall" />
+
+                <!-- Row 4 -->
+                <Button
+                    android:id="@+id/btn_calc_1"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="1"
+                    android:textColor="#FFFFFF"
+                    android:backgroundTint="#111B30"
+                    style="?android:attr/buttonStyleSmall" />
+                <Button
+                    android:id="@+id/btn_calc_2"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="2"
+                    android:textColor="#FFFFFF"
+                    android:backgroundTint="#111B30"
+                    style="?android:attr/buttonStyleSmall" />
+                <Button
+                    android:id="@+id/btn_calc_3"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="3"
+                    android:textColor="#FFFFFF"
+                    android:backgroundTint="#111B30"
+                    style="?android:attr/buttonStyleSmall" />
+                <Button
+                    android:id="@+id/btn_calc_add"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="+"
+                    android:textColor="#00E5FF"
+                    android:textStyle="bold"
+                    android:backgroundTint="#2C2F3C"
+                    style="?android:attr/buttonStyleSmall" />
+
+                <!-- Row 5 -->
+                <Button
+                    android:id="@+id/btn_calc_0"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="2"
+                    android:layout_columnSpan="2"
+                    android:text="0"
+                    android:textColor="#FFFFFF"
+                    android:backgroundTint="#111B30"
+                    style="?android:attr/buttonStyleSmall" />
+                <Button
+                    android:id="@+id/btn_calc_dot"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="."
+                    android:textColor="#FFFFFF"
+                    android:backgroundTint="#111B30"
+                    style="?android:attr/buttonStyleSmall" />
+                <Button
+                    android:id="@+id/btn_calc_eq"
+                    android:layout_width="0dp"
+                    android:layout_height="44dp"
+                    android:layout_columnWeight="1"
+                    android:text="="
+                    android:textColor="#000000"
+                    android:textStyle="bold"
+                    android:backgroundTint="#00E5FF"
+                    style="?android:attr/buttonStyleSmall" />
+
+            </GridLayout>
+        </LinearLayout>
+
+        <!-- Tab 6: Screen Translator tool -->
+        <LinearLayout
+            android:id="@+id/layout_tab_translate"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:visibility="gone"
+            android:padding="2dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center"
+                android:layout_marginBottom="8dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="EN"
+                    android:textColor="#94A3B8"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <ImageView
+                    android:layout_width="16dp"
+                    android:layout_height="16dp"
+                    android:src="@android:drawable/ic_menu_share"
+                    android:layout_marginStart="8dp"
+                    android:layout_marginEnd="8dp"
+                    android:tint="#00E5FF" />
+
+                <Spinner
+                    android:id="@+id/sp_lang_target"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="#FFFFFF"
+                    style="@android:style/Widget.Spinner" />
+            </LinearLayout>
+
+            <EditText
+                android:id="@+id/et_translate_input"
+                android:layout_width="match_parent"
+                android:layout_height="60dp"
+                android:hint="Type text or copy clipboard to translate..."
+                android:textColorHint="#475569"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:background="#1E293B"
+                android:padding="8dp"
+                android:gravity="top|start"
+                android:inputType="textMultiLine"
+                android:maxLines="3"
+                android:layout_marginBottom="6dp" />
+
+            <Button
+                android:id="@+id/btn_trigger_translate"
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:text="Translate Text"
+                android:textColor="#000000"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:backgroundTint="#00E5FF"
+                android:layout_marginBottom="6dp"
+                android:padding="0dp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Translated Result:"
+                android:textColor="#94A3B8"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="2dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="#0F172A"
+                android:orientation="vertical"
+                android:padding="6dp">
+
+                <ScrollView
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1">
+
+                    <TextView
+                        android:id="@+id/tv_translate_output"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="..."
+                        android:textColor="#FFFFFF"
+                        android:textSize="12sp" />
+                </ScrollView>
+
+                <Button
+                    android:id="@+id/btn_copy_translation"
+                    android:layout_width="wrap_content"
+                    android:layout_height="30dp"
+                    android:text="Copy"
+                    android:textColor="#00E5FF"
+                    android:textSize="10sp"
+                    android:backgroundTint="#1E293B"
+                    android:layout_gravity="end"
+                    android:paddingTop="0dp"
+                    android:paddingBottom="0dp"
+                    style="?android:attr/buttonStyleSmall" />
+            </LinearLayout>
+        </LinearLayout>
+
+    </FrameLayout>
+
+</LinearLayout>

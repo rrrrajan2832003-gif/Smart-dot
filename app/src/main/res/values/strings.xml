@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Floating Shortcuts</string>
+    <string name="accessibility_service_desc">Enables the floating assistant dot overlay menu to trigger system navigation actions such as Back, Home, Recent Apps, and Lock Screen.</string>
+</resources>

@@ -1,0 +1,8 @@
+{
+  "name": "Floating Shortcuts",
+  "description": "A beautiful customizable floating circular overlay widget with quick dynamic actions and service controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

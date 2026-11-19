@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Bubble Chat Outline -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,2C6.48,2 2,6.48 2,12c0,2.17 0.69,4.19 1.87,5.83L2.06,21.5c-0.21,0.51 0.25,1.04 0.77,0.88l3.75,-1.15C8.12,21.65,10,22,12,22c5.52,0 10,-4.48 10,-10S17.52,2 12,2z M12,20c-1.8,0 -3.49,-0.44 -4.98,-1.22l-0.3,-0.16l-2.45,0.75l0.69,-2.25l-0.18,-0.3C3.89,15.39,3.5,13.73,3.5,12c0,-4.69 3.81,-8.5 8.5,-8.5s8.5,3.81 8.5,8.5S16.69,20 12,20z" />
+    <!-- Telephone Receiver icon inside -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M15.5,13c-0.5,0 -1,-0.2 -1.4,-0.6l-1.2,1.2c-0.6,-0.3 -1.2,-0.7 -1.7,-1.2c-0.5,-0.5 -0.9,-1.1 -1.2,-1.7l1.2,-1.2c-0.4,-0.4 -0.6,-0.9 -0.6,-1.4C10.6,7.5 10.1,7 9.5,7S8.4,7.5 8.4,8.1c0,2.6 1.8,4.9 4.3,6.3c0.9,0.5 1.9,0.7 2.8,0.7c0.6,0 1.1,-0.5 1.1,-1.1S16.1,13 15.5,13z" />
+</vector>
