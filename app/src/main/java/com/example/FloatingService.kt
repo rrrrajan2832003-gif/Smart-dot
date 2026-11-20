@@ -96,10 +96,7 @@ class FloatingService : Service() {
     private var sidebarParams: WindowManager.LayoutParams? = null
 
     // Curated standard languages for Translate
-    private val translateLanguages = listOf(
-        "Spanish", "French", "German", "Japanese", 
-        "Chinese", "Hindi", "Italian", "Russian"
-    )
+    private val translateLanguages = ScreenTranslateHelper.SUPPORTED_LANGUAGES
 
     // Coroutine Scope for Room IO operations
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
@@ -115,8 +112,9 @@ class FloatingService : Service() {
     private var isFloatingViewAdded = false
     private var popupSessionJob: Job? = null
 
-    // Isolated controller for Screen Text Copy (lazily created only when triggered)
+    // Isolated controllers for Screen Text Copy and Screen Translate (lazily created when triggered)
     private var screenTextCopyController: ScreenTextCopyController? = null
+    private var screenTranslateController: ScreenTranslateController? = null
 
     companion object {
         const val ACTION_UPDATE_SETTINGS = "com.example.UPDATE_SETTINGS"
@@ -129,6 +127,9 @@ class FloatingService : Service() {
     private val updateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == ACTION_UPDATE_SETTINGS) {
+                if (!::windowManager.isInitialized) {
+                    windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+                }
                 applyCustomizables()
             }
         }
@@ -184,9 +185,18 @@ class FloatingService : Service() {
             }
         }
 
-        val needsOverlaySetup = !isRunning ||
-            !::floatingView.isInitialized ||
-            (!isFloatingViewAdded && !floatingView.isAttachedToWindow)
+        val dotEnabled = prefs.getBoolean("floating_dot_enabled", true)
+        val sidebarEnabled = prefs.getBoolean("sidebar_enabled", true)
+        if (!dotEnabled && !sidebarEnabled) {
+            Log.i("FloatingService", "Both Floating Dot and Edge Sidebar are OFF; stopping service.")
+            isRunning = false
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        val dotMissing = dotEnabled && (!::floatingView.isInitialized || (!isFloatingViewAdded && !floatingView.isAttachedToWindow))
+        val sidebarMissing = sidebarEnabled && sidebarView == null
+        val needsOverlaySetup = !isRunning || dotMissing || sidebarMissing
 
         if (needsOverlaySetup) {
             val attached = setupFloatingWidget()
@@ -196,6 +206,8 @@ class FloatingService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
+        } else {
+            applyCustomizables()
         }
 
         return START_STICKY
@@ -235,11 +247,30 @@ class FloatingService : Service() {
     }
 
     private fun setupFloatingWidget(): Boolean {
+        val dotEnabled = prefs.getBoolean("floating_dot_enabled", true)
+        val dotAdded = if (dotEnabled) {
+            ensureFloatingDotAttached()
+        } else {
+            detachFloatingDot()
+            false
+        }
+        setupSidebarWidget()
+        return dotAdded || sidebarView != null
+    }
+
+    private fun detachFloatingDot() {
         if (::floatingView.isInitialized && (isFloatingViewAdded || floatingView.isAttachedToWindow)) {
             try {
                 windowManager.removeView(floatingView)
             } catch (_: Exception) {}
-            isFloatingViewAdded = false
+        }
+        isFloatingViewAdded = false
+    }
+
+    private fun ensureFloatingDotAttached(): Boolean {
+        if (::floatingView.isInitialized && (isFloatingViewAdded || floatingView.isAttachedToWindow)) {
+            applyDotCustomizables()
+            return true
         }
 
         floatingView = LayoutInflater.from(this).inflate(R.layout.floating_dot_layout, null)
@@ -342,17 +373,15 @@ class FloatingService : Service() {
             }
         })
 
-        val dotAdded = try {
+        return try {
             windowManager.addView(floatingView, params)
             isFloatingViewAdded = true
             true
         } catch (e: Exception) {
-            Log.e("FloatingService", "Failed rendering handle overlays on display.", e)
+            Log.e("FloatingService", "Failed rendering floating dot overlay on display.", e)
             isFloatingViewAdded = false
             false
         }
-        setupSidebarWidget()
-        return dotAdded || sidebarView != null
     }
 
     private fun handleDotClick() {
@@ -556,9 +585,10 @@ class FloatingService : Service() {
             }
             container.background = drawableBackground
 
-            // Bind all Tab togglers & components
+            // Bind unified tabs & tools identically for BOTH Floating Dot and Edge Sidebar
             bindSidebarTabs(popupView, activeAccentColor, currentDensity)
             bindCustomShortcutsGrid(popupView, activeAccentColor, currentDensity)
+            bindAppsTab(popupView, activeAccentColor)
             bindClipboardTab(popupView, activeAccentColor)
             bindNotesTab(popupView, activeAccentColor)
             bindCalculatorTab(popupView, activeAccentColor)
@@ -646,7 +676,8 @@ class FloatingService : Service() {
         layoutActions?.visibility = View.VISIBLE
 
         val prefs = getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE)
-        val topSavedStr = prefs.getString("top_shortcuts_list", "calculator,translate,clipboard,notes,settings") ?: "calculator,translate,clipboard,notes,settings"
+        val defaultTopShortcuts = "calculator,translate,clipboard,notes,open_app_drawer,settings"
+        val topSavedStr = prefs.getString("top_shortcuts_list", defaultTopShortcuts) ?: defaultTopShortcuts
         val topShortcuts = topSavedStr.split(",").filter { it.isNotEmpty() }.toMutableList()
 
         var activeTabIndex = -1
@@ -709,13 +740,190 @@ class FloatingService : Service() {
                     showShortcutSelectorDialog { selectedId ->
                         topShortcuts[index] = selectedId
                         prefs.edit().putString("top_shortcuts_list", topShortcuts.joinToString(",")).apply()
-                        showAssistantSidebar()
+                        if (isPopupAlignedToEdge) showSidebarPanel() else showAssistantSidebar()
                     }
                     true
                 }
             }
             tabButtons.add(tabButton)
             tabBar.addView(tabButton)
+        }
+    }
+
+    private fun switchActivePopupToAppsTab(): Boolean {
+        val popupContent = activePopupWindow?.takeIf { it.isShowing }?.contentView ?: return false
+        val layoutActions = popupContent.findViewById<View>(R.id.layout_tab_actions)
+        val layoutApps = popupContent.findViewById<View>(R.id.layout_tab_apps) ?: return false
+        val layoutClipboard = popupContent.findViewById<View>(R.id.layout_tab_clipboard)
+        val layoutNotes = popupContent.findViewById<View>(R.id.layout_tab_notes)
+        val layoutCalc = popupContent.findViewById<View>(R.id.layout_tab_calc)
+        val layoutTranslate = popupContent.findViewById<View>(R.id.layout_tab_translate)
+
+        listOf(layoutActions, layoutClipboard, layoutNotes, layoutCalc, layoutTranslate).forEach {
+            it?.visibility = View.GONE
+        }
+        layoutApps.visibility = View.VISIBLE
+
+        val tabBar = popupContent.findViewById<LinearLayout>(R.id.tab_bar)
+        val accentHex = prefs.getString("dot_color", "#00E5FF") ?: "#00E5FF"
+        val activeAccent = try {
+            Color.parseColor(accentHex)
+        } catch (_: Exception) {
+            Color.parseColor("#00E5FF")
+        }
+        if (tabBar != null) {
+            for (i in 0 until tabBar.childCount) {
+                val child = tabBar.getChildAt(i) as? ImageView ?: continue
+                val isAppsTab = child.contentDescription?.toString()?.contains("Drawer", ignoreCase = true) == true
+                if (isAppsTab) {
+                    child.setColorFilter(activeAccent, PorterDuff.Mode.SRC_IN)
+                    child.scaleX = 1.15f
+                    child.scaleY = 1.15f
+                } else {
+                    child.setColorFilter(Color.parseColor("#64748B"), PorterDuff.Mode.SRC_IN)
+                    child.scaleX = 1.0f
+                    child.scaleY = 1.0f
+                }
+            }
+        }
+        return true
+    }
+
+    // -------------------------------------------------------------
+    // Tab 2: Unified Utility & Installed App Launcher (Freeform Window)
+    // -------------------------------------------------------------
+    private data class LaunchableAppEntry(
+        val packageName: String,
+        val activityName: String,
+        val label: String,
+        val icon: Drawable
+    )
+
+    private fun bindAppsTab(popupView: View, accentColor: Int) {
+        val rowChrome = popupView.findViewById<LinearLayout>(R.id.row_chrome)
+        val rowWhatsapp = popupView.findViewById<LinearLayout>(R.id.row_whatsapp)
+        val rowCalculator = popupView.findViewById<LinearLayout>(R.id.row_calculator)
+        val dynamicContainer = popupView.findViewById<LinearLayout>(R.id.dynamic_app_shortcuts)
+
+        fun tintRowIcon(row: LinearLayout?) {
+            val icon = row?.getChildAt(0) as? ImageView
+            icon?.setColorFilter(accentColor, PorterDuff.Mode.SRC_IN)
+        }
+        tintRowIcon(rowChrome)
+        tintRowIcon(rowWhatsapp)
+        tintRowIcon(rowCalculator)
+
+        rowChrome?.setOnClickListener {
+            activePopupWindow?.dismiss()
+            launchChrome()
+        }
+        rowWhatsapp?.setOnClickListener {
+            activePopupWindow?.dismiss()
+            launchWhatsApp()
+        }
+        rowCalculator?.setOnClickListener {
+            activePopupWindow?.dismiss()
+            launchCalculator()
+        }
+
+        if (dynamicContainer == null) return
+        dynamicContainer.removeAllViews()
+
+        val currentJob = popupSessionJob ?: serviceScope.coroutineContext[Job]
+        serviceScope.launch(currentJob ?: Dispatchers.Main) {
+            val apps = withContext(Dispatchers.IO) {
+                val pm = packageManager
+                val queryIntent = Intent(Intent.ACTION_MAIN).apply {
+                    addCategory(Intent.CATEGORY_LAUNCHER)
+                }
+                val resolved = runCatching { pm.queryIntentActivities(queryIntent, 0) }.getOrDefault(emptyList())
+                val seenPackages = HashSet<String>()
+                resolved.mapNotNull { info ->
+                    val pkg = info.activityInfo?.packageName ?: return@mapNotNull null
+                    if (pkg == packageName || !seenPackages.add(pkg)) return@mapNotNull null
+                    val act = info.activityInfo.name ?: return@mapNotNull null
+                    val label = runCatching { info.loadLabel(pm).toString() }.getOrDefault(pkg)
+                    val icon = runCatching { info.loadIcon(pm) }.getOrNull()
+                        ?: ContextCompat.getDrawable(this@FloatingService, R.drawable.ic_tab_apps)
+                        ?: return@mapNotNull null
+                    LaunchableAppEntry(pkg, act, label, icon)
+                }.sortedBy { it.label.lowercase(Locale.getDefault()) }
+            }
+
+            if (activePopupWindow?.contentView !== popupView) return@launch
+            dynamicContainer.removeAllViews()
+
+            if (apps.isEmpty()) {
+                val emptyView = TextView(this@FloatingService).apply {
+                    text = "No launchable apps discovered."
+                    setTextColor(Color.parseColor("#64748B"))
+                    textSize = 12f
+                    setPadding((10 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
+                }
+                dynamicContainer.addView(emptyView)
+                return@launch
+            }
+
+            val rowHeightPx = (48 * density).toInt()
+            val iconSizePx = (24 * density).toInt()
+            val horizontalPadPx = (10 * density).toInt()
+            val bottomMarginPx = (4 * density).toInt()
+
+            for (app in apps) {
+                val row = LinearLayout(this@FloatingService).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        rowHeightPx
+                    ).apply {
+                        bottomMargin = bottomMarginPx
+                    }
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(horizontalPadPx, 0, horizontalPadPx, 0)
+                    background = getSystemDrawable(android.R.attr.selectableItemBackground)
+                    isClickable = true
+                    isFocusable = true
+                    tag = app.packageName
+                    contentDescription = "Launch ${app.label} in floating window"
+                }
+
+                val iconView = ImageView(this@FloatingService).apply {
+                    layoutParams = LinearLayout.LayoutParams(iconSizePx, iconSizePx)
+                    setImageDrawable(app.icon)
+                    contentDescription = null
+                }
+
+                val titleView = TextView(this@FloatingService).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        marginStart = (12 * density).toInt()
+                    }
+                    text = app.label
+                    setTextColor(Color.WHITE)
+                    textSize = 13f
+                    setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }
+
+                row.addView(iconView)
+                row.addView(titleView)
+
+                row.setOnClickListener {
+                    activePopupWindow?.dismiss()
+                    val launchIntent = packageManager.getLaunchIntentForPackage(app.packageName)
+                        ?: Intent(Intent.ACTION_MAIN).apply {
+                            addCategory(Intent.CATEGORY_LAUNCHER)
+                            setClassName(app.packageName, app.activityName)
+                        }
+                    FreeformWindowLauncher.launchInFreeformWindow(
+                        this@FloatingService,
+                        launchIntent,
+                        app.label
+                    )
+                }
+
+                dynamicContainer.addView(row)
+            }
         }
     }
 
@@ -729,6 +937,7 @@ class FloatingService : Service() {
             "recent_apps" -> R.drawable.ic_radial_recents
             "screenshot" -> R.drawable.ic_radial_screenshot
             "screen_copy" -> R.drawable.ic_screen_text_copy
+            "screen_translate" -> R.drawable.ic_tab_translate
             "notifications" -> R.drawable.ic_radial_notifications
             "quick_settings" -> R.drawable.ic_radial_quick_settings
             "settings" -> R.drawable.ic_radial_settings
@@ -753,7 +962,7 @@ class FloatingService : Service() {
             "airplane_mode" -> android.R.drawable.ic_menu_directions
             "hotspot" -> android.R.drawable.ic_menu_share
             "split_screen" -> android.R.drawable.ic_menu_crop
-            "open_app_drawer" -> android.R.drawable.ic_menu_sort_by_size
+            "open_app_drawer" -> R.drawable.ic_tab_apps
             "voice_assistant" -> android.R.drawable.ic_btn_speak_now
             "about_app" -> android.R.drawable.ic_menu_info_details
             "clock" -> android.R.drawable.ic_menu_today
@@ -771,6 +980,7 @@ class FloatingService : Service() {
             "recent_apps" -> "Recents"
             "screenshot" -> "Screenshot"
             "screen_copy" -> "Text Copy"
+            "screen_translate" -> "Translate"
             "screen_record" -> "Screen Rec"
             "notifications" -> "Notif"
             "quick_settings" -> "Quick Set"
@@ -830,6 +1040,7 @@ class FloatingService : Service() {
                 "recent_apps" -> performGlobalActionSafety(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS)
                 "screenshot" -> triggerScreenshot()
                 "screen_copy" -> startScreenTextCopy()
+                "screen_translate" -> startScreenTranslate()
                 "screen_record" -> {
                     val intent = Intent().apply {
                         action = "android.settings.SCREEN_RECORD"
@@ -851,17 +1062,20 @@ class FloatingService : Service() {
                     }
                 }
                 "open_app_drawer" -> {
-                    val homeIntent = Intent(Intent.ACTION_MAIN).apply {
-                        addCategory(Intent.CATEGORY_HOME)
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    if (!switchActivePopupToAppsTab()) {
+                        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+                            addCategory(Intent.CATEGORY_HOME)
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        }
+                        startActivity(homeIntent)
                     }
-                    startActivity(homeIntent)
                 }
                 "voice_assistant" -> {
                     val intent = Intent(Intent.ACTION_VOICE_COMMAND).apply {
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK
                     }
                     if (intent.resolveActivity(pm) != null) {
+                        activePopupWindow?.dismiss()
                         startActivity(intent)
                     } else {
                         Toast.makeText(context, "Voice Assistant not found", Toast.LENGTH_SHORT).show()
@@ -973,58 +1187,60 @@ class FloatingService : Service() {
                     }
                 }
                 "camera" -> {
-                    val intent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    if (intent.resolveActivity(pm) != null) {
-                        startActivity(intent)
+                    val intent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
+                    val targetIntent = if (intent.resolveActivity(pm) != null) {
+                        intent
                     } else {
-                        val defaultIntent = pm.getLaunchIntentForPackage("com.android.camera") ?: 
-                                            pm.getLaunchIntentForPackage("com.sec.android.app.camera")
-                        if (defaultIntent != null) {
-                            startActivity(defaultIntent)
-                        } else {
-                            Toast.makeText(context, "Camera App could not be launched.", Toast.LENGTH_SHORT).show()
-                        }
+                        pm.getLaunchIntentForPackage("com.android.camera")
+                            ?: pm.getLaunchIntentForPackage("com.sec.android.app.camera")
+                    }
+                    if (targetIntent != null) {
+                        activePopupWindow?.dismiss()
+                        FreeformWindowLauncher.launchInFreeformWindow(this, targetIntent, "Camera")
+                    } else {
+                        Toast.makeText(context, "Camera App could not be launched.", Toast.LENGTH_SHORT).show()
                     }
                 }
                 "gallery" -> {
                     val intent = Intent(Intent.ACTION_VIEW).apply {
                         type = "image/*"
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
                     }
-                    if (intent.resolveActivity(pm) != null) {
-                        startActivity(intent)
+                    val targetIntent = if (intent.resolveActivity(pm) != null) {
+                        intent
                     } else {
-                        val defaultIntent = pm.getLaunchIntentForPackage("com.google.android.apps.photos") ?:
-                                            pm.getLaunchIntentForPackage("com.sec.android.gallery3d")
-                        if (defaultIntent != null) {
-                            startActivity(defaultIntent)
-                        } else {
-                            Toast.makeText(context, "Gallery App not found.", Toast.LENGTH_SHORT).show()
-                        }
+                        pm.getLaunchIntentForPackage("com.google.android.apps.photos")
+                            ?: pm.getLaunchIntentForPackage("com.sec.android.gallery3d")
+                    }
+                    if (targetIntent != null) {
+                        activePopupWindow?.dismiss()
+                        FreeformWindowLauncher.launchInFreeformWindow(this, targetIntent, "Gallery")
+                    } else {
+                        Toast.makeText(context, "Gallery App not found.", Toast.LENGTH_SHORT).show()
                     }
                 }
-                "calculator" -> launchCalculator()
-                "chrome" -> launchChrome()
-                "whatsapp" -> launchWhatsApp()
+                "calculator" -> {
+                    activePopupWindow?.dismiss()
+                    launchCalculator()
+                }
+                "chrome" -> {
+                    activePopupWindow?.dismiss()
+                    launchChrome()
+                }
+                "whatsapp" -> {
+                    activePopupWindow?.dismiss()
+                    launchWhatsApp()
+                }
                 "youtube" -> {
-                    val intent = pm.getLaunchIntentForPackage("com.google.android.youtube")
-                    if (intent != null) {
-                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        startActivity(intent)
-                    } else {
-                        val webIntent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://youtube.com")).apply {
-                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                        }
-                        startActivity(webIntent)
-                    }
+                    val targetIntent = pm.getLaunchIntentForPackage("com.google.android.youtube")
+                        ?: Intent(Intent.ACTION_VIEW, Uri.parse("https://youtube.com"))
+                    activePopupWindow?.dismiss()
+                    FreeformWindowLauncher.launchInFreeformWindow(this, targetIntent, "YouTube")
                 }
                 "gmail" -> {
                     val intent = pm.getLaunchIntentForPackage("com.google.android.gm")
                     if (intent != null) {
-                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        startActivity(intent)
+                        activePopupWindow?.dismiss()
+                        FreeformWindowLauncher.launchInFreeformWindow(this, intent, "Gmail")
                     } else {
                         Toast.makeText(context, "Gmail not installed.", Toast.LENGTH_SHORT).show()
                     }
@@ -1032,10 +1248,13 @@ class FloatingService : Service() {
                 "files" -> {
                     val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
                         type = "*/*"
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
                     }
-                    if (intent.resolveActivity(pm) != null) {
-                        startActivity(intent)
+                    val targetIntent = pm.getLaunchIntentForPackage("com.google.android.apps.nbu.files")
+                        ?: pm.getLaunchIntentForPackage("com.android.documentsui")
+                        ?: intent.takeIf { it.resolveActivity(pm) != null }
+                    if (targetIntent != null) {
+                        activePopupWindow?.dismiss()
+                        FreeformWindowLauncher.launchInFreeformWindow(this, targetIntent, "Files")
                     } else {
                         val fallback = Intent(android.provider.Settings.ACTION_INTERNAL_STORAGE_SETTINGS).apply {
                             flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -1052,41 +1271,36 @@ class FloatingService : Service() {
                     startActivity(homeIntent)
                 }
                 "clock" -> {
-                    val intent = Intent(android.provider.AlarmClock.ACTION_SHOW_ALARMS).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    if (intent.resolveActivity(pm) != null) {
-                        startActivity(intent)
+                    val intent = Intent(android.provider.AlarmClock.ACTION_SHOW_ALARMS)
+                    val targetIntent = if (intent.resolveActivity(pm) != null) {
+                        intent
                     } else {
-                        val fallback = pm.getLaunchIntentForPackage("com.android.deskclock") ?:
-                                       pm.getLaunchIntentForPackage("com.sec.android.app.clockpackage")
-                        if (fallback != null) {
-                            startActivity(fallback)
-                        } else {
-                            Toast.makeText(context, "Clock App not found.", Toast.LENGTH_SHORT).show()
-                        }
+                        pm.getLaunchIntentForPackage("com.android.deskclock")
+                            ?: pm.getLaunchIntentForPackage("com.sec.android.app.clockpackage")
+                    }
+                    if (targetIntent != null) {
+                        activePopupWindow?.dismiss()
+                        FreeformWindowLauncher.launchInFreeformWindow(this, targetIntent, "Clock")
+                    } else {
+                        Toast.makeText(context, "Clock App not found.", Toast.LENGTH_SHORT).show()
                     }
                 }
                 "contacts" -> {
-                    val intent = Intent(Intent.ACTION_VIEW, android.provider.ContactsContract.Contacts.CONTENT_URI).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    startActivity(intent)
+                    val intent = Intent(Intent.ACTION_VIEW, android.provider.ContactsContract.Contacts.CONTENT_URI)
+                    activePopupWindow?.dismiss()
+                    FreeformWindowLauncher.launchInFreeformWindow(this, intent, "Contacts")
                 }
                 "messages" -> {
                     val intent = Intent(Intent.ACTION_MAIN).apply {
                         addCategory(Intent.CATEGORY_APP_MESSAGING)
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
                     }
-                    if (intent.resolveActivity(pm) != null) {
-                        startActivity(intent)
+                    val targetIntent = if (intent.resolveActivity(pm) != null) {
+                        intent
                     } else {
-                        val smsUri = android.net.Uri.parse("smsto:")
-                        val fallback = Intent(Intent.ACTION_SENDTO, smsUri).apply {
-                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                        }
-                        startActivity(fallback)
+                        Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:"))
                     }
+                    activePopupWindow?.dismiss()
+                    FreeformWindowLauncher.launchInFreeformWindow(this, targetIntent, "Messages")
                 }
                 "custom_app" -> {
                     val customPkg = context.getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE)
@@ -1094,8 +1308,8 @@ class FloatingService : Service() {
                     if (customPkg.isNotEmpty()) {
                         val intent = pm.getLaunchIntentForPackage(customPkg)
                         if (intent != null) {
-                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            startActivity(intent)
+                            activePopupWindow?.dismiss()
+                            FreeformWindowLauncher.launchInFreeformWindow(this, intent, customPkg)
                         } else {
                             Toast.makeText(context, "App payload '$customPkg' not found.", Toast.LENGTH_SHORT).show()
                         }
@@ -1473,7 +1687,9 @@ class FloatingService : Service() {
         val clip = clipboardManager.primaryClip
         if (clip != null && clip.itemCount > 0) {
             val text = clip.getItemAt(0).text?.toString() ?: ""
-            if (screenTextCopyController?.shouldSkipClipboardEcho(text) == true) {
+            if (screenTextCopyController?.shouldSkipClipboardEcho(text) == true ||
+                screenTranslateController?.shouldSkipClipboardEcho(text) == true
+            ) {
                 return
             }
             if (text.isNotEmpty() && text.length < 500) { // Keep storage bounds optimized
@@ -1490,7 +1706,7 @@ class FloatingService : Service() {
 
     private fun setOverlayViewsVisible(visible: Boolean) {
         val visibility = if (visible) View.VISIBLE else View.INVISIBLE
-        if (::floatingView.isInitialized) {
+        if (::floatingView.isInitialized && isFloatingViewAdded) {
             floatingView.visibility = visibility
         }
         sidebarView?.visibility = visibility
@@ -1516,12 +1732,52 @@ class FloatingService : Service() {
             },
             setHostOverlaysVisible = { visible ->
                 setOverlayViewsVisible(visible)
+            },
+            onAccessibilityRequired = {
+                showAccessibilityDialog()
             }
         ).also { screenTextCopyController = it }
     }
 
     private fun startScreenTextCopy() {
         getOrCreateScreenTextCopyController().start()
+    }
+
+    private fun getOrCreateScreenTranslateController(): ScreenTranslateController {
+        return screenTranslateController ?: ScreenTranslateController(
+            context = this,
+            serviceScope = serviceScope,
+            clipboardManager = clipboardManager,
+            getAccentColor = {
+                val hex = prefs.getString("dot_color", "#00E5FF") ?: "#00E5FF"
+                try {
+                    Color.parseColor(hex)
+                } catch (_: Exception) {
+                    Color.parseColor("#00E5FF")
+                }
+            },
+            getSavedTargetLanguage = {
+                prefs.getString("translate_target_language", "Hindi") ?: "Hindi"
+            },
+            saveTargetLanguage = { lang ->
+                prefs.edit().putString("translate_target_language", lang).apply()
+            },
+            dismissActivePopup = {
+                if (activePopupWindow?.isShowing == true) {
+                    activePopupWindow?.dismiss()
+                }
+            },
+            setHostOverlaysVisible = { visible ->
+                setOverlayViewsVisible(visible)
+            },
+            onAccessibilityRequired = {
+                showAccessibilityDialog()
+            }
+        ).also { screenTranslateController = it }
+    }
+
+    private fun startScreenTranslate(targetLanguage: String? = null) {
+        getOrCreateScreenTranslateController().start(targetLanguage)
     }
 
     // -------------------------------------------------------------
@@ -1749,20 +2005,50 @@ class FloatingService : Service() {
     }
 
     // -------------------------------------------------------------
-    // Tab 6: Screen Translator with fully localized offline datasets
+    // Tab 6: Google Lens-style Screen & Phrase Translator (ML Kit On-Device)
     // -------------------------------------------------------------
     private fun bindTranslateTab(popupView: View, accentColor: Int) {
         val spTarget = popupView.findViewById<Spinner>(R.id.sp_lang_target)
+        val btnTranslateScreen = popupView.findViewById<Button>(R.id.btn_translate_screen)
         val etInput = popupView.findViewById<EditText>(R.id.et_translate_input)
         val btnRun = popupView.findViewById<Button>(R.id.btn_trigger_translate)
         val tvOutput = popupView.findViewById<TextView>(R.id.tv_translate_output)
         val btnCopy = popupView.findViewById<Button>(R.id.btn_copy_translation)
 
-        btnRun.setBackgroundColor(accentColor)
+        btnTranslateScreen?.apply {
+            backgroundTintList = null
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(accentColor)
+                cornerRadius = 8f * resources.displayMetrics.density
+            }
+        }
 
-        // Populate Spinner options elegantly
+        btnRun.backgroundTintList = null
+        btnRun.background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(accentColor)
+            cornerRadius = 8f * resources.displayMetrics.density
+        }
+
         val spinnerAdapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, translateLanguages)
         spTarget.adapter = spinnerAdapter
+        val savedTarget = prefs.getString("translate_target_language", "Hindi") ?: "Hindi"
+        val defaultIdx = translateLanguages.indexOf(savedTarget).takeIf { it >= 0 } ?: 0
+        spTarget.setSelection(defaultIdx)
+        spTarget.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val chosen = translateLanguages.getOrNull(position) ?: return
+                prefs.edit().putString("translate_target_language", chosen).apply()
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+
+        btnTranslateScreen?.setOnClickListener {
+            val selection = spTarget.selectedItem?.toString() ?: "Hindi"
+            prefs.edit().putString("translate_target_language", selection).apply()
+            startScreenTranslate(selection)
+        }
 
         btnRun.setOnClickListener {
             val text = etInput.text.toString().trim()
@@ -1771,84 +2057,40 @@ class FloatingService : Service() {
                 return@setOnClickListener
             }
 
-            val selection = spTarget.selectedItem?.toString() ?: "Spanish"
-            val response = executeLocalTranslation(text, selection)
-            tvOutput.text = response
+            val selection = spTarget.selectedItem?.toString() ?: "Hindi"
+            tvOutput.text = "Translating..."
+            serviceScope.launch {
+                try {
+                    val helper = getOrCreateScreenTranslateController().getTranslateHelper()
+                    val translated = helper.translateSingleText(
+                        text = text,
+                        targetLanguageName = selection,
+                        onModelDownloading = {
+                            Handler(Looper.getMainLooper()).post {
+                                Toast.makeText(
+                                    this@FloatingService,
+                                    getString(R.string.screen_translate_downloading_model),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    )
+                    tvOutput.text = translated
+                } catch (e: Exception) {
+                    Log.e("FloatingService", "On-device phrase translation failed", e)
+                    tvOutput.text = "Translation failed: ${e.localizedMessage ?: "Check connection for first model download"}"
+                }
+            }
         }
 
         btnCopy.setOnClickListener {
             val translatedResponse = tvOutput.text.toString()
-            if (translatedResponse.isNotEmpty() && translatedResponse != "...") {
+            if (translatedResponse.isNotEmpty() && translatedResponse != "..." && translatedResponse != "Translating...") {
                 val clipData = android.content.ClipData.newPlainText("Translated text", translatedResponse)
                 clipboardManager.setPrimaryClip(clipData)
                 Toast.makeText(this, "Translation copied to clipboard!", Toast.LENGTH_SHORT).show()
             }
         }
-    }
-
-    // Comprehensive fully pre-compiled and smart localized contextual translation dictionaries
-    private fun executeLocalTranslation(phrase: String, targetLanguage: String): String {
-        val query = phrase.lowercase(Locale.ROOT).trim()
-
-        val dictionary = mapOf(
-            "hello" to mapOf(
-                "Spanish" to "Hola", "French" to "Bonjour", "German" to "Hallo", 
-                "Japanese" to "こんにちは (Konnichiwa)", "Chinese" to "你好 (Nǐ hǎo)", 
-                "Hindi" to "नमस्ते (Namaste)", "Italian" to "Ciao", "Russian" to "Привет"
-            ),
-            "good morning" to mapOf(
-                "Spanish" to "Buenos días", "French" to "Bonjour", "German" to "Guten Morgen",
-                "Japanese" to "おはようございます", "Chinese" to "早上好", "Hindi" to "शुभ प्रभात",
-                "Italian" to "Buongiorno", "Russian" to "Доброе утро"
-            ),
-            "thank you" to mapOf(
-                "Spanish" to "Gracias", "French" to "Merci", "German" to "Danke", 
-                "Japanese" to "ありがとう (Arigatou)", "Chinese" to "谢谢 (Xièxiè)", 
-                "Hindi" to "धन्यवाद (Dhanyavaad)", "Italian" to "Grazie", "Russian" to "Спасибо"
-            ),
-            "how are you?" to mapOf(
-                "Spanish" to "¿Cómo estás?", "French" to "Comment ça va?", "German" to "Wie geht es dir?",
-                "Japanese" to "お元気ですか？", "Chinese" to "你好吗？", "Hindi" to "आप कैसे हैं?",
-                "Italian" to "Come stai?", "Russian" to "Как дела?"
-            ),
-            "welcome" to mapOf(
-                "Spanish" to "Bienvenido", "French" to "Bienvenue", "German" to "Willkommen",
-                "Japanese" to "ようこそ (Yōkoso)", "Chinese" to "欢迎", "Hindi" to "स्वागत हे",
-                "Italian" to "Benvenuto", "Russian" to "Добро пожаловать"
-            ),
-            "goodbye" to mapOf(
-                "Spanish" to "Adiós", "French" to "Au revoir", "German" to "Auf Wiedersehen",
-                "Japanese" to "さようなら (Sayōnara)", "Chinese" to "再见", "Hindi" to "अलविदा",
-                "Italian" to "Arrivederci", "Russian" to "До свидания"
-            ),
-            "i love you" to mapOf(
-                "Spanish" to "Te amo", "French" to "Je t'aime", "German" to "Ich liebe dich",
-                "Japanese" to "愛しています", "Chinese" to "我爱你", "Hindi" to "मैं तुमसे प्यार करता हूँ",
-                "Italian" to "Ti amo", "Russian" to "Я люблю тебя"
-            )
-        )
-
-        // Look for dictionary hit
-        for (key in dictionary.keys) {
-            if (query.contains(key)) {
-                return dictionary[key]?.get(targetLanguage) ?: "Translation missing"
-            }
-        }
-
-        // AI-style algorithmic fallback translate suffix simulator for absolute offline integrity
-        val localizedAffixes = mapOf(
-            "Spanish" to Pair("el_ ", " _ando"),
-            "French" to Pair("le_ ", " _esque"),
-            "German" to Pair("der_ ", " _en"),
-            "Japanese" to Pair("", " ~です (desu)"),
-            "Chinese" to Pair("", " ~汉 (hàn)"),
-            "Hindi" to Pair("", " ~श्री (shree)"),
-            "Italian" to Pair("il_ ", " _issimo"),
-            "Russian" to Pair("", " ~ов (ov)")
-        )
-
-        val affix = localizedAffixes[targetLanguage] ?: Pair("", "")
-        return "${affix.first}${phrase}${affix.second}".uppercase()
     }
 
     // -------------------------------------------------------------
@@ -1999,22 +2241,21 @@ class FloatingService : Service() {
             try {
                 val intent = pm.getLaunchIntentForPackage(pkg)
                 if (intent != null) {
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    startActivity(intent)
-                    launched = true
-                    break
+                    launched = FreeformWindowLauncher.launchInFreeformWindow(this, intent, "Calculator")
+                    if (launched) break
                 }
-            } catch (ignored: Exception) {}
+            } catch (_: Exception) {}
         }
 
         if (!launched) {
             try {
                 val intent = Intent(Intent.ACTION_MAIN).apply {
                     addCategory(Intent.CATEGORY_APP_CALCULATOR)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
-                startActivity(intent)
-            } catch (e: Exception) {
+                if (!FreeformWindowLauncher.launchInFreeformWindow(this, intent, "Calculator")) {
+                    Toast.makeText(this, "Standalone calculator package not discovered.", Toast.LENGTH_SHORT).show()
+                }
+            } catch (_: Exception) {
                 Toast.makeText(this, "Standalone calculator package not discovered.", Toast.LENGTH_SHORT).show()
             }
         }
@@ -2022,19 +2263,10 @@ class FloatingService : Service() {
 
     private fun launchChrome() {
         val pm = packageManager
-        var intent = pm.getLaunchIntentForPackage("com.android.chrome")
-        if (intent != null) {
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(intent)
-        } else {
-            try {
-                intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com")).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                startActivity(intent)
-            } catch (e: Exception) {
-                Toast.makeText(this, "Web browser activity not found.", Toast.LENGTH_SHORT).show()
-            }
+        val intent = pm.getLaunchIntentForPackage("com.android.chrome")
+            ?: Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com"))
+        if (!FreeformWindowLauncher.launchInFreeformWindow(this, intent, "Chrome")) {
+            Toast.makeText(this, "Web browser activity not found.", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -2042,8 +2274,7 @@ class FloatingService : Service() {
         val pm = packageManager
         val intent = pm.getLaunchIntentForPackage("com.whatsapp")
         if (intent != null) {
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(intent)
+            FreeformWindowLauncher.launchInFreeformWindow(this, intent, "WhatsApp")
         } else {
             Toast.makeText(this, "WhatsApp package is not configured on your emulator/device.", Toast.LENGTH_SHORT).show()
         }
@@ -2089,7 +2320,27 @@ class FloatingService : Service() {
     }
 
     private fun applyCustomizables() {
-        applyDotCustomizables()
+        val dotEnabled = prefs.getBoolean("floating_dot_enabled", true)
+        val sidebarEnabled = prefs.getBoolean("sidebar_enabled", true)
+        if (!dotEnabled && !sidebarEnabled) {
+            isRunning = false
+            detachFloatingDot()
+            sidebarView?.let {
+                try {
+                    windowManager.removeView(it)
+                } catch (_: Exception) {}
+                sidebarView = null
+                sidebarParams = null
+            }
+            stopSelf()
+            return
+        }
+
+        if (dotEnabled) {
+            ensureFloatingDotAttached()
+        } else {
+            detachFloatingDot()
+        }
         setupSidebarWidget()
     }
 
@@ -2306,6 +2557,8 @@ class FloatingService : Service() {
 
         screenTextCopyController?.release()
         screenTextCopyController = null
+        screenTranslateController?.release()
+        screenTranslateController = null
 
         popupSessionJob?.cancel()
         popupSessionJob = null

@@ -1,24 +1,34 @@
 package com.example
 
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
-import android.os.Build
+import android.graphics.Typeface
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
+import android.text.TextUtils
 import android.util.AttributeSet
-import android.util.DisplayMetrics
+import android.util.TypedValue
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
-import android.view.WindowManager
 import kotlin.math.abs
 import kotlin.math.hypot
 
 /**
- * Transparent, touch-aware overlay view aligned 1:1 over the live screen.
- * Renders subtle bounds over detected English/Hindi OCR text lines and bright highlights
- * over user-selected text without drawing or replacing the underlying screen with a bitmap.
+ * Transparent overlay view aligned 1:1 over the live screen with ZERO unselected boxes,
+ * ZERO borders, and ZERO strokes.
+ *
+ * - COPY mode: Invisible hit-areas over each text Rect; tapping softly highlights ONLY the
+ *   tapped text (borderless tint) and anchors a floating "Copy" pill beside it.
+ * - TRANSLATE mode: Automatically renders clean, borderless, background-matched translated
+ *   text pills directly over each original text Rect in place; tapping any translated label
+ *   copies that translated text immediately.
  */
 class InlineTextSelectionView @JvmOverloads constructor(
     context: Context,
@@ -26,174 +36,349 @@ class InlineTextSelectionView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    data class MappedBlock(
-        val block: ScreenOcrHelper.OcrTextBlock,
+    enum class DisplayMode {
+        COPY,
+        TRANSLATE
+    }
+
+    data class MappedCopyNode(
+        val node: SmartDotAccessibilityService.ScreenTextNode,
         val rect: RectF
     )
 
-    private var blocks: List<ScreenOcrHelper.OcrTextBlock> = emptyList()
-    private var captureWidth: Int = 1
-    private var captureHeight: Int = 1
+    data class RenderedTranslatedLabel(
+        val item: ScreenTranslateHelper.TranslatedNode,
+        val rect: RectF,
+        val layout: StaticLayout,
+        val textOffsetY: Float
+    )
+
+    private var mode: DisplayMode = DisplayMode.COPY
+    private var rawNodes: List<SmartDotAccessibilityService.ScreenTextNode> = emptyList()
+    private var translatedItems: List<ScreenTranslateHelper.TranslatedNode> = emptyList()
     private var accentColor: Int = Color.parseColor("#00E5FF")
 
-    private val selectedIds = linkedSetOf<Int>()
-    private var lastSelectedBlockId: Int? = null
-    private val mappedBlocks = mutableListOf<MappedBlock>()
+    private var selectedCopyNodeIds = LinkedHashSet<Int>()
+    private var flashedTranslateNodeId: Int? = null
+    private val mappedCopyNodes = mutableListOf<MappedCopyNode>()
+    private val renderedTranslatedLabels = mutableListOf<RenderedTranslatedLabel>()
 
-    private var onSelectionChanged: ((selectedIds: Set<Int>, anchorRect: RectF?) -> Unit)? = null
+    private var onCopySelectionChanged: ((selectedText: String, anchorRect: RectF?) -> Unit)? = null
+    private var onTranslatedNodeTapped: ((item: ScreenTranslateHelper.TranslatedNode) -> Unit)? = null
     private var onScrollDismissRequested: (() -> Unit)? = null
 
     private val density = context.resources.displayMetrics.density
-    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat().coerceAtLeast(16f * density)
+    private val tapTouchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat().coerceIn(8f * density, 14f * density)
     private val scrollDismissThresholdPx = 72f * density
-    private val cornerRadius = 5f * density
-    private val boxPad = 2.5f * density
+    private val cornerRadius = 6f * density
+    private val labelPadX = 2.5f * density
+    private val labelPadY = 1.5f * density
     private val exactPad = 4f * density
     private val nearPad = 10f * density
+    private val highlighterHitRadius = 8f * density
 
-    private val unselectedFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-        color = Color.argb(20, 255, 255, 255)
-    }
-    private val unselectedStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 1.2f * density
-        color = Color.argb(120, 226, 232, 240)
-    }
-    private val selectedFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    // Zero stroke/border paints for text outlines — only soft borderless fills and live highlighter marker trail.
+    private val selectedHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
     }
-    private val selectedStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val highlighterStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 2.2f * density
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        strokeWidth = 24f * density
+    }
+    private val translatedLabelBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
+    private val baseTranslateTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = Typeface.DEFAULT_BOLD
     }
 
+    private val highlighterPath = Path()
+    private var isHighlighterDragging = false
     private var downX = 0f
     private var downY = 0f
-    private var downHitBlockId: Int? = null
+    private var lastTouchX = 0f
+    private var lastTouchY = 0f
+    private var downHitNodeId: Int? = null
+
+    private val clearFlashRunnable = Runnable {
+        flashedTranslateNodeId = null
+        invalidate()
+    }
 
     init {
         setWillNotDraw(false)
+        setBackgroundColor(Color.TRANSPARENT)
         isClickable = true
         isFocusable = true
     }
 
-    fun setOcrData(
-        blocks: List<ScreenOcrHelper.OcrTextBlock>,
-        captureWidth: Int,
-        captureHeight: Int,
+    fun configureCopyMode(
+        nodes: List<SmartDotAccessibilityService.ScreenTextNode>,
         accentColor: Int,
-        onSelectionChanged: (selectedIds: Set<Int>, anchorRect: RectF?) -> Unit,
+        onCopySelectionChanged: (selectedText: String, anchorRect: RectF?) -> Unit,
         onScrollDismissRequested: () -> Unit
     ) {
-        this.blocks = blocks
-        this.captureWidth = captureWidth.coerceAtLeast(1)
-        this.captureHeight = captureHeight.coerceAtLeast(1)
+        removeCallbacks(clearFlashRunnable)
+        this.mode = DisplayMode.COPY
+        this.rawNodes = nodes
+        this.translatedItems = emptyList()
         this.accentColor = accentColor
-        this.onSelectionChanged = onSelectionChanged
+        this.selectedCopyNodeIds.clear()
+        this.flashedTranslateNodeId = null
+        this.isHighlighterDragging = false
+        this.highlighterPath.reset()
+        this.onCopySelectionChanged = onCopySelectionChanged
+        this.onTranslatedNodeTapped = null
         this.onScrollDismissRequested = onScrollDismissRequested
-        this.selectedIds.clear()
-        this.lastSelectedBlockId = null
 
-        selectedFillPaint.color = Color.argb(
+        selectedHighlightPaint.color = Color.argb(
             82,
             Color.red(accentColor),
             Color.green(accentColor),
             Color.blue(accentColor)
         )
-        selectedStrokePaint.color = accentColor
+        highlighterStrokePaint.color = Color.argb(
+            96,
+            Color.red(accentColor),
+            Color.green(accentColor),
+            Color.blue(accentColor)
+        )
 
-        recomputeMappedRects()
+        recomputeAllRects()
         invalidate()
     }
 
-    fun getSelectedIds(): Set<Int> = selectedIds.toSet()
+    fun configureTranslateMode(
+        accentColor: Int,
+        onTranslatedNodeTapped: (item: ScreenTranslateHelper.TranslatedNode) -> Unit,
+        onScrollDismissRequested: () -> Unit
+    ) {
+        removeCallbacks(clearFlashRunnable)
+        this.mode = DisplayMode.TRANSLATE
+        this.rawNodes = emptyList()
+        this.translatedItems = emptyList()
+        this.accentColor = accentColor
+        this.selectedCopyNodeIds.clear()
+        this.flashedTranslateNodeId = null
+        this.isHighlighterDragging = false
+        this.highlighterPath.reset()
+        this.onCopySelectionChanged = null
+        this.onTranslatedNodeTapped = onTranslatedNodeTapped
+        this.onScrollDismissRequested = onScrollDismissRequested
 
-    fun getMappedRectsSnapshot(): List<MappedBlock> = mappedBlocks.toList()
+        selectedHighlightPaint.color = Color.argb(
+            76,
+            Color.red(accentColor),
+            Color.green(accentColor),
+            Color.blue(accentColor)
+        )
 
-    fun getMappedRectForBlock(blockId: Int): RectF? =
-        mappedBlocks.firstOrNull { it.block.id == blockId }?.rect?.let { RectF(it) }
+        recomputeAllRects()
+        invalidate()
+    }
+
+    fun setBulkTranslations(items: List<ScreenTranslateHelper.TranslatedNode>) {
+        this.mode = DisplayMode.TRANSLATE
+        this.translatedItems = items
+        this.flashedTranslateNodeId = null
+        recomputeAllRects()
+        invalidate()
+    }
+
+    fun getSelectedCopyNodes(): List<SmartDotAccessibilityService.ScreenTextNode> {
+        if (selectedCopyNodeIds.isEmpty()) return emptyList()
+        return rawNodes.filter { it.id in selectedCopyNodeIds }
+    }
+
+    fun getSelectedCopyNode(): SmartDotAccessibilityService.ScreenTextNode? =
+        getSelectedCopyNodes().firstOrNull()
+
+    fun getCombinedSelectedCopyText(): String =
+        getSelectedCopyNodes().joinToString(" ") { it.text }
+
+    fun isHighlighterTrailActive(): Boolean = isHighlighterDragging
+
+    fun getMappedRectForCopyNode(nodeId: Int): RectF? =
+        mappedCopyNodes.firstOrNull { it.node.id == nodeId }?.rect?.let { RectF(it) }
+
+    fun getRenderedTranslatedLabelsSnapshot(): List<RenderedTranslatedLabel> =
+        renderedTranslatedLabels.toList()
+
+    fun getMappedCopyNodesSnapshot(): List<MappedCopyNode> = mappedCopyNodes.toList()
 
     fun clearSelection() {
-        if (selectedIds.isEmpty()) return
-        selectedIds.clear()
-        lastSelectedBlockId = null
+        if (selectedCopyNodeIds.isEmpty() && !isHighlighterDragging) return
+        selectedCopyNodeIds.clear()
+        isHighlighterDragging = false
+        highlighterPath.reset()
         invalidate()
-        onSelectionChanged?.invoke(emptySet(), null)
+        onCopySelectionChanged?.invoke("", null)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        recomputeMappedRects()
-        if (selectedIds.isNotEmpty()) {
-            onSelectionChanged?.invoke(selectedIds.toSet(), computeSelectionAnchorRect())
+        recomputeAllRects()
+        if (mode == DisplayMode.COPY && selectedCopyNodeIds.isNotEmpty() && !isHighlighterDragging) {
+            emitCurrentSelectionToController()
         }
     }
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
-        recomputeMappedRects()
-        if (changed && selectedIds.isNotEmpty()) {
-            onSelectionChanged?.invoke(selectedIds.toSet(), computeSelectionAnchorRect())
+        recomputeAllRects()
+        if (changed && mode == DisplayMode.COPY && selectedCopyNodeIds.isNotEmpty() && !isHighlighterDragging) {
+            emitCurrentSelectionToController()
         }
     }
 
-    internal fun recomputeMappedRects() {
-        mappedBlocks.clear()
-        if (blocks.isEmpty()) return
+    internal fun recomputeAllRects() {
+        mappedCopyNodes.clear()
+        renderedTranslatedLabels.clear()
 
-        val (screenW, screenH) = resolveCurrentScreenSize()
         val loc = IntArray(2)
         getLocationOnScreen(loc)
 
-        for (block in blocks) {
-            val mapped = ScreenOcrHelper.mapCaptureRectToOverlayLocal(
-                captureRect = block.boundingBox,
-                captureWidth = captureWidth,
-                captureHeight = captureHeight,
-                screenWidth = screenW,
-                screenHeight = screenH,
-                overlayScreenOffsetX = loc[0],
-                overlayScreenOffsetY = loc[1]
+        if (mode == DisplayMode.COPY) {
+            for (node in rawNodes) {
+                val local = RectF(
+                    node.boundsInScreen.left.toFloat() - loc[0],
+                    node.boundsInScreen.top.toFloat() - loc[1],
+                    node.boundsInScreen.right.toFloat() - loc[0],
+                    node.boundsInScreen.bottom.toFloat() - loc[1]
+                )
+                mappedCopyNodes.add(MappedCopyNode(node, local))
+            }
+            return
+        }
+
+        if (translatedItems.isEmpty()) return
+
+        val (bgColor, textColor) = resolveAdaptiveLabelColors()
+        translatedLabelBgPaint.color = bgColor
+        val labelPaint = TextPaint(baseTranslateTextPaint).apply {
+            color = textColor
+        }
+
+        for (item in translatedItems) {
+            val bounds = item.node.boundsInScreen
+            val local = RectF(
+                bounds.left.toFloat() - loc[0],
+                bounds.top.toFloat() - loc[1],
+                bounds.right.toFloat() - loc[0],
+                bounds.bottom.toFloat() - loc[1]
             )
-            // Keep tiny visual padding for clean rounded selection boxes around glyphs.
-            mapped.inset(-boxPad, -boxPad)
-            mappedBlocks.add(MappedBlock(block, mapped))
+            local.inset(-labelPadX, -labelPadY)
+
+            val availW = (local.width() - 4f * density).toInt().coerceAtLeast((24 * density).toInt())
+            val availH = (local.height() - 2f * density).coerceAtLeast(12f * density)
+
+            val layout = buildFittedStaticLayout(item.result.translatedText, labelPaint, availW, availH)
+            val textOffsetY = ((local.height() - layout.height) / 2f).coerceAtLeast(1f * density)
+
+            renderedTranslatedLabels.add(
+                RenderedTranslatedLabel(
+                    item = item,
+                    rect = local,
+                    layout = layout,
+                    textOffsetY = textOffsetY
+                )
+            )
         }
     }
 
-    private fun resolveCurrentScreenSize(): Pair<Int, Int> {
-        val wm = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
-        if (wm != null) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                val bounds = wm.maximumWindowMetrics.bounds
-                if (bounds.width() > 0 && bounds.height() > 0) {
-                    return bounds.width() to bounds.height()
-                }
-            } else {
-                val metrics = DisplayMetrics()
-                @Suppress("DEPRECATION")
-                wm.defaultDisplay?.getRealMetrics(metrics)
-                if (metrics.widthPixels > 0 && metrics.heightPixels > 0) {
-                    return metrics.widthPixels to metrics.heightPixels
-                }
-            }
+    private fun resolveAdaptiveLabelColors(): Pair<Int, Int> {
+        val isDarkMode = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+        return if (isDarkMode) {
+            Color.argb(246, 15, 23, 42) to Color.parseColor("#F8FAFC")
+        } else {
+            Color.argb(246, 250, 251, 252) to Color.parseColor("#0F172A")
         }
-        val fallbackW = width.takeIf { it > 0 } ?: captureWidth
-        val fallbackH = height.takeIf { it > 0 } ?: captureHeight
-        return fallbackW to fallbackH
+    }
+
+    private fun buildFittedStaticLayout(
+        text: String,
+        paint: TextPaint,
+        maxWidthPx: Int,
+        maxHeightPx: Float
+    ): StaticLayout {
+        val minTextSizePx = TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_SP,
+            8.5f,
+            resources.displayMetrics
+        ).coerceAtLeast(10f)
+        val maxCapPx = TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_SP,
+            20f,
+            resources.displayMetrics
+        )
+        val maxTextSizePx = (maxHeightPx * 0.78f).coerceIn(minTextSizePx, maxCapPx)
+
+        var currentSize = maxTextSizePx
+        var bestLayout: StaticLayout? = null
+
+        while (currentSize >= minTextSizePx) {
+            paint.textSize = currentSize
+            val candidate = createStaticLayout(text, paint, maxWidthPx, maxLines = Int.MAX_VALUE)
+            bestLayout = candidate
+            if (candidate.height <= maxHeightPx + 2f) {
+                return candidate
+            }
+            currentSize -= 1.2f * density.coerceAtLeast(1f)
+        }
+
+        paint.textSize = minTextSizePx
+        val approxMaxLines = (maxHeightPx / (minTextSizePx * 1.15f)).toInt().coerceAtLeast(1)
+        return bestLayout?.let {
+            createStaticLayout(text, paint, maxWidthPx, maxLines = approxMaxLines)
+        } ?: createStaticLayout(text, paint, maxWidthPx, maxLines = approxMaxLines)
+    }
+
+    private fun createStaticLayout(
+        text: String,
+        paint: TextPaint,
+        maxWidthPx: Int,
+        maxLines: Int
+    ): StaticLayout {
+        return StaticLayout.Builder.obtain(text, 0, text.length, paint, maxWidthPx)
+            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+            .setIncludePad(false)
+            .setMaxLines(maxLines)
+            .setEllipsize(TextUtils.TruncateAt.END)
+            .build()
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        for (item in mappedBlocks) {
-            if (selectedIds.contains(item.block.id)) {
-                canvas.drawRoundRect(item.rect, cornerRadius, cornerRadius, selectedFillPaint)
-                canvas.drawRoundRect(item.rect, cornerRadius, cornerRadius, selectedStrokePaint)
-            } else {
-                canvas.drawRoundRect(item.rect, cornerRadius, cornerRadius, unselectedFillPaint)
-                canvas.drawRoundRect(item.rect, cornerRadius, cornerRadius, unselectedStrokePaint)
+
+        if (mode == DisplayMode.COPY) {
+            // Zero unselected borders/outlines — draw only highlighted selected words and active highlighter trail.
+            for (mapped in mappedCopyNodes) {
+                if (mapped.node.id in selectedCopyNodeIds) {
+                    canvas.drawRoundRect(mapped.rect, cornerRadius, cornerRadius, selectedHighlightPaint)
+                }
             }
+            if (isHighlighterDragging && !highlighterPath.isEmpty) {
+                canvas.drawPath(highlighterPath, highlighterStrokePaint)
+            }
+            return
+        }
+
+        val innerPadX = 2f * density
+        for (rendered in renderedTranslatedLabels) {
+            // Clean borderless pill matching background + fitted translated text inside Rect.
+            canvas.drawRoundRect(rendered.rect, cornerRadius, cornerRadius, translatedLabelBgPaint)
+            if (rendered.item.node.id == flashedTranslateNodeId) {
+                canvas.drawRoundRect(rendered.rect, cornerRadius, cornerRadius, selectedHighlightPaint)
+            }
+
+            val saveCount = canvas.save()
+            canvas.clipRect(rendered.rect)
+            canvas.translate(rendered.rect.left + innerPadX, rendered.rect.top + rendered.textOffsetY)
+            rendered.layout.draw(canvas)
+            canvas.restoreToCount(saveCount)
         }
     }
 
@@ -202,8 +387,39 @@ class InlineTextSelectionView @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN -> {
                 downX = event.x
                 downY = event.y
-                downHitBlockId = findTappedBlockId(downX, downY)
+                lastTouchX = event.x
+                lastTouchY = event.y
+                downHitNodeId = findTappedNodeId(downX, downY)
+                isHighlighterDragging = false
+                highlighterPath.reset()
                 return true
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                if (mode == DisplayMode.COPY) {
+                    val x = event.x
+                    val y = event.y
+                    if (!isHighlighterDragging) {
+                        val moved = hypot(x - downX, y - downY)
+                        if (moved >= tapTouchSlop) {
+                            isHighlighterDragging = true
+                            selectedCopyNodeIds.clear()
+                            onCopySelectionChanged?.invoke("", null)
+                            highlighterPath.moveTo(downX, downY)
+                            highlightWordsIntersectingSegment(downX, downY, x, y)
+                        }
+                    }
+                    if (isHighlighterDragging) {
+                        val midX = (lastTouchX + x) * 0.5f
+                        val midY = (lastTouchY + y) * 0.5f
+                        highlighterPath.quadTo(lastTouchX, lastTouchY, midX, midY)
+                        highlightWordsIntersectingSegment(lastTouchX, lastTouchY, x, y)
+                        lastTouchX = x
+                        lastTouchY = y
+                        invalidate()
+                    }
+                    return true
+                }
             }
 
             MotionEvent.ACTION_UP -> {
@@ -211,23 +427,77 @@ class InlineTextSelectionView @JvmOverloads constructor(
                 val dy = event.y - downY
                 val distance = hypot(dx, dy)
 
-                if (distance <= touchSlop) {
+                if (mode == DisplayMode.COPY) {
+                    if (isHighlighterDragging) {
+                        highlightWordsIntersectingSegment(lastTouchX, lastTouchY, event.x, event.y)
+                        highlighterPath.reset()
+                        isHighlighterDragging = false
+                        invalidate()
+
+                        if (selectedCopyNodeIds.isNotEmpty()) {
+                            emitCurrentSelectionToController()
+                        } else {
+                            onCopySelectionChanged?.invoke("", null)
+                            if (downHitNodeId == null &&
+                                abs(dy) >= scrollDismissThresholdPx &&
+                                abs(dy) > abs(dx) * 1.8f
+                            ) {
+                                onScrollDismissRequested?.invoke()
+                            }
+                        }
+                        return true
+                    }
+
+                    // Single tap without drag -> select ONLY that single word.
                     performClick()
-                    val hitId = findTappedBlockId(event.x, event.y) ?: downHitBlockId
+                    val hitId = findTappedNodeId(event.x, event.y) ?: downHitNodeId
                     if (hitId != null) {
-                        toggleBlockSelection(hitId)
-                    } else if (selectedIds.isNotEmpty()) {
+                        if (selectedCopyNodeIds.size == 1 && selectedCopyNodeIds.contains(hitId)) {
+                            selectedCopyNodeIds.clear()
+                            invalidate()
+                            onCopySelectionChanged?.invoke("", null)
+                        } else {
+                            selectedCopyNodeIds.clear()
+                            selectedCopyNodeIds.add(hitId)
+                            invalidate()
+                            emitCurrentSelectionToController()
+                        }
+                    } else if (selectedCopyNodeIds.isNotEmpty()) {
                         clearSelection()
                     }
                     return true
                 }
 
-                // If the user tries to scroll/swipe across empty screen area, dismiss overlay cleanly
-                // so normal touch scrolling is never trapped.
-                if (downHitBlockId == null && abs(dy) >= scrollDismissThresholdPx) {
+                if (distance <= tapTouchSlop) {
+                    performClick()
+                    val hitId = findTappedNodeId(event.x, event.y) ?: downHitNodeId
+                    if (hitId != null) {
+                        val tapped = renderedTranslatedLabels.firstOrNull { it.item.node.id == hitId }?.item
+                        if (tapped != null) {
+                            flashedTranslateNodeId = hitId
+                            invalidate()
+                            removeCallbacks(clearFlashRunnable)
+                            postDelayed(clearFlashRunnable, 220L)
+                            onTranslatedNodeTapped?.invoke(tapped)
+                        }
+                    }
+                    return true
+                }
+
+                // Dismiss cleanly if user swipes across empty screen area so scrolling is never trapped.
+                if (downHitNodeId == null && abs(dy) >= scrollDismissThresholdPx) {
                     onScrollDismissRequested?.invoke()
                     return true
                 }
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                if (isHighlighterDragging) {
+                    isHighlighterDragging = false
+                    highlighterPath.reset()
+                    invalidate()
+                }
+                return true
             }
         }
         return super.onTouchEvent(event)
@@ -237,42 +507,76 @@ class InlineTextSelectionView @JvmOverloads constructor(
         return super.performClick()
     }
 
-    private fun toggleBlockSelection(blockId: Int) {
-        if (selectedIds.contains(blockId)) {
-            selectedIds.remove(blockId)
-            if (lastSelectedBlockId == blockId) {
-                lastSelectedBlockId = selectedIds.lastOrNull()
-            }
-        } else {
-            selectedIds.add(blockId)
-            lastSelectedBlockId = blockId
+    private fun emitCurrentSelectionToController() {
+        val selectedMapped = mappedCopyNodes.filter { it.node.id in selectedCopyNodeIds }
+        if (selectedMapped.isEmpty()) {
+            onCopySelectionChanged?.invoke("", null)
+            return
         }
-        invalidate()
-        onSelectionChanged?.invoke(selectedIds.toSet(), computeSelectionAnchorRect())
+        val combinedText = selectedMapped.joinToString(" ") { it.node.text }
+        val unionRect = RectF(selectedMapped[0].rect)
+        for (i in 1 until selectedMapped.size) {
+            unionRect.union(selectedMapped[i].rect)
+        }
+        onCopySelectionChanged?.invoke(combinedText, unionRect)
     }
 
-    private fun computeSelectionAnchorRect(): RectF? {
-        if (selectedIds.isEmpty()) return null
-        val union = RectF()
-        var initialized = false
-        for (item in mappedBlocks) {
-            if (selectedIds.contains(item.block.id)) {
-                if (!initialized) {
-                    union.set(item.rect)
-                    initialized = true
+    private fun highlightWordsIntersectingSegment(x1: Float, y1: Float, x2: Float, y2: Float) {
+        for (mapped in mappedCopyNodes) {
+            if (segmentIntersectsRect(x1, y1, x2, y2, mapped.rect, highlighterHitRadius)) {
+                selectedCopyNodeIds.add(mapped.node.id)
+            }
+        }
+    }
+
+    private fun segmentIntersectsRect(
+        x1: Float,
+        y1: Float,
+        x2: Float,
+        y2: Float,
+        rect: RectF,
+        expandPx: Float
+    ): Boolean {
+        val left = rect.left - expandPx
+        val top = rect.top - expandPx
+        val right = rect.right + expandPx
+        val bottom = rect.bottom + expandPx
+
+        val dx = x2 - x1
+        val dy = y2 - y1
+        var t0 = 0f
+        var t1 = 1f
+
+        val p = floatArrayOf(-dx, dx, -dy, dy)
+        val q = floatArrayOf(x1 - left, right - x1, y1 - top, bottom - y1)
+
+        for (i in 0 until 4) {
+            if (p[i] == 0f) {
+                if (q[i] < 0f) return false
+            } else {
+                val r = q[i] / p[i]
+                if (p[i] < 0f) {
+                    if (r > t1) return false
+                    if (r > t0) t0 = r
                 } else {
-                    union.union(item.rect)
+                    if (r < t0) return false
+                    if (r < t1) t1 = r
                 }
             }
         }
-        return if (initialized) union else null
+        return t0 <= t1
     }
 
-    private fun findTappedBlockId(x: Float, y: Float): Int? {
+    private fun findTappedNodeId(x: Float, y: Float): Int? {
+        val candidates: List<Pair<Int, RectF>> = if (mode == DisplayMode.COPY) {
+            mappedCopyNodes.map { it.node.id to it.rect }
+        } else {
+            renderedTranslatedLabels.map { it.item.node.id to it.rect }
+        }
+
         var bestId: Int? = null
         var bestArea = Float.MAX_VALUE
-        for (item in mappedBlocks) {
-            val r = item.rect
+        for ((id, r) in candidates) {
             if (x >= r.left - exactPad &&
                 x <= r.right + exactPad &&
                 y >= r.top - exactPad &&
@@ -281,7 +585,7 @@ class InlineTextSelectionView @JvmOverloads constructor(
                 val area = r.width().coerceAtLeast(1f) * r.height().coerceAtLeast(1f)
                 if (area < bestArea) {
                     bestArea = area
-                    bestId = item.block.id
+                    bestId = id
                 }
             }
         }
@@ -289,8 +593,7 @@ class InlineTextSelectionView @JvmOverloads constructor(
 
         var closestId: Int? = null
         var minDistSq = Float.MAX_VALUE
-        for (item in mappedBlocks) {
-            val r = item.rect
+        for ((id, r) in candidates) {
             if (x >= r.left - nearPad &&
                 x <= r.right + nearPad &&
                 y >= r.top - nearPad &&
@@ -301,7 +604,7 @@ class InlineTextSelectionView @JvmOverloads constructor(
                 val dSq = (x - cx) * (x - cx) + (y - cy) * (y - cy)
                 if (dSq < minDistSq) {
                     minDistSq = dSq
-                    closestId = item.block.id
+                    closestId = id
                 }
             }
         }

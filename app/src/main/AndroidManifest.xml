@@ -3,9 +3,9 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <queries>
@@ -20,6 +20,11 @@
             <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="http" />
         </intent>
+        <!-- Intent query for App Launcher tab to list installed launchable apps (Play-compliant, no QUERY_ALL_PACKAGES) -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
         <!-- Intent queries for opening standard mail services -->
         <intent>
             <action android:name="android.intent.action.SENDTO" />
@@ -33,6 +38,7 @@
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:resizeableActivity="true"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.MyApplication">
@@ -48,15 +54,6 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".ScreenCaptureConsentActivity"
-            android:exported="false"
-            android:excludeFromRecents="true"
-            android:finishOnTaskLaunch="true"
-            android:launchMode="singleTask"
-            android:taskAffinity=""
-            android:theme="@style/Theme.TransparentConsent" />
-
         <service
             android:name=".FloatingService"
             android:enabled="true"
@@ -66,12 +63,6 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Floating accessibility widget to trigger user shortcuts and control shortcuts from anywhere on screen." />
         </service>
-
-        <service
-            android:name=".ScreenCaptureService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
 
         <service
             android:name=".SmartDotAccessibilityService"

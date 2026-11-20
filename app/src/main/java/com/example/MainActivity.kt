@@ -194,7 +194,10 @@ class MainActivity : ComponentActivity() {
                             onRequestOverlay = { requestOverlayPermission() },
                             onRequestNotification = { requestNotificationPermission() },
                             onRequestAccessibility = { triggerAccessibilityPermission() },
-                            onToggleService = { toggleFloatingService() }
+                            onToggleService = { toggleFloatingService() },
+                            onSyncOverlayToggles = { dotOn, sidebarOn ->
+                                syncOverlayToggles(dotOn, sidebarOn)
+                            }
                         )
                     } else {
                         AboutAppScreen(
@@ -260,6 +263,45 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun syncOverlayToggles(dotEnabled: Boolean, sidebarEnabled: Boolean) {
+        val prefs = getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE)
+        prefs.edit()
+            .putBoolean("floating_dot_enabled", dotEnabled)
+            .putBoolean("sidebar_enabled", sidebarEnabled)
+            .apply()
+
+        val serviceIntent = Intent(this, FloatingService::class.java)
+        if (!dotEnabled && !sidebarEnabled) {
+            if (FloatingService.isRunning) {
+                stopService(serviceIntent)
+                Toast.makeText(this, "Floating Shortcuts service stopped.", Toast.LENGTH_SHORT).show()
+            }
+            isServiceRunningState.value = false
+            return
+        }
+
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "Overlay permission is required first!", Toast.LENGTH_LONG).show()
+            requestOverlayPermission()
+            return
+        }
+
+        if (FloatingService.isRunning) {
+            val updateIntent = Intent(FloatingService.ACTION_UPDATE_SETTINGS).apply {
+                setPackage(packageName)
+            }
+            sendBroadcast(updateIntent)
+            isServiceRunningState.value = true
+        } else {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !checkNotificationPermission()) {
+                requestNotificationPermission()
+            }
+            ContextCompat.startForegroundService(this, serviceIntent)
+            isServiceRunningState.value = true
+            Toast.makeText(this, "Floating Shortcuts service active.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun toggleFloatingService() {
         if (!Settings.canDrawOverlays(this)) {
             Toast.makeText(this, "Overlay permission is required first!", Toast.LENGTH_LONG).show()
@@ -278,6 +320,12 @@ class MainActivity : ComponentActivity() {
             isServiceRunningState.value = false
             Toast.makeText(this, "Floating Shortcuts service stopped.", Toast.LENGTH_SHORT).show()
         } else {
+            val prefs = getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE)
+            val dotEnabled = prefs.getBoolean("floating_dot_enabled", true)
+            val sidebarEnabled = prefs.getBoolean("sidebar_enabled", true)
+            if (!dotEnabled && !sidebarEnabled) {
+                prefs.edit().putBoolean("floating_dot_enabled", true).apply()
+            }
             ContextCompat.startForegroundService(this, serviceIntent)
             isServiceRunningState.value = true
             Toast.makeText(this, "Floating Shortcuts service active.", Toast.LENGTH_SHORT).show()
@@ -295,13 +343,16 @@ fun SmartDotScreen(
     onRequestOverlay: () -> Unit,
     onRequestNotification: () -> Unit,
     onRequestAccessibility: () -> Unit,
-    onToggleService: () -> Unit
+    onToggleService: () -> Unit,
+    onSyncOverlayToggles: (Boolean, Boolean) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
 
     // Retrieve customizable preferences
     val prefs = remember { context.getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE) }
+    var dotEnabled by remember { mutableStateOf(prefs.getBoolean("floating_dot_enabled", true)) }
+    var sidebarEnabled by remember { mutableStateOf(prefs.getBoolean("sidebar_enabled", true)) }
     var dotColor by remember { mutableStateOf(prefs.getString("dot_color", "#00E5FF") ?: "#00E5FF") }
     var dotSize by remember { mutableStateOf(prefs.getInt("dot_size", 56)) }
     var dotOpacity by remember { mutableStateOf(prefs.getFloat("dot_transparency", 0.9f)) }
@@ -318,6 +369,11 @@ fun SmartDotScreen(
     var menuHeight by remember { mutableStateOf(prefs.getInt("menu_height_dp", 460)) }
     var menuGridRows by remember { mutableStateOf(prefs.getInt("menu_grid_rows", 4)) }
     var menuGridCols by remember { mutableStateOf(prefs.getInt("menu_grid_cols", 3)) }
+
+    LaunchedEffect(isServiceRunning) {
+        dotEnabled = prefs.getBoolean("floating_dot_enabled", true)
+        sidebarEnabled = prefs.getBoolean("sidebar_enabled", true)
+    }
 
     fun updateServiceStyle() {
         // Broadcaster action update
@@ -447,7 +503,7 @@ fun SmartDotScreen(
                 // 3. Accessibility Service Status (Required)
                 PermissionStatusRow(
                     title = "Accessibility Service (Required)",
-                    description = "Required to perform system shortcuts such as Back, Home, and Recent Apps.",
+                    description = "Required for system shortcuts (Back, Home, Recents) and zero-screenshot Screen Text Copy & Screen Translate.",
                     isGranted = hasAccessibilityPermission,
                     onGrantClick = onRequestAccessibility
                 )
@@ -464,7 +520,8 @@ fun SmartDotScreen(
                     1.dp,
                     if (isServiceRunning) Color(0xFF059669) else Color(0xFF334155),
                     RoundedCornerShape(16.dp)
-                ),
+                )
+                .testTag("service_status_card"),
             colors = CardDefaults.cardColors(
                 containerColor = if (isServiceRunning) Color(0xFF064E3B) else Color(0xFF1E293B)
             ),
@@ -477,11 +534,107 @@ fun SmartDotScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = if (isServiceRunning) "The widget is currently active on your screen" else "Start the Floating Shortcuts floating assistant",
+                    text = if (isServiceRunning) "The floating assistant is currently active on your screen" else "Start the Floating Shortcuts assistant",
                     style = MaterialTheme.typography.bodyLarge,
                     color = Color(0xFFE2E8F0),
-                    modifier = Modifier.padding(bottom = 16.dp)
+                    modifier = Modifier.padding(bottom = 14.dp)
                 )
+
+                val activeAccent = remember(dotColor) { Color(android.graphics.Color.parseColor(dotColor)) }
+                Surface(
+                    color = Color(0xFF0F172A).copy(alpha = 0.55f),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFF334155).copy(alpha = 0.8f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 16.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                                Text(
+                                    text = "Floating Dot",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFF8FAFC)
+                                )
+                                Text(
+                                    text = "Show movable floating dot overlay",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+                            Switch(
+                                checked = dotEnabled,
+                                onCheckedChange = { isChecked ->
+                                    dotEnabled = isChecked
+                                    prefs.edit().putBoolean("floating_dot_enabled", isChecked).apply()
+                                    onSyncOverlayToggles(isChecked, sidebarEnabled)
+                                },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.Black,
+                                    checkedTrackColor = activeAccent
+                                ),
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("switch_floating_dot")
+                            )
+                        }
+
+                        HorizontalDivider(
+                            color = Color(0xFF334155).copy(alpha = 0.7f),
+                            thickness = 1.dp,
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        )
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                                Text(
+                                    text = "Edge Sidebar",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFF8FAFC)
+                                )
+                                Text(
+                                    text = "Show swipeable edge sidebar handle",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+                            Switch(
+                                checked = sidebarEnabled,
+                                onCheckedChange = { isChecked ->
+                                    sidebarEnabled = isChecked
+                                    prefs.edit().putBoolean("sidebar_enabled", isChecked).apply()
+                                    onSyncOverlayToggles(dotEnabled, isChecked)
+                                },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.Black,
+                                    checkedTrackColor = activeAccent
+                                ),
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("switch_edge_sidebar")
+                            )
+                        }
+                    }
+                }
 
                 Button(
                     onClick = onToggleService,
@@ -493,6 +646,7 @@ fun SmartDotScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(52.dp)
+                        .testTag("toggle_service_button")
                 ) {
                     Icon(
                         imageVector = if (isServiceRunning) Icons.Default.Warning else Icons.Default.PlayArrow,
@@ -500,7 +654,7 @@ fun SmartDotScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (isServiceRunning) "MANAGE SMART DOT SERVICE" else "ACTIVATE FLOATING DOT",
+                        text = if (isServiceRunning) "STOP FLOATING SERVICE" else "ACTIVATE FLOATING SERVICE",
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp
                     )
@@ -508,7 +662,7 @@ fun SmartDotScreen(
 
                 if (isServiceRunning) {
                     Text(
-                        text = "Hint: You can drag the dot freely, tap on it to launch quick toggles or return back to this settings menu.",
+                        text = "Tip: Both Floating Dot and Edge Sidebar open the exact same shortcuts, apps in floating windows, Screen Text Copy, and Screen Translate.",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color(0xFFA7F3D0),
                         modifier = Modifier.padding(top = 10.dp)
@@ -747,7 +901,6 @@ fun SmartDotScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         // 2. Sidebar Settings Card
-        var sidebarEnabled by remember { mutableStateOf(prefs.getBoolean("sidebar_enabled", true)) }
         var sidebarEdge by remember { mutableStateOf(prefs.getString("sidebar_edge", "Right") ?: "Right") }
         var sidebarHeight by remember { mutableStateOf(prefs.getInt("sidebar_height", 130)) }
         var sidebarWidth by remember { mutableStateOf(prefs.getInt("sidebar_width", 14)) }
@@ -801,7 +954,7 @@ fun SmartDotScreen(
                         onCheckedChange = { isChecked ->
                             sidebarEnabled = isChecked
                             prefs.edit().putBoolean("sidebar_enabled", isChecked).apply()
-                            updateServiceStyle()
+                            onSyncOverlayToggles(dotEnabled, isChecked)
                         }
                     )
                 }
@@ -1650,6 +1803,7 @@ private fun getActionName(actionId: String): String {
         "recent_apps" -> "Recents"
         "screenshot" -> "Screenshot"
         "screen_copy" -> "Text Copy"
+        "screen_translate" -> "Screen Translate"
         "screen_record" -> "Screen Rec"
         "notifications" -> "Notif"
         "quick_settings" -> "Quick Set"
@@ -1699,7 +1853,8 @@ val ACTION_LIST = listOf(
     AvailableAction("back", "Back", "System Shortcuts", "Go back to previous screen"),
     AvailableAction("recent_apps", "Recent Apps", "System Shortcuts", "Open system Recents screen"),
     AvailableAction("screenshot", "Screenshot", "System Shortcuts", "Capture system screen shot"),
-    AvailableAction("screen_copy", "Screen Text Copy", "System Shortcuts", "Capture screen and copy English or Hindi text via OCR"),
+    AvailableAction("screen_copy", "Screen Text Copy", "System Shortcuts", "Tap any visible text on screen to copy instantly"),
+    AvailableAction("screen_translate", "Screen Translate", "System Shortcuts", "Tap any text on screen for instant offline translation"),
     AvailableAction("screen_record", "Screen Record", "System Shortcuts", "Trigger device screen recorder"),
     AvailableAction("notifications", "Notifications", "System Shortcuts", "Expand status bar notification panel"),
     AvailableAction("quick_settings", "Quick Settings", "System Shortcuts", "Expand status bar quick settings panel"),

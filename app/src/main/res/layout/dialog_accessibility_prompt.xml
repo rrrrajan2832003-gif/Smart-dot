@@ -28,7 +28,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Accessibility permission is required for system navigation commands (Back, Home, Recents, Notifications, and Quick Settings).\n\nEnable 'Floating Shortcuts Accessibility Service' in settings?"
+            android:text="Accessibility permission lets Floating Shortcuts trigger system navigation (Back, Home, Recents, Notifications) and read visible on-screen text elements for instant Screen Text Copy and Screen Translate without taking screenshots.\n\nEnable 'Floating Shortcuts' in Accessibility settings?"
             android:textColor="#CBD5E1"
             android:textSize="14sp"
             android:layout_marginBottom="24dp"

@@ -5,14 +5,14 @@
     android:layout_height="match_parent"
     android:background="@android:color/transparent">
 
-    <!-- Full-screen transparent selection canvas aligned 1:1 over live screen -->
+    <!-- Full-screen completely transparent interactive canvas aligned 1:1 over live screen -->
     <com.example.InlineTextSelectionView
         android:id="@+id/inline_ocr_selection_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:contentDescription="Transparent screen text selection overlay" />
+        android:contentDescription="Transparent screen text overlay" />
 
-    <!-- Compact Top-Right Controls Pill (Rescan + Close) -->
+    <!-- Compact Top-Right Controls Pill (Language Switcher in Translate mode + Rescan + Close) -->
     <LinearLayout
         android:id="@+id/inline_ocr_controls_pill"
         android:layout_width="wrap_content"
@@ -23,8 +23,25 @@
         android:elevation="8dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingStart="4dp"
+        android:paddingStart="6dp"
         android:paddingEnd="8dp">
+
+        <TextView
+            android:id="@+id/btn_inline_target_lang"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:minWidth="48dp"
+            android:paddingStart="10dp"
+            android:paddingEnd="8dp"
+            android:text="Hindi ▾"
+            android:textColor="#00E5FF"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
 
         <ImageButton
             android:id="@+id/btn_inline_ocr_rescan"
@@ -67,7 +84,38 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- Floating Copy Action Pill anchored next to the selected text -->
+    <!-- Compact In-Overlay Language Picker Dropdown for Screen Translate -->
+    <LinearLayout
+        android:id="@+id/inline_lang_dropdown"
+        android:layout_width="160dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="62dp"
+        android:layout_marginEnd="12dp"
+        android:elevation="12dp"
+        android:orientation="vertical"
+        android:padding="6dp"
+        android:visibility="gone" />
+
+    <!-- Brief status pill while bulk offline translation prepares/runs -->
+    <TextView
+        android:id="@+id/tv_inline_status_pill"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="66dp"
+        android:elevation="9dp"
+        android:paddingStart="14dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="14dp"
+        android:paddingBottom="6dp"
+        android:text="@string/screen_translate_translating"
+        android:textColor="#F8FAFC"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+    <!-- Floating Copy Button Pill anchored next to the tapped text in Screen Text Copy mode -->
     <LinearLayout
         android:id="@+id/btn_inline_ocr_copy"
         android:layout_width="wrap_content"

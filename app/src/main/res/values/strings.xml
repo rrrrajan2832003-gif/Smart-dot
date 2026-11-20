@@ -1,17 +1,26 @@
 <resources>
     <string name="app_name">Floating Shortcuts</string>
-    <string name="accessibility_service_desc">Enables the floating assistant dot overlay menu to trigger system navigation actions such as Back, Home, Recent Apps, and Lock Screen.</string>
-    <string name="screen_copy_button_label">Copy Screen Text (OCR)</string>
+    <string name="accessibility_service_desc">Enables the floating assistant overlay to perform system navigation (Back, Home, Recents) and read visible on-screen text for instant Screen Text Copy and offline Screen Translate without taking screenshots.</string>
+    <string name="screen_copy_button_label">Copy Screen Text</string>
     <string name="screen_copy_title">Screen Text Copy</string>
     <string name="screen_copy_action">Copy</string>
     <string name="screen_copy_rescan">Rescan screen</string>
     <string name="screen_copy_close">Close</string>
     <string name="screen_copy_scanning">Scanning screen text...</string>
     <string name="screen_copy_no_text">No readable text detected on screen.</string>
-    <string name="screen_copy_protected_screen">This screen appears protected (FLAG_SECURE) or blank. Screen text cannot be captured.</string>
-    <string name="screen_copy_permission_denied">Screen capture permission was canceled.</string>
+    <string name="screen_copy_copied">Copied</string>
+    <string name="screen_copy_accessibility_required">Enable Accessibility Service for Floating Shortcuts to read screen text.</string>
     <string name="screen_copy_rotated">Screen rotated. Selection dismissed to keep text aligned.</string>
     <string name="screen_copy_scroll_dismissed">Text selection closed so you can scroll.</string>
-    <string name="screen_capture_notification_title">Screen Text Copy Active</string>
-    <string name="screen_capture_notification_text">Capturing current screen frame for OCR text extraction...</string>
+    <string name="screen_translate_button_label">Translate Current Screen</string>
+    <string name="screen_translate_translating">Translating...</string>
+    <string name="screen_translate_downloading_model">Preparing offline translation model...</string>
+    <string name="screen_translate_no_text">No translatable text detected on screen.</string>
+    <string name="screen_translate_hint">Tap any highlighted text to translate</string>
+    <string name="freeform_prompt_title">Enable Freeform Floating Windows</string>
+    <string name="freeform_prompt_message">Freeform Multi-Window is turned off in Developer Options.\n\nTo open apps in movable &amp; resizable floating windows (drag the top-center bar to move or drag any corner to resize):\n1. Open Developer Options\n2. Enable \"Enable freeform windows\" (and \"Force activities to be resizable\")</string>
+    <string name="freeform_prompt_open_dev_options">Open Developer Options</string>
+    <string name="freeform_prompt_dont_ask">Don\'t Ask Again</string>
+    <string name="freeform_enable_toast">Turn on \"Enable freeform windows\" in Developer Options for movable &amp; resizable floating windows.</string>
+    <string name="freeform_unlock_dev_options_toast">Open Settings &gt; About phone and tap Build number 7 times to unlock Developer Options.</string>
 </resources>

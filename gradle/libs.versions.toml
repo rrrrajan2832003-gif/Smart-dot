@@ -40,6 +40,8 @@ firebaseBom = "34.12.0"
 secretsGradlePlugin = "2.0.1"
 mlkitTextRecognition = "16.0.1"
 mlkitTextRecognitionDevanagari = "16.0.1"
+mlkitTranslate = "17.0.3"
+mlkitLanguageId = "17.0.6"
 kotlinxCoroutinesPlayServices = "1.10.2"
 
 [libraries]
@@ -92,6 +94,8 @@ firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.r
 firebase-ai = { group = "com.google.firebase", name = "firebase-ai" }
 mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitTextRecognition" }
 mlkit-text-recognition-devanagari = { group = "com.google.mlkit", name = "text-recognition-devanagari", version.ref = "mlkitTextRecognitionDevanagari" }
+mlkit-translate = { group = "com.google.mlkit", name = "translate", version.ref = "mlkitTranslate" }
+mlkit-language-id = { group = "com.google.mlkit", name = "language-id", version.ref = "mlkitLanguageId" }
 kotlinx-coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "kotlinxCoroutinesPlayServices" }
 
 [plugins]
