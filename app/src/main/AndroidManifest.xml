@@ -14,7 +14,11 @@
         android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <queries>
         <!-- Intent queries for opening web links in browser -->
@@ -43,6 +47,9 @@
             <action android:name="android.intent.action.VOICE_COMMAND" />
         </intent>
         <intent>
+            <action android:name="android.intent.action.VOICE_ASSIST" />
+        </intent>
+        <intent>
             <action android:name="android.intent.action.ASSIST" />
         </intent>
         <intent>
@@ -54,6 +61,13 @@
             <data android:mimeType="image/*" />
         </intent>
         <package android:name="com.google.android.googlequicksearchbox" />
+        <package android:name="com.coloros.smartsidebar" />
+        <package android:name="com.oplus.smartsidebar" />
+        <package android:name="com.google.android.apps.bard" />
+        <package android:name="com.openai.chatgpt" />
+        <package android:name="com.android.chrome" />
+        <package android:name="com.google.android.youtube" />
+        <package android:name="com.whatsapp" />
     </queries>
 
     <application
@@ -78,11 +92,18 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".ScreenRecordPermissionActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.TransparentConsent" />
+
         <service
             android:name=".FloatingService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="specialUse|mediaProjection">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Floating accessibility widget to trigger user shortcuts and control shortcuts from anywhere on screen." />
@@ -100,6 +121,33 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.example.ACTION_RESTART_SERVICE" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".DataToggleWidget"
+            android:exported="true"
+            android:label="@string/widget_data_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.example.ACTION_WIDGET_TOGGLE_DATA" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/appwidget_info" />
+        </receiver>
 
         <provider
             android:name="androidx.core.content.FileProvider"

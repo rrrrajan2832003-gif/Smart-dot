@@ -1,5 +1,7 @@
 package com.example
 
+import android.app.Activity
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -19,6 +21,8 @@ import android.graphics.PixelFormat
 import android.graphics.PorterDuff
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.hardware.Sensor
+import android.hardware.SensorManager
 import android.content.SharedPreferences
 import android.graphics.drawable.Drawable
 import android.view.ViewGroup
@@ -29,6 +33,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
@@ -98,6 +103,7 @@ class FloatingService : Service() {
     // Sidebar variables
     private var sidebarView: View? = null
     private var sidebarParams: WindowManager.LayoutParams? = null
+    private var edgeGestureDetector: EdgeGestureDetector? = null
 
     // Curated standard languages for Translate
     private val translateLanguages = ScreenTranslateHelper.SUPPORTED_LANGUAGES
@@ -120,8 +126,22 @@ class FloatingService : Service() {
     private var screenTextCopyController: ScreenTextCopyController? = null
     private var screenTranslateController: ScreenTranslateController? = null
 
+    // Screen Recorder & Stop Recording Edge Pill
+    private var screenRecorderManager: ScreenRecorderManager? = null
+    private var stopRecordingPillView: View? = null
+
+    // Accelerometer Shake-to-Torch detector (zero vibration)
+    private var sensorManager: SensorManager? = null
+    private var shakeDetector: ShakeDetector? = null
+    private var isShakeListenerRegistered = false
+
     companion object {
         const val ACTION_UPDATE_SETTINGS = "com.example.UPDATE_SETTINGS"
+        const val ACTION_SCREEN_RECORD_RESULT = "com.example.ACTION_SCREEN_RECORD_RESULT"
+        const val EXTRA_RECORD_RESULT_CODE = "extra_record_result_code"
+        const val EXTRA_RECORD_DATA = "extra_record_data"
+        const val EXTRA_RECORD_WITH_AUDIO = "extra_record_with_audio"
+        const val PREF_SHAKE_TORCH_ENABLED = "shake_torch_enabled"
         var isRunning = false
             private set
     }
@@ -145,13 +165,32 @@ class FloatingService : Service() {
         density = resources.displayMetrics.density
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboardManager.addPrimaryClipChangedListener(clipListener)
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        syncShakeTorchListener()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         createNotificationChannel()
+        val isScreenRecordResult = intent?.action == ACTION_SCREEN_RECORD_RESULT
+        val recordResultCode = intent?.getIntExtra(EXTRA_RECORD_RESULT_CODE, Activity.RESULT_CANCELED) ?: Activity.RESULT_CANCELED
+        val recordData: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent?.getParcelableExtra(EXTRA_RECORD_DATA, Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent?.getParcelableExtra(EXTRA_RECORD_DATA)
+        }
+        val canStartProjectionFgs = isScreenRecordResult &&
+            recordResultCode == Activity.RESULT_OK &&
+            recordData != null
+
         try {
             val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                if (canStartProjectionFgs) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                } else {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                }
             } else {
                 0
             }
@@ -161,6 +200,15 @@ class FloatingService : Service() {
             isRunning = false
             stopSelf()
             return START_NOT_STICKY
+        }
+
+        if (isScreenRecordResult) {
+            if (canStartProjectionFgs && recordData != null) {
+                val withAudio = intent?.getBooleanExtra(EXTRA_RECORD_WITH_AUDIO, false) == true
+                startScreenRecordingSession(recordResultCode, recordData, withAudio)
+            } else {
+                Toast.makeText(this, getString(R.string.screen_record_failed), Toast.LENGTH_SHORT).show()
+            }
         }
 
         if (!Settings.canDrawOverlays(this)) {
@@ -404,9 +452,6 @@ class FloatingService : Service() {
                                 inwardIsRight = false
                             )
                             if (direction != null) {
-                                v?.let {
-                                    runCatching { it.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP) }
-                                }
                                 executeSwipeGesture(direction, isSidebarOrigin = false)
                             } else if (abs(finalDiffX) < dragDistanceThreshold && abs(finalDiffY) < dragDistanceThreshold && duration < clickTimeThreshold) {
                                 handleDotClick()
@@ -463,7 +508,7 @@ class FloatingService : Service() {
         val defaultString = "home,back,recent_apps,screenshot,flashlight,wifi,bluetooth,open_app_drawer,settings,calculator,chrome"
         val legacy = prefs.getString("shortcuts_list", defaultString) ?: defaultString
         
-        val cols = prefs.getInt("menu_grid_cols", 3).coerceAtLeast(1)
+        val cols = prefs.getInt("menu_grid_cols", 3).coerceIn(1, 5)
         val rows = prefs.getInt("menu_grid_rows", 3).coerceAtLeast(1)
         val pageSize = cols * rows
 
@@ -654,6 +699,7 @@ class FloatingService : Service() {
             bindNotesTab(popupView, activeAccentColor)
             bindCalculatorTab(popupView, activeAccentColor)
             bindTranslateTab(popupView, activeAccentColor)
+            bindAiAssistantTab(popupView, activeAccentColor)
 
             // Positions
             val spacingPx = (8 * currentDensity).toInt()
@@ -705,11 +751,12 @@ class FloatingService : Service() {
             activePopupWindow = popupWindow
             popupWindow.showAtLocation(anchorToken, Gravity.TOP or Gravity.START, posX, posY)
 
+            val animDurationMs = prefs.getInt("menu_anim_speed_ms", 160).coerceIn(80, 350).toLong()
             panel.animate()
                 .alpha(1f)
                 .scaleX(1f)
                 .scaleY(1f)
-                .setDuration(200)
+                .setDuration(animDurationMs)
                 .setInterpolator(OvershootInterpolator(1.05f))
                 .start()
         } catch (e: Exception) {
@@ -731,8 +778,15 @@ class FloatingService : Service() {
         val layoutNotes = popupView.findViewById<View>(R.id.layout_tab_notes)
         val layoutCalc = popupView.findViewById<View>(R.id.layout_tab_calc)
         val layoutTranslate = popupView.findViewById<View>(R.id.layout_tab_translate)
+        val layoutAi = popupView.findViewById<View>(R.id.layout_tab_ai)
+        val btnOpenAiPanel = popupView.findViewById<View>(R.id.btn_open_ai_panel)
+        val ivAiStripIcon = popupView.findViewById<ImageView>(R.id.iv_ai_strip_icon)
+        val tvAiStripBadge = popupView.findViewById<TextView>(R.id.tv_ai_strip_badge)
 
-        val layouts = listOf(layoutActions, layoutApps, layoutClipboard, layoutNotes, layoutCalc, layoutTranslate)
+        ivAiStripIcon?.setColorFilter(accentColor, PorterDuff.Mode.SRC_IN)
+        tvAiStripBadge?.setTextColor(accentColor)
+
+        val layouts = listOf(layoutActions, layoutApps, layoutClipboard, layoutNotes, layoutCalc, layoutTranslate, layoutAi)
         layouts.forEach { it?.visibility = View.GONE }
         layoutActions?.visibility = View.VISIBLE
 
@@ -756,6 +810,13 @@ class FloatingService : Service() {
                     tabButtons[i].scaleY = 1.0f
                 }
             }
+        }
+
+        btnOpenAiPanel?.setOnClickListener {
+            activeTabIndex = -1
+            layouts.forEach { it?.visibility = View.GONE }
+            layoutAi?.visibility = View.VISIBLE
+            updateTabStyles()
         }
 
         topShortcuts.forEachIndexed { index, shortcutId ->
@@ -811,6 +872,23 @@ class FloatingService : Service() {
         }
     }
 
+    private fun switchActivePopupToAiTab(): Boolean {
+        val popupContent = activePopupWindow?.takeIf { it.isShowing }?.contentView ?: return false
+        val layoutAi = popupContent.findViewById<View>(R.id.layout_tab_ai) ?: return false
+        listOf(
+            R.id.layout_tab_actions,
+            R.id.layout_tab_apps,
+            R.id.layout_tab_clipboard,
+            R.id.layout_tab_notes,
+            R.id.layout_tab_calc,
+            R.id.layout_tab_translate
+        ).forEach { id ->
+            popupContent.findViewById<View>(id)?.visibility = View.GONE
+        }
+        layoutAi.visibility = View.VISIBLE
+        return true
+    }
+
     private fun switchActivePopupToAppsTab(): Boolean {
         val popupContent = activePopupWindow?.takeIf { it.isShowing }?.contentView ?: return false
         val layoutActions = popupContent.findViewById<View>(R.id.layout_tab_actions)
@@ -819,8 +897,9 @@ class FloatingService : Service() {
         val layoutNotes = popupContent.findViewById<View>(R.id.layout_tab_notes)
         val layoutCalc = popupContent.findViewById<View>(R.id.layout_tab_calc)
         val layoutTranslate = popupContent.findViewById<View>(R.id.layout_tab_translate)
+        val layoutAi = popupContent.findViewById<View>(R.id.layout_tab_ai)
 
-        listOf(layoutActions, layoutClipboard, layoutNotes, layoutCalc, layoutTranslate).forEach {
+        listOf(layoutActions, layoutClipboard, layoutNotes, layoutCalc, layoutTranslate, layoutAi).forEach {
             it?.visibility = View.GONE
         }
         layoutApps.visibility = View.VISIBLE
@@ -999,6 +1078,8 @@ class FloatingService : Service() {
             "screenshot" -> R.drawable.ic_radial_screenshot
             "screen_copy" -> R.drawable.ic_screen_text_copy
             "screen_translate" -> R.drawable.ic_tab_translate
+            "screen_record" -> android.R.drawable.presence_video_online
+            "ask_ai" -> android.R.drawable.ic_btn_speak_now
             "notifications" -> R.drawable.ic_radial_notifications
             "quick_settings" -> R.drawable.ic_radial_quick_settings
             "lock_screen" -> android.R.drawable.ic_lock_lock
@@ -1025,6 +1106,8 @@ class FloatingService : Service() {
             "hotspot" -> android.R.drawable.ic_menu_share
             "split_screen" -> android.R.drawable.ic_menu_crop
             "floating_window" -> R.drawable.ic_floating_window
+            "open_menu" -> android.R.drawable.ic_menu_more
+            "realme_smart_sidebar" -> R.drawable.ic_floating_window
             "open_app_drawer" -> R.drawable.ic_tab_apps
             "voice_assistant" -> android.R.drawable.ic_btn_speak_now
             "about_app" -> android.R.drawable.ic_menu_info_details
@@ -1032,6 +1115,11 @@ class FloatingService : Service() {
             "contacts" -> android.R.drawable.ic_menu_my_calendar
             "messages" -> android.R.drawable.ic_menu_send
             "custom_app" -> android.R.drawable.ic_menu_add
+            "chrome_incognito", "chrome_search" -> R.drawable.ic_radial_chrome
+            "youtube_subscriptions", "youtube_search" -> android.R.drawable.ic_menu_slideshow
+            "whatsapp_chat", "whatsapp_camera" -> R.drawable.ic_radial_whatsapp
+            "settings_wifi", "settings_bluetooth", "settings_battery", "settings_app_info" -> R.drawable.ic_radial_settings
+            "custom_url_intent" -> android.R.drawable.ic_menu_directions
             else -> R.drawable.ic_radial_settings
         }
     }
@@ -1045,6 +1133,7 @@ class FloatingService : Service() {
             "screen_copy" -> "Text Copy"
             "screen_translate" -> "Translate"
             "screen_record" -> "Screen Rec"
+            "ask_ai" -> "Ask AI"
             "notifications" -> "Notif"
             "quick_settings" -> "Quick Set"
             "lock_screen" -> "Lock"
@@ -1071,6 +1160,8 @@ class FloatingService : Service() {
             "hotspot" -> "Hotspot"
             "split_screen" -> "Split"
             "floating_window" -> "Float App"
+            "open_menu" -> "Open Menu"
+            "realme_smart_sidebar" -> "Smart Sidebar"
             "open_app_drawer" -> "Drawer"
             "voice_assistant" -> "Assistant"
             "about_app" -> "About"
@@ -1078,6 +1169,17 @@ class FloatingService : Service() {
             "contacts" -> "Contacts"
             "messages" -> "Messages"
             "custom_app" -> "Custom"
+            "chrome_incognito" -> "Incognito"
+            "chrome_search" -> "Web Search"
+            "youtube_subscriptions" -> "YT Subs"
+            "youtube_search" -> "YT Search"
+            "whatsapp_chat" -> "WA Chat"
+            "whatsapp_camera" -> "WA Cam"
+            "settings_wifi" -> "Wi-Fi Pref"
+            "settings_bluetooth" -> "BT Pref"
+            "settings_battery" -> "Battery"
+            "settings_app_info" -> "App Info"
+            "custom_url_intent" -> "Custom URL"
             else -> "Shortcut"
         }
     }
@@ -1107,13 +1209,38 @@ class FloatingService : Service() {
         }
     }
 
+    private fun executeEdgeGesture(gesture: EdgeGestureDetector.EdgeGesture) {
+        val actionId = EdgeGestureDetector.getAssignedAction(prefs, gesture)
+        when {
+            gesture == EdgeGestureDetector.EdgeGesture.TAP -> {
+                if (actionId == "open_menu" || actionId == "none") {
+                    showSidebarPanel()
+                } else {
+                    executeAction(actionId)
+                }
+            }
+            gesture == EdgeGestureDetector.EdgeGesture.SWIPE_LEFT && actionId == "none" -> {
+                showSidebarPanel()
+            }
+            actionId == "open_menu" -> showSidebarPanel()
+            actionId != "none" -> executeAction(actionId)
+        }
+    }
+
     private fun triggerVoiceAssistant() {
         activePopupWindow?.dismiss()
         val assistantIntents = listOf(
             Intent(Intent.ACTION_VOICE_COMMAND).apply {
+                setPackage("com.google.android.googlequicksearchbox")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            Intent("android.intent.action.VOICE_ASSIST").apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             },
             Intent(Intent.ACTION_ASSIST).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            Intent(Intent.ACTION_VOICE_COMMAND).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             },
             Intent(RecognizerIntent.ACTION_WEB_SEARCH).apply {
@@ -1211,15 +1338,11 @@ class FloatingService : Service() {
                 "screenshot" -> triggerScreenshot()
                 "screen_copy" -> startScreenTextCopy()
                 "screen_translate" -> startScreenTranslate()
-                "screen_record" -> {
-                    val intent = Intent().apply {
-                        action = "android.settings.SCREEN_RECORD"
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    if (intent.resolveActivity(pm) != null) {
-                        startActivity(intent)
-                    } else {
-                        Toast.makeText(context, "System Screen Recorder requested.", Toast.LENGTH_SHORT).show()
+                "screen_record" -> triggerScreenRecording()
+                "ask_ai" -> {
+                    if (!switchActivePopupToAiTab()) {
+                        if (isPopupAlignedToEdge) showSidebarPanel() else showAssistantSidebar()
+                        switchActivePopupToAiTab()
                     }
                 }
                 "notifications" -> performGlobalActionSafety(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
@@ -1229,13 +1352,14 @@ class FloatingService : Service() {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                         val sInstance = SmartDotAccessibilityService.instance
                         if (sInstance != null) {
-                            val ok = sInstance.performSplitScreen()
-                            if (!ok) {
-                                Toast.makeText(
-                                    this,
-                                    getString(R.string.split_screen_oem_fallback),
-                                    Toast.LENGTH_LONG
-                                ).show()
+                            sInstance.performSplitScreen { succeeded ->
+                                if (!succeeded) {
+                                    Toast.makeText(
+                                        this,
+                                        getString(R.string.split_screen_oem_fallback),
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
                             }
                         } else {
                             showAccessibilityDialog()
@@ -1245,6 +1369,15 @@ class FloatingService : Service() {
                     }
                 }
                 "floating_window" -> triggerPopOutActiveAppWindow()
+                "open_menu" -> {
+                    if (isPopupAlignedToEdge) showSidebarPanel() else showAssistantSidebar()
+                }
+                "realme_smart_sidebar" -> {
+                    activePopupWindow?.dismiss()
+                    if (!FreeformWindowLauncher.launchRealmeSmartSidebar(this)) {
+                        Toast.makeText(this, getString(R.string.realme_sidebar_unavailable), Toast.LENGTH_SHORT).show()
+                    }
+                }
                 "open_app_drawer" -> {
                     if (!switchActivePopupToAppsTab()) {
                         val homeIntent = Intent(Intent.ACTION_MAIN).apply {
@@ -1473,7 +1606,12 @@ class FloatingService : Service() {
                     }
                 }
                 else -> {
-                    Toast.makeText(context, "Action: $actionId executed", Toast.LENGTH_SHORT).show()
+                    if (InAppShortcutLauncher.isInAppShortcut(actionId)) {
+                        activePopupWindow?.dismiss()
+                        InAppShortcutLauncher.launch(this, actionId)
+                    } else {
+                        Toast.makeText(context, "Action: $actionId executed", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -1489,12 +1627,23 @@ class FloatingService : Service() {
 
         val prefs = getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE)
         val iconSizePreset = prefs.getString("shortcut_icon_size_preset", "Medium") ?: "Medium"
-        val (iconSizeDp, labelTextSp) = when (iconSizePreset) {
+        val (baseIconSizeDp, baseLabelTextSp) = when (iconSizePreset) {
             "Small" -> Pair(20f, 9.5f)
             "Medium" -> Pair(26f, 10.5f)
             "Large" -> Pair(32f, 11.5f)
             "Extra Large" -> Pair(38f, 13f)
             else -> Pair(26f, 10.5f)
+        }
+        val colScale = when {
+            gridCols >= 5 -> 0.72f
+            gridCols == 4 -> 0.85f
+            else -> 1.0f
+        }
+        val iconSizeDp = (baseIconSizeDp * colScale).coerceAtMost((rowHeightDp - 18f).coerceAtLeast(14f))
+        val labelTextSp = when {
+            gridCols >= 5 -> (baseLabelTextSp - 1.5f).coerceAtLeast(8f)
+            gridCols == 4 -> (baseLabelTextSp - 0.8f).coerceAtLeast(8.5f)
+            else -> baseLabelTextSp
         }
 
         val itemLayout = LinearLayout(this).apply {
@@ -1505,8 +1654,9 @@ class FloatingService : Service() {
             )
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            val padVal = (4 * density).toInt()
-            setPadding(padVal, padVal, padVal, padVal)
+            val padHoriz = if (gridCols >= 4) (2 * density).toInt() else (4 * density).toInt()
+            val padVert = (3 * density).toInt()
+            setPadding(padHoriz, padVert, padHoriz, padVert)
             background = getSystemDrawable(android.R.attr.selectableItemBackground)
             isClickable = true
             isFocusable = true
@@ -1517,7 +1667,7 @@ class FloatingService : Service() {
                 (iconSizeDp * density).toInt(),
                 (iconSizeDp * density).toInt()
             ).apply {
-                bottomMargin = (4 * density).toInt()
+                bottomMargin = if (gridCols >= 5) (2 * density).toInt() else (4 * density).toInt()
             }
             setImageResource(actionIconRes)
             if (isEmpty) {
@@ -1551,14 +1701,14 @@ class FloatingService : Service() {
         val indicatorsContainer = popupView.findViewById<LinearLayout>(R.id.page_indicators_container)
 
         val prefs = getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE)
-        val gridRows = prefs.getInt("menu_grid_rows", 4)
-        val gridCols = prefs.getInt("menu_grid_cols", 3)
+        val gridRows = prefs.getInt("menu_grid_rows", 3).coerceAtLeast(1)
+        val gridCols = prefs.getInt("menu_grid_cols", 3).coerceIn(1, 5)
 
         val pages = getShortcutsPages(prefs)
         val pagesList = ArrayList<View>()
         
         val popupHeightDp = prefs.getInt("menu_height_dp", 460)
-        val rowHeightDp = ((popupHeightDp - 110) / gridRows.toFloat()).coerceAtLeast(44f)
+        val rowHeightDp = ((popupHeightDp - 144) / gridRows.toFloat()).coerceAtLeast(38f)
         val rowHeightPx = (rowHeightDp * density).toInt()
 
         for (p in pages.indices) {
@@ -2233,6 +2383,234 @@ class FloatingService : Service() {
     }
 
     // -------------------------------------------------------------
+    // Tab 7: Built-in Free AI Assistant (Ask AI & Screen Summary)
+    // -------------------------------------------------------------
+    private fun bindAiAssistantTab(popupView: View, accentColor: Int) {
+        val tvStatus = popupView.findViewById<TextView>(R.id.tv_ai_mode_status)
+        val btnSummarize = popupView.findViewById<Button>(R.id.btn_ai_summarize_screen)
+        val etPrompt = popupView.findViewById<EditText>(R.id.et_ai_prompt)
+        val btnSend = popupView.findViewById<Button>(R.id.btn_ai_send)
+        val tvOutput = popupView.findViewById<TextView>(R.id.tv_ai_output)
+        val btnExternal = popupView.findViewById<Button>(R.id.btn_ai_external)
+        val btnCopy = popupView.findViewById<Button>(R.id.btn_ai_copy)
+
+        val apiKey = AiAssistantHelper.getSavedApiKey(this)
+        tvStatus?.text = if (apiKey.isNotEmpty()) "Gemini Ready" else "Free Web Fallback"
+        tvStatus?.setTextColor(accentColor)
+
+        val applyAccentButton: Button.() -> Unit = {
+            backgroundTintList = null
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(accentColor)
+                cornerRadius = 8f * resources.displayMetrics.density
+            }
+        }
+        btnSummarize?.applyAccentButton()
+        btnSend?.applyAccentButton()
+
+        fun runAiPrompt(prompt: String) {
+            val key = AiAssistantHelper.getSavedApiKey(this)
+            if (key.isEmpty()) {
+                tvOutput?.text = "No Gemini API key configured. Opening Gemini / ChatGPT..."
+                if (!AiAssistantHelper.launchExternalAiFallback(this)) {
+                    Toast.makeText(this, "No browser or AI app found.", Toast.LENGTH_SHORT).show()
+                }
+                return
+            }
+            tvOutput?.text = "Thinking with Gemini..."
+            val flowJob = popupSessionJob ?: serviceScope.coroutineContext[Job]
+            serviceScope.launch(flowJob ?: Dispatchers.Main) {
+                val result = AiAssistantHelper.queryGemini(key, prompt)
+                result.onSuccess { answer ->
+                    tvOutput?.text = answer
+                }.onFailure { err ->
+                    tvOutput?.text = "AI error: ${err.localizedMessage ?: "Request failed"}\n\nTip: Tap 'Open Gemini / ChatGPT' below for free web fallback."
+                }
+            }
+        }
+
+        btnSummarize?.setOnClickListener {
+            val screenText = AiAssistantHelper.collectVisibleScreenText()
+            if (screenText.isBlank()) {
+                tvOutput?.text = getString(R.string.ai_no_screen_text)
+                Toast.makeText(this, getString(R.string.ai_no_screen_text), Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val summaryPrompt = AiAssistantHelper.buildScreenSummaryPrompt(screenText)
+            runAiPrompt(summaryPrompt)
+        }
+
+        btnSend?.setOnClickListener {
+            val question = etPrompt?.text?.toString()?.trim().orEmpty()
+            if (question.isEmpty()) {
+                Toast.makeText(this, "Enter a question for AI.", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            runAiPrompt(question)
+        }
+
+        btnExternal?.setOnClickListener {
+            activePopupWindow?.dismiss()
+            if (!AiAssistantHelper.launchExternalAiFallback(this)) {
+                Toast.makeText(this, "No browser or AI app found.", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        btnCopy?.setOnClickListener {
+            val outputText = tvOutput?.text?.toString().orEmpty()
+            if (outputText.isNotEmpty() && !outputText.startsWith("Tap 'Summarize")) {
+                clipboardManager.setPrimaryClip(android.content.ClipData.newPlainText("AI Response", outputText))
+                Toast.makeText(this, "AI answer copied!", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // -------------------------------------------------------------
+    // MediaProjection Screen Recording + Floating Stop Pill
+    // -------------------------------------------------------------
+    private fun triggerScreenRecording() {
+        activePopupWindow?.dismiss()
+        if (screenRecorderManager?.isRecording == true) {
+            stopScreenRecordingSession()
+            return
+        }
+        val permIntent = Intent(this, ScreenRecordPermissionActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(permIntent)
+    }
+
+    private fun startScreenRecordingSession(resultCode: Int, data: Intent, withAudio: Boolean) {
+        val manager = screenRecorderManager ?: ScreenRecorderManager(
+            context = this,
+            onRecordingStateChanged = { recording ->
+                Handler(Looper.getMainLooper()).post {
+                    if (recording) {
+                        showStopRecordingPill()
+                    } else {
+                        removeStopRecordingPill()
+                    }
+                }
+            },
+            onRecordingSaved = { uri ->
+                Handler(Looper.getMainLooper()).post {
+                    if (uri != null) {
+                        Toast.makeText(this, getString(R.string.screen_record_saved), Toast.LENGTH_LONG).show()
+                    }
+                }
+            },
+            onRecordingError = { msg ->
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                }
+            }
+        ).also { screenRecorderManager = it }
+
+        setOverlayViewsVisible(false)
+        Handler(Looper.getMainLooper()).postDelayed({
+            setOverlayViewsVisible(true)
+            val started = manager.startRecording(resultCode, data, withAudio)
+            if (started) {
+                Toast.makeText(this, getString(R.string.screen_record_started), Toast.LENGTH_SHORT).show()
+            }
+        }, 120L)
+    }
+
+    private fun stopScreenRecordingSession() {
+        screenRecorderManager?.stopRecording()
+        removeStopRecordingPill()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            runCatching {
+                ServiceCompat.startForeground(
+                    this,
+                    1001,
+                    getForegroundNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            }
+        }
+    }
+
+    private fun showStopRecordingPill() {
+        if (stopRecordingPillView != null || !::windowManager.isInitialized) return
+        val pill = TextView(this).apply {
+            id = View.generateViewId()
+            tag = "btn_stop_recording_pill"
+            text = "■ ${getString(R.string.screen_record_stop)}"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+            val padH = (12 * density).toInt()
+            val padV = (8 * density).toInt()
+            setPadding(padH, padV, padH, padV)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(Color.parseColor("#E11D48"))
+                cornerRadius = 20 * density
+                setStroke((1.5f * density).toInt(), Color.WHITE)
+            }
+            setOnClickListener {
+                stopScreenRecordingSession()
+            }
+        }
+
+        val pillParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE
+            },
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.END
+            x = (12 * density).toInt()
+            y = (80 * density).toInt()
+        }
+
+        stopRecordingPillView = pill
+        runCatching { windowManager.addView(pill, pillParams) }.onFailure {
+            stopRecordingPillView = null
+        }
+    }
+
+    private fun removeStopRecordingPill() {
+        stopRecordingPillView?.let { pill ->
+            if (::windowManager.isInitialized) {
+                runCatching { windowManager.removeView(pill) }
+            }
+        }
+        stopRecordingPillView = null
+    }
+
+    // -------------------------------------------------------------
+    // Shake Phone to Toggle Flashlight (Zero Vibration)
+    // -------------------------------------------------------------
+    private fun syncShakeTorchListener() {
+        val manager = sensorManager ?: (getSystemService(Context.SENSOR_SERVICE) as? SensorManager)?.also {
+            sensorManager = it
+        } ?: return
+        val enabled = prefs.getBoolean(PREF_SHAKE_TORCH_ENABLED, false)
+        if (enabled && !isShakeListenerRegistered) {
+            val accelerometer = manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
+            val detector = shakeDetector ?: ShakeDetector {
+                Handler(Looper.getMainLooper()).post {
+                    toggleFlashlight()
+                }
+            }.also { shakeDetector = it }
+            isShakeListenerRegistered = manager.registerListener(detector, accelerometer, SensorManager.SENSOR_DELAY_UI)
+        } else if (!enabled && isShakeListenerRegistered) {
+            shakeDetector?.let { manager.unregisterListener(it) }
+            shakeDetector?.reset()
+            isShakeListenerRegistered = false
+        }
+    }
+
+    // -------------------------------------------------------------
     // Core Utilities and Infrastructure Actions
     // -------------------------------------------------------------
     private fun performGlobalActionSafety(actionId: Int) {
@@ -2316,13 +2694,36 @@ class FloatingService : Service() {
     }
 
     private fun triggerScreenshot() {
-        val sInstance = SmartDotAccessibilityService.instance
-        if (sInstance != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            sInstance.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT)
-            Toast.makeText(this, "Screenshot captured!", Toast.LENGTH_SHORT).show()
-        } else {
-            triggerScreenshotEmulation()
+        activePopupWindow?.dismiss()
+        val dotWasVisible = ::floatingView.isInitialized && floatingView.visibility == View.VISIBLE
+        val sidebarWasVisible = sidebarView?.visibility == View.VISIBLE
+
+        if (::floatingView.isInitialized) {
+            floatingView.visibility = View.GONE
         }
+        sidebarView?.visibility = View.GONE
+
+        val mainHandler = Handler(Looper.getMainLooper())
+        mainHandler.postDelayed({
+            val sInstance = SmartDotAccessibilityService.instance
+            if (sInstance != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                sInstance.dispatchScreenshotAction()
+                Toast.makeText(this, "Screenshot captured!", Toast.LENGTH_SHORT).show()
+            } else {
+                triggerScreenshotEmulation()
+            }
+        }, 180L)
+
+        mainHandler.postDelayed({
+            if (::floatingView.isInitialized && (isFloatingViewAdded || floatingView.isAttachedToWindow) &&
+                prefs.getBoolean("floating_dot_enabled", true) && dotWasVisible
+            ) {
+                floatingView.visibility = View.VISIBLE
+            }
+            if (prefs.getBoolean("sidebar_enabled", true) && sidebarWasVisible) {
+                sidebarView?.visibility = View.VISIBLE
+            }
+        }, 600L)
     }
 
     private fun triggerScreenshotEmulation() {
@@ -2481,6 +2882,7 @@ class FloatingService : Service() {
             detachFloatingDot()
         }
         setupSidebarWidget()
+        syncShakeTorchListener()
     }
 
     private fun setupSidebarWidget() {
@@ -2497,47 +2899,56 @@ class FloatingService : Service() {
         val sidebarHeight = prefs.getInt("sidebar_height", 130)
         val sidebarWidth = prefs.getInt("sidebar_width", 14)
         val sidebarOpacityPercent = prefs.getInt("sidebar_opacity", 70)
-        val sidebarSensitivity = prefs.getInt("sidebar_sensitivity", 25)
+        val sidebarTouchSensitivity = if (prefs.contains("sidebar_touch_sensitivity")) {
+            prefs.getInt("sidebar_touch_sensitivity", 85)
+        } else {
+            85
+        }
         val sidebarStyle = prefs.getString("sidebar_style", "Capsule") ?: "Capsule"
         val sidebarAutoHide = prefs.getBoolean("sidebar_autohide", false)
-        val sidebarVibration = prefs.getBoolean("sidebar_vibration", true)
 
-        // Remove previous view if exists
+        // Cancel & clear any existing EdgeGestureDetector and sidebar view
+        edgeGestureDetector?.cancelAll()
+        edgeGestureDetector = null
         sidebarView?.let {
             try {
                 windowManager.removeView(it)
-            } catch (e: Exception) {}
+            } catch (_: Exception) {}
             sidebarView = null
         }
 
         if (!sidebarEnabled) return
 
-        val handleWidth = (sidebarWidth * density).toInt()
+        // Rule 1 (Trigger Zone Rule): Strictly enforce 25px..35px handle touch width
+        val handleWidth = EdgeGestureDetector.clampTriggerWidthPx((sidebarWidth * density).toInt())
         val handleHeight = (sidebarHeight * density).toInt()
 
         val handle = View(this).apply {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 setColor(activeColor)
-                
-                // Style Configurations
+
                 val r = when (sidebarStyle) {
                     "Block" -> 0f
                     "Notch" -> (sidebarWidth * 0.8f) * density
                     "Capsule" -> (sidebarWidth / 2f) * density
                     else -> (sidebarWidth / 2f) * density
                 }
-                
+
                 if (sidebarEdge == "Right") {
                     cornerRadii = floatArrayOf(r, r, 0f, 0f, 0f, 0f, r, r)
                 } else {
                     cornerRadii = floatArrayOf(0f, 0f, r, r, r, r, 0f, 0f)
                 }
             }
-            
-            // Apply initial resting opacity (lower if idle and auto-hide is turned on)
+
             alpha = if (sidebarAutoHide) 0.20f else (sidebarOpacityPercent / 100f)
         }
+
+        val screenHeight = resources.displayMetrics.heightPixels
+        // Rule 6 (Conflict Rule): Exclude bottom-edge system navigation gesture zone
+        val navExclusionPx = (24f * density.coerceAtLeast(1f)).toInt().coerceAtMost(screenHeight / 8)
+        val maxSafeSidebarY = (screenHeight - handleHeight - navExclusionPx).coerceAtLeast(0)
 
         val sparams = WindowManager.LayoutParams(
             handleWidth,
@@ -2556,183 +2967,103 @@ class FloatingService : Service() {
             } else {
                 Gravity.TOP or Gravity.START
             }
-            val screenHeight = resources.displayMetrics.heightPixels
-            val maxSidebarY = (screenHeight - handleHeight).coerceAtLeast(0)
-            val defaultSidebarY = ((screenHeight - handleHeight) / 2).coerceAtLeast(0)
-            y = prefs.getInt("sidebar_last_y", defaultSidebarY).coerceIn(0, maxSidebarY)
+            val defaultSidebarY = ((screenHeight - handleHeight) / 2).coerceIn(0, maxSafeSidebarY)
+            y = prefs.getInt("sidebar_last_y", defaultSidebarY).coerceIn(0, maxSafeSidebarY)
             x = 0
+        }
+
+        val detector = EdgeGestureDetector(
+            density = density,
+            screenHeightProvider = { resources.displayMetrics.heightPixels },
+            onGestureDetected = { gesture ->
+                executeEdgeGesture(gesture)
+            },
+            onTapWindowCheck = { gesture ->
+                EdgeGestureDetector.getAssignedAction(prefs, gesture) != "none"
+            }
+        ).apply {
+            minStep1DistancePx = EdgeGestureDetector.sensitivityToStep1Px(sidebarTouchSensitivity)
+            inwardIsRight = (sidebarEdge != "Right")
+        }
+        edgeGestureDetector = detector
+
+        fun hasVerticalEdgeGestureAssigned(): Boolean {
+            val verticalGestures = listOf(
+                EdgeGestureDetector.EdgeGesture.SWIPE_UP,
+                EdgeGestureDetector.EdgeGesture.SWIPE_DOWN,
+                EdgeGestureDetector.EdgeGesture.SWIPE_UP_HOLD,
+                EdgeGestureDetector.EdgeGesture.SWIPE_DOWN_HOLD,
+                EdgeGestureDetector.EdgeGesture.UP_THEN_LEFT,
+                EdgeGestureDetector.EdgeGesture.DOWN_THEN_LEFT,
+                EdgeGestureDetector.EdgeGesture.UP_THEN_DOWN,
+                EdgeGestureDetector.EdgeGesture.DOWN_THEN_UP
+            )
+            return verticalGestures.any { EdgeGestureDetector.getAssignedAction(prefs, it) != "none" }
         }
 
         handle.setOnTouchListener(object : View.OnTouchListener {
             private var startTouchX = 0f
             private var startTouchY = 0f
             private var initialY = 0
-            private var isDragging = false
-            private var startTimes = 0L
-            private var maxY = 0
-            private var velocityTracker: VelocityTracker? = null
+            private var isRepositionDragging = false
+            private var maxY = maxSafeSidebarY
 
             override fun onTouch(v: View, event: MotionEvent): Boolean {
                 val fullAlpha = sidebarOpacityPercent / 100f
                 val isPositionLocked = prefs.getBoolean("dot_position_locked", false)
+
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         startTouchX = event.rawX
                         startTouchY = event.rawY
                         initialY = sparams.y
-                        isDragging = false
-                        startTimes = System.currentTimeMillis()
+                        isRepositionDragging = false
 
-                        velocityTracker?.recycle()
-                        velocityTracker = VelocityTracker.obtain().also { tracker ->
-                            val rawEvent = MotionEvent.obtain(event).apply {
-                                setLocation(event.rawX, event.rawY)
-                            }
-                            tracker.addMovement(rawEvent)
-                            rawEvent.recycle()
-                        }
-
-                        // Precalculate the sidebar limits on touch down once per gesture
-                        val screenHeight = resources.displayMetrics.heightPixels
-                        maxY = (screenHeight - handleHeight).coerceAtLeast(0)
-
-                        if (sidebarVibration) {
-                            try {
-                                v.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
-                            } catch (e: Exception) {}
-                        }
+                        val curScreenH = resources.displayMetrics.heightPixels
+                        val curNavExclusion = (24f * density.coerceAtLeast(1f)).toInt().coerceAtMost(curScreenH / 8)
+                        maxY = (curScreenH - handleHeight - curNavExclusion).coerceAtLeast(0)
 
                         if (sidebarAutoHide) {
                             handle.animate().alpha(fullAlpha).setDuration(120).start()
                         }
-                        return true
+                        return detector.onTouchEvent(event)
                     }
+
                     MotionEvent.ACTION_MOVE -> {
-                        velocityTracker?.let { tracker ->
-                            val rawEvent = MotionEvent.obtain(event).apply {
-                                setLocation(event.rawX, event.rawY)
-                            }
-                            tracker.addMovement(rawEvent)
-                            rawEvent.recycle()
-                        }
-
                         val diffX = event.rawX - startTouchX
                         val diffY = event.rawY - startTouchY
-                        // When Lock Position is ON, keep sidebar anchored in place so swipes trigger directional gestures cleanly
-                        if (!isPositionLocked) {
-                            if (!isDragging && abs(diffY) > 8 * density && abs(diffY) > abs(diffX) * 0.9f) {
-                                isDragging = true
+                        if (!isPositionLocked && !hasVerticalEdgeGestureAssigned()) {
+                            if (!isRepositionDragging && abs(diffY) > 12 * density && abs(diffY) > abs(diffX) * 1.5f) {
+                                isRepositionDragging = true
+                                detector.cancelAll()
                             }
-                            if (isDragging) {
-                                val newY = (initialY + diffY).toInt()
-                                sparams.y = newY.coerceIn(0, maxY)
-                                try {
-                                    windowManager.updateViewLayout(handle, sparams)
-                                } catch (e: Exception) {
-                                    // Prevent intense logs under gesture operations
-                                }
+                            if (isRepositionDragging) {
+                                sparams.y = (initialY + diffY.toInt()).coerceIn(0, maxY)
+                                runCatching { windowManager.updateViewLayout(handle, sparams) }
+                                return true
                             }
                         }
-                        return true
+                        return detector.onTouchEvent(event)
                     }
+
                     MotionEvent.ACTION_UP -> {
-                        val diffX = event.rawX - startTouchX
-                        val diffY = event.rawY - startTouchY
-                        val duration = System.currentTimeMillis() - startTimes
-
-                        var speed = 0f
-                        velocityTracker?.let { tracker ->
-                            val rawEvent = MotionEvent.obtain(event).apply {
-                                setLocation(event.rawX, event.rawY)
-                            }
-                            tracker.addMovement(rawEvent)
-                            rawEvent.recycle()
-                            tracker.computeCurrentVelocity(1000)
-                            speed = hypot(tracker.xVelocity, tracker.yVelocity)
-                            tracker.recycle()
-                        }
-                        velocityTracker = null
-
                         if (sidebarAutoHide) {
                             handle.animate().alpha(0.20f).setDuration(250).setStartDelay(1200).start()
                         }
-
-                        val swipeThreshold = sidebarSensitivity.coerceAtLeast(18) * density
-                        val inwardIsRight = sidebarEdge != "Right"
-
-                        if (isPositionLocked) {
-                            val direction = SwipeGestureHelper.detectSwipeDirection(
-                                dx = diffX,
-                                dy = diffY,
-                                velocityPxPerSec = speed,
-                                minDeltaPx = swipeThreshold,
-                                inwardIsRight = inwardIsRight
-                            )
-                            if (direction != null) {
-                                if (sidebarVibration) {
-                                    try {
-                                        v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-                                    } catch (e: Exception) {}
-                                }
-                                executeSwipeGesture(direction, isSidebarOrigin = true)
-                                return true
-                            }
-                            if (duration < 300 && abs(diffX) < 15 * density && abs(diffY) < 15 * density) {
-                                Log.i("FloatingService", "Sidebar clicked (locked).")
-                                if (sidebarVibration) {
-                                    try {
-                                        v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-                                    } catch (e: Exception) {}
-                                }
-                                showSidebarPanel()
-                            }
-                            return true
-                        }
-
-                        // Unlocked Position Mode: save vertical reposition if dragged; otherwise detect tap or inward swipe
-                        if (isDragging) {
+                        if (isRepositionDragging) {
+                            isRepositionDragging = false
                             prefs.edit().putInt("sidebar_last_y", sparams.y.coerceIn(0, maxY)).apply()
                             return true
                         }
-
-                        // Tap Check
-                        if (duration < 250 && abs(diffX) < 15 * density && abs(diffY) < 15 * density) {
-                            Log.i("FloatingService", "Sidebar clicked.")
-                            if (sidebarVibration) {
-                                try {
-                                    v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-                                } catch (e: Exception) {}
-                            }
-                            showSidebarPanel()
-                            return true
-                        }
-
-                        // Inward Swipe Check (when unlocked, horizontal/inward swipe fires mapped Swipe Left/Inward or opens panel)
-                        val direction = SwipeGestureHelper.detectSwipeDirection(
-                            dx = diffX,
-                            dy = diffY,
-                            velocityPxPerSec = speed,
-                            minDeltaPx = swipeThreshold,
-                            inwardIsRight = inwardIsRight
-                        )
-                        if (direction == SwipeGestureHelper.SwipeDirection.SWIPE_LEFT) {
-                            Log.i("FloatingService", "Sidebar swiped inward.")
-                            if (sidebarVibration) {
-                                try {
-                                    v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-                                } catch (e: Exception) {}
-                            }
-                            executeSwipeGesture(direction, isSidebarOrigin = true)
-                            return true
-                        }
-                        return true
+                        return detector.onTouchEvent(event)
                     }
+
                     MotionEvent.ACTION_CANCEL -> {
-                        velocityTracker?.recycle()
-                        velocityTracker = null
+                        isRepositionDragging = false
                         if (sidebarAutoHide) {
                             handle.animate().alpha(0.20f).setDuration(250).start()
                         }
+                        return detector.onTouchEvent(event)
                     }
                 }
                 return false
@@ -2751,10 +3082,48 @@ class FloatingService : Service() {
         }
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        val dotEnabled = prefs.getBoolean("floating_dot_enabled", true)
+        val sidebarEnabled = prefs.getBoolean("sidebar_enabled", true)
+        if (dotEnabled || sidebarEnabled) {
+            scheduleRestartAlarm(this)
+        }
+    }
+
+    private fun scheduleRestartAlarm(context: Context) {
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+        val restartIntent = Intent(context, BootReceiver::class.java).apply {
+            action = BootReceiver.ACTION_RESTART_SERVICE
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            1002,
+            restartIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val triggerAt = SystemClock.elapsedRealtime() + 1000L
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            alarmManager.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
+        } else {
+            alarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pendingIntent)
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
         serviceScope.cancel()
+
+        if (isShakeListenerRegistered) {
+            shakeDetector?.let { sensorManager?.unregisterListener(it) }
+            isShakeListenerRegistered = false
+        }
+        removeStopRecordingPill()
+        if (screenRecorderManager?.isRecording == true) {
+            screenRecorderManager?.stopRecording()
+        }
+        screenRecorderManager = null
 
         try {
             clipboardManager.removePrimaryClipChangedListener(clipListener)
@@ -2770,6 +3139,9 @@ class FloatingService : Service() {
             }
             isUpdateReceiverRegistered = false
         }
+
+        edgeGestureDetector?.cancelAll()
+        edgeGestureDetector = null
 
         screenTextCopyController?.release()
         screenTextCopyController = null

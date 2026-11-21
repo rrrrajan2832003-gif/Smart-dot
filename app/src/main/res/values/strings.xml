@@ -37,4 +37,15 @@
     <string name="cutout_no_text">No readable text found inside the selected box.</string>
     <string name="split_screen_oem_fallback">Opened Recents — tap the app icon to start Split Screen.</string>
     <string name="floating_window_no_active_app">Open any app first, then tap Floating Window.</string>
+    <string name="realme_sidebar_unavailable">Realme Smart Sidebar is not active on this device.</string>
+    <string name="widget_data_label">Data</string>
+    <string name="widget_data_desc">1-tap Mobile Data ON/OFF toggle</string>
+    <string name="screen_record_stop">Stop Rec</string>
+    <string name="screen_record_started">Screen recording started</string>
+    <string name="screen_record_saved">Saved screen recording to Movies/SmartDot</string>
+    <string name="screen_record_failed">Screen recording failed or cancelled</string>
+    <string name="ai_assistant_title">AI Assistant</string>
+    <string name="ai_summarize_screen">Summarize Screen with AI</string>
+    <string name="ai_open_external">Open Gemini / ChatGPT</string>
+    <string name="ai_no_screen_text">No visible screen text found to summarize.</string>
 </resources>

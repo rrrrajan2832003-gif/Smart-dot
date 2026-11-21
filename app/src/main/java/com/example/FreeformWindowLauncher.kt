@@ -14,13 +14,17 @@ import android.widget.Toast
 import java.lang.ref.WeakReference
 
 /**
- * Launches external phone apps in Android Freeform Multi-Window mode (WINDOWING_MODE_FREEFORM = 5)
- * with centered bounded Rect coordinates so the system window frame supports moving by top bar
- * and resizing from corners when freeform support is enabled on the device.
+ * Launches external phone apps in Android Freeform Multi-Window / Realme Flexible Window mode
+ * (`WINDOWING_MODE_FREEFORM = 5`) with Realme/Oplus native freeform extras + bounded Rect.
+ * Also supports invoking Realme UI's built-in Smart Sidebar when present on device.
  */
 object FreeformWindowLauncher {
 
     const val WINDOWING_MODE_FREEFORM = 5
+    const val EXTRA_ANDROID_WINDOWING_MODE = "android.activity.windowingMode"
+    const val EXTRA_OPLUS_FREEFORM = "com.oplus.freeform"
+    val REALME_FLEXIBLE_BOUNDS = Rect(120, 250, 960, 1450)
+
     private const val PREF_FREEFORM_PROMPT_MUTED = "freeform_prompt_muted"
     private const val TAG = "FreeformLauncher"
 
@@ -31,17 +35,23 @@ object FreeformWindowLauncher {
         val metrics = context.resources.displayMetrics
         val screenW = metrics.widthPixels.coerceAtLeast(360)
         val screenH = metrics.heightPixels.coerceAtLeast(480)
+
+        // Use exact Realme Flexible Window default bounds when display accommodates them
+        if (screenW >= 1000 && screenH >= 1600) {
+            return Rect(REALME_FLEXIBLE_BOUNDS)
+        }
+
+        // Proportionally map the 120..960 x 250..1450 layout on smaller screens/test displays
         val density = metrics.density.coerceAtLeast(1f)
+        val minW = (200 * density).toInt().coerceAtMost((screenW - 24).coerceAtLeast(140))
+        val minH = (240 * density).toInt().coerceAtMost((screenH - 48).coerceAtLeast(180))
+        val winW = (screenW * (840f / 1080f)).toInt().coerceIn(minW, (screenW - 24).coerceAtLeast(minW))
+        val winH = (screenH * (1200f / 2400f)).toInt().coerceIn(minH, (screenH - 48).coerceAtLeast(minH))
 
-        val minW = (240 * density).toInt().coerceAtMost((screenW - 32).coerceAtLeast(200))
-        val minH = (280 * density).toInt().coerceAtMost((screenH - 64).coerceAtLeast(240))
-        val winW = (screenW * 0.78f).toInt().coerceIn(minW, (screenW - 32).coerceAtLeast(minW))
-        val winH = (screenH * 0.62f).toInt().coerceIn(minH, (screenH - 64).coerceAtLeast(minH))
-
-        val left = ((screenW - winW) / 2).coerceAtLeast(16)
-        val top = ((screenH - winH) / 2).coerceAtLeast(48)
-        val right = (left + winW).coerceAtMost(screenW - 16)
-        val bottom = (top + winH).coerceAtMost(screenH - 32)
+        val left = ((screenW - winW) / 2).coerceAtLeast(12)
+        val top = ((screenH - winH) / 2).coerceAtLeast(24)
+        val right = (left + winW).coerceAtMost(screenW - 12)
+        val bottom = (top + winH).coerceAtMost(screenH - 24)
         return Rect(left, top, right, bottom)
     }
 
@@ -58,6 +68,8 @@ object FreeformWindowLauncher {
     fun prepareFreeformIntent(rawIntent: Intent): Intent {
         return Intent(rawIntent).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+            putExtra(EXTRA_ANDROID_WINDOWING_MODE, WINDOWING_MODE_FREEFORM)
+            putExtra(EXTRA_OPLUS_FREEFORM, true)
         }
     }
 
@@ -108,6 +120,47 @@ object FreeformWindowLauncher {
             showFreeformEnablePrompt(context)
         }
         return launched
+    }
+
+    /**
+     * Attempts to invoke Realme UI / ColorOS Smart Sidebar (`com.oplus.smartsidebar` or
+     * `com.coloros.smartsidebar`) if installed and enabled on the device.
+     */
+    fun launchRealmeSmartSidebar(context: Context): Boolean {
+        val sidebarPackages = listOf("com.oplus.smartsidebar", "com.coloros.smartsidebar")
+        val pm = context.packageManager
+
+        val actionCandidates = listOf(
+            "com.oplus.smartsidebar.ACTION_SHOW_SIDEBAR",
+            "com.coloros.smartsidebar.ACTION_SHOW_SIDEBAR",
+            "oplus.intent.action.SMART_SIDEBAR",
+            "coloros.intent.action.SMART_SIDEBAR"
+        )
+
+        for (pkg in sidebarPackages) {
+            for (act in actionCandidates) {
+                val actIntent = Intent(act).apply {
+                    setPackage(pkg)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                if (actIntent.resolveActivity(pm) != null) {
+                    val started = runCatching { context.startActivity(actIntent); true }.getOrDefault(false)
+                    if (started) return true
+                }
+                if (pm.resolveService(actIntent, 0) != null) {
+                    val svcStarted = runCatching { context.startService(actIntent) != null }.getOrDefault(false)
+                    if (svcStarted) return true
+                }
+            }
+
+            val launchIntent = runCatching { pm.getLaunchIntentForPackage(pkg) }.getOrNull()
+            if (launchIntent != null) {
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                val ok = runCatching { context.startActivity(launchIntent); true }.getOrDefault(false)
+                if (ok) return true
+            }
+        }
+        return false
     }
 
     fun showFreeformEnablePrompt(context: Context) {

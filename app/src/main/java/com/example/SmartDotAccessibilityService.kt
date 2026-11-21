@@ -176,10 +176,17 @@ class SmartDotAccessibilityService : AccessibilityService() {
 
     internal var performGlobalActionTestHook: ((Int) -> Boolean)? = null
     internal var activeRootTestHook: AccessibilityNodeInfo? = null
+    internal var accessibleRootsTestHook: (() -> List<AccessibilityNodeInfo>)? = null
+    internal var splitModeCheckTestHook: (() -> Boolean)? = null
 
     private fun dispatchGlobalAction(action: Int): Boolean {
         performGlobalActionTestHook?.let { return it(action) }
         return runCatching { performGlobalAction(action) }.getOrDefault(false)
+    }
+
+    internal fun dispatchScreenshotAction(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return false
+        return dispatchGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
     }
 
     private fun safeRootInActiveWindow(): AccessibilityNodeInfo? {
@@ -187,28 +194,123 @@ class SmartDotAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Initiates Split Screen (API 24+). If OEM firmware blocks GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN
-     * (e.g. returns false on MIUI/OneUI/ColorOS), falls back to opening Recents so the user
-     * can pick split-screen cleanly from the app icon.
-     * Returns true if direct Split Screen succeeded, false when fallback was triggered.
+     * Checks whether the screen is already in split-screen mode by inspecting active
+     * AccessibilityWindowInfo entries (2+ app windows or a split-screen divider window).
      */
-    fun performSplitScreen(): Boolean {
+    internal fun isScreenAlreadyInSplitMode(): Boolean {
+        splitModeCheckTestHook?.let { return it() }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return false
+        val windowList = runCatching { windows }.getOrNull().orEmpty()
+        var appWindowCount = 0
+        for (win in windowList) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
+                win.type == AccessibilityWindowInfo.TYPE_SPLIT_SCREEN_DIVIDER
+            ) {
+                return true
+            }
+            if (win.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
+                val pkg = runCatching { win.root?.packageName?.toString() }.getOrNull()
+                if (pkg != packageName) {
+                    appWindowCount++
+                }
+            }
+        }
+        return appWindowCount >= 2
+    }
+
+    /**
+     * Direct 1-Tap Split Screen (with Realme UI / ColorOS Recents auto-clicker):
+     * 1) Dispatches GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN.
+     * 2) After 250ms, inspects active windows / rootInActiveWindow: if the screen is not already
+     *    split and Recents is showing, locates "Split screen" / "विभाजित स्क्रीन" (or opens the
+     *    Recents card options menu if nested) and clicks it programmatically via ACTION_CLICK.
+     */
+    @JvmOverloads
+    fun performSplitScreen(
+        handler: Handler = Handler(Looper.getMainLooper()),
+        onCompleted: ((Boolean) -> Unit)? = null
+    ): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            onCompleted?.invoke(false)
             return false
         }
+
         val toggled = dispatchGlobalAction(GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN)
-        if (toggled) {
-            return true
+        if (!toggled) {
+            dispatchGlobalAction(GLOBAL_ACTION_RECENTS)
         }
-        // Fallback: open Recents overview for OEM split-screen selection
-        dispatchGlobalAction(GLOBAL_ACTION_RECENTS)
-        return false
+
+        handler.postDelayed({
+            if (isScreenAlreadyInSplitMode()) {
+                onCompleted?.invoke(true)
+                return@postDelayed
+            }
+
+            val roots = collectAccessibleRoots()
+            val directMatch = findSplitScreenOptionInRoots(roots)
+            if (directMatch != null) {
+                val clicked = runCatching {
+                    directMatch.clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                }.getOrDefault(false)
+                onCompleted?.invoke(clicked)
+                return@postDelayed
+            }
+
+            // Some Realme UI / ColorOS Recents layouts tuck "Split screen" inside the card's 3-dot menu
+            val recentsMenuMatch = QuickTileAutomation.findMatchingTileInRoots(
+                roots = filterSystemOrLauncherRoots(roots),
+                keywords = listOf("more options", "options", "menu", "अधिक")
+            )
+            if (recentsMenuMatch != null) {
+                val menuOpened = runCatching {
+                    recentsMenuMatch.clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                }.getOrDefault(false)
+                if (menuOpened) {
+                    handler.postDelayed({
+                        val subRoots = collectAccessibleRoots()
+                        val nestedSplitMatch = findSplitScreenOptionInRoots(subRoots)
+                        val clicked = if (nestedSplitMatch != null) {
+                            runCatching {
+                                nestedSplitMatch.clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            }.getOrDefault(false)
+                        } else {
+                            false
+                        }
+                        onCompleted?.invoke(clicked || isScreenAlreadyInSplitMode())
+                    }, 200L)
+                    return@postDelayed
+                }
+            }
+
+            onCompleted?.invoke(toggled && isScreenAlreadyInSplitMode())
+        }, 250L)
+
+        return toggled
+    }
+
+    private fun filterSystemOrLauncherRoots(roots: List<AccessibilityNodeInfo>): List<AccessibilityNodeInfo> {
+        val systemRoots = roots.filter { root ->
+            val pkg = root.packageName?.toString()?.lowercase().orEmpty()
+            pkg.contains("systemui") || pkg.contains("launcher") || pkg.contains("recents")
+        }
+        return systemRoots.ifEmpty { roots }
+    }
+
+    internal fun findSplitScreenOptionInRoots(
+        roots: List<AccessibilityNodeInfo>
+    ): QuickTileAutomation.TileMatch? {
+        val prioritizedRoots = filterSystemOrLauncherRoots(roots)
+        return QuickTileAutomation.findMatchingTileInRoots(
+            roots = prioritizedRoots,
+            keywords = listOf("split screen", "विभाजित स्क्रीन", "floating window", "split")
+        )
     }
 
     /**
      * Collects AccessibilityNodeInfo roots across the active window and system overlay/panel windows.
      */
     fun collectAccessibleRoots(): List<AccessibilityNodeInfo> {
+        accessibleRootsTestHook?.let { return it() }
         val roots = ArrayList<AccessibilityNodeInfo>()
         safeRootInActiveWindow()?.let { roots.add(it) }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {

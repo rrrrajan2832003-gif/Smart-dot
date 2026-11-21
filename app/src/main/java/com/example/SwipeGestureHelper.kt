@@ -48,18 +48,38 @@ object SwipeGestureHelper {
 
     val GESTURE_ACTIONS: List<GestureActionOption> = listOf(
         GestureActionOption("none", "None"),
+        GestureActionOption("open_menu", "Open Floating Menu"),
         GestureActionOption("back", "Back"),
         GestureActionOption("home", "Home"),
         GestureActionOption("recent_apps", "Recents"),
         GestureActionOption("lock_screen", "Lock Screen"),
         GestureActionOption("floating_window", "Floating Window"),
+        GestureActionOption("realme_smart_sidebar", "Realme Smart Sidebar"),
+        GestureActionOption("split_screen", "Split Screen"),
         GestureActionOption("screenshot", "Screenshot"),
         GestureActionOption("notifications", "Notification Panel"),
         GestureActionOption("quick_settings", "Quick Settings"),
         GestureActionOption("flashlight", "Flashlight"),
+        GestureActionOption("wifi", "Wi-Fi Toggle"),
+        GestureActionOption("mobile_data", "Mobile Data Toggle"),
+        GestureActionOption("bluetooth", "Bluetooth Toggle"),
+        GestureActionOption("auto_rotate", "Auto-Rotate Toggle"),
         GestureActionOption("screen_copy", "Screen Text Copy"),
         GestureActionOption("screen_translate", "Screen Translate"),
-        GestureActionOption("voice_assistant", "Voice Assistant")
+        GestureActionOption("screen_record", "Screen Recording"),
+        GestureActionOption("ask_ai", "AI Assistant (Ask AI)"),
+        GestureActionOption("voice_assistant", "Voice Assistant"),
+        GestureActionOption("chrome_incognito", "Chrome Incognito"),
+        GestureActionOption("chrome_search", "Chrome Search"),
+        GestureActionOption("youtube_subscriptions", "YouTube Subscriptions"),
+        GestureActionOption("youtube_search", "YouTube Search"),
+        GestureActionOption("whatsapp_chat", "WhatsApp Direct Chat"),
+        GestureActionOption("whatsapp_camera", "WhatsApp Camera"),
+        GestureActionOption("settings_wifi", "Settings: Wi-Fi"),
+        GestureActionOption("settings_bluetooth", "Settings: Bluetooth"),
+        GestureActionOption("settings_battery", "Settings: Battery"),
+        GestureActionOption("settings_app_info", "Settings: App Info"),
+        GestureActionOption("custom_url_intent", "Custom URL / Intent")
     )
 
     fun getActionDisplayName(actionId: String): String {

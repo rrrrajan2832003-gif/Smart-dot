@@ -31,6 +31,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.CheckCircle
@@ -942,10 +944,10 @@ fun SmartDotScreen(
         var sidebarHeight by remember { mutableStateOf(prefs.getInt("sidebar_height", 130)) }
         var sidebarWidth by remember { mutableStateOf(prefs.getInt("sidebar_width", 14)) }
         var sidebarOpacity by remember { mutableStateOf(prefs.getInt("sidebar_opacity", 70)) }
-        var sidebarSensitivity by remember { mutableStateOf(prefs.getInt("sidebar_sensitivity", 25)) }
+        var touchSensitivity by remember { mutableStateOf(prefs.getInt("sidebar_touch_sensitivity", 85)) }
+        var menuAnimSpeedMs by remember { mutableStateOf(prefs.getInt("menu_anim_speed_ms", 160)) }
         var sidebarStyle by remember { mutableStateOf(prefs.getString("sidebar_style", "Capsule") ?: "Capsule") }
         var sidebarAutoHide by remember { mutableStateOf(prefs.getBoolean("sidebar_autohide", false)) }
-        var sidebarVibration by remember { mutableStateOf(prefs.getBoolean("sidebar_vibration", true)) }
 
         Card(
             modifier = Modifier
@@ -1149,27 +1151,82 @@ fun SmartDotScreen(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
+                    val sensitivityLabel = when {
+                        touchSensitivity >= 80 -> "Ultra-High"
+                        touchSensitivity >= 55 -> "High"
+                        touchSensitivity >= 30 -> "Medium"
+                        else -> "Low"
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text(text = "Swipe Inward Sensitivity", style = MaterialTheme.typography.bodyMedium, color = Color(0xFF94A3B8))
-                        Text(text = "${sidebarSensitivity} dp", style = MaterialTheme.typography.bodyMedium, color = Color(android.graphics.Color.parseColor(dotColor)), fontWeight = FontWeight.Bold)
+                        Text(text = "Touch Sensitivity", style = MaterialTheme.typography.bodyMedium, color = Color(0xFF94A3B8))
+                        Text(text = "$sensitivityLabel ($touchSensitivity%)", style = MaterialTheme.typography.bodyMedium, color = Color(android.graphics.Color.parseColor(dotColor)), fontWeight = FontWeight.Bold)
                     }
                     Slider(
-                        value = sidebarSensitivity.toFloat(),
-                        onValueChange = { sidebarSensitivity = it.roundToInt() },
+                        value = touchSensitivity.toFloat(),
+                        onValueChange = { touchSensitivity = it.roundToInt() },
                         onValueChangeFinished = {
-                            prefs.edit().putInt("sidebar_sensitivity", sidebarSensitivity).apply()
+                            val mappedLegacyDp = (22 + ((100 - touchSensitivity) * 0.25f)).roundToInt()
+                            prefs.edit()
+                                .putInt("sidebar_touch_sensitivity", touchSensitivity)
+                                .putInt("sidebar_sensitivity", mappedLegacyDp)
+                                .apply()
                             updateServiceStyle()
                         },
-                        valueRange = 10f..60f,
+                        valueRange = 0f..100f,
+                        modifier = Modifier.testTag("slider_touch_sensitivity"),
                         colors = SliderDefaults.colors(
                             thumbColor = Color(android.graphics.Color.parseColor(dotColor)),
                             activeTrackColor = Color(android.graphics.Color.parseColor(dotColor)),
                             inactiveTrackColor = Color(0xFF475569)
                         )
                     )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(text = "Low", style = MaterialTheme.typography.labelSmall, color = Color(0xFF64748B))
+                        Text(text = "Ultra-High", style = MaterialTheme.typography.labelSmall, color = Color(0xFF64748B))
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    val animLabel = when {
+                        menuAnimSpeedMs <= 120 -> "Fast (${menuAnimSpeedMs}ms)"
+                        menuAnimSpeedMs >= 260 -> "Slow (${menuAnimSpeedMs}ms)"
+                        else -> "Smooth (${menuAnimSpeedMs}ms)"
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(text = "Menu Animation Speed", style = MaterialTheme.typography.bodyMedium, color = Color(0xFF94A3B8))
+                        Text(text = animLabel, style = MaterialTheme.typography.bodyMedium, color = Color(android.graphics.Color.parseColor(dotColor)), fontWeight = FontWeight.Bold)
+                    }
+                    Slider(
+                        value = menuAnimSpeedMs.toFloat(),
+                        onValueChange = { menuAnimSpeedMs = it.roundToInt() },
+                        onValueChangeFinished = {
+                            prefs.edit().putInt("menu_anim_speed_ms", menuAnimSpeedMs).apply()
+                            updateServiceStyle()
+                        },
+                        valueRange = 80f..350f,
+                        modifier = Modifier.testTag("slider_menu_anim_speed"),
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color(android.graphics.Color.parseColor(dotColor)),
+                            activeTrackColor = Color(android.graphics.Color.parseColor(dotColor)),
+                            inactiveTrackColor = Color(0xFF475569)
+                        )
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(text = "Fast 80ms", style = MaterialTheme.typography.labelSmall, color = Color(0xFF64748B))
+                        Text(text = "Slow 350ms", style = MaterialTheme.typography.labelSmall, color = Color(0xFF64748B))
+                    }
 
                     Divider(color = Color(0xFF334155), modifier = Modifier.padding(vertical = 12.dp))
 
@@ -1196,36 +1253,6 @@ fun SmartDotScreen(
                             onCheckedChange = { isChecked ->
                                 sidebarAutoHide = isChecked
                                 prefs.edit().putBoolean("sidebar_autohide", isChecked).apply()
-                                updateServiceStyle()
-                            }
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Vibration Feedback",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFFF8FAFC)
-                            )
-                            Text(
-                                text = "Gives a responsive haptic feel on sidebar touches.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color(0xFF64748B)
-                            )
-                        }
-                        Switch(
-                            checked = sidebarVibration,
-                            onCheckedChange = { isChecked ->
-                                sidebarVibration = isChecked
-                                prefs.edit().putBoolean("sidebar_vibration", isChecked).apply()
                                 updateServiceStyle()
                             }
                         )
@@ -1294,13 +1321,12 @@ fun SmartDotScreen(
                                     menuWidth = sizeDp
                                     menuHeight = sizeDp
                                     menuGridRows = 3
-                                    menuGridCols = 3
                                     prefs.edit().apply {
                                         putString("menu_size_preset", preset)
                                         putInt("menu_width_dp", sizeDp)
                                         putInt("menu_height_dp", sizeDp)
                                         putInt("menu_grid_rows", 3)
-                                        putInt("menu_grid_cols", 3)
+                                        putInt("menu_grid_cols", menuGridCols)
                                         apply()
                                     }
                                     val currentList = getShortcutsList(prefs)
@@ -1310,6 +1336,47 @@ fun SmartDotScreen(
                         ) {
                             Text(
                                 text = preset,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isSelected) Color.Black else Color.White
+                            )
+                        }
+                    }
+                }
+
+                Divider(color = Color(0xFF334155), modifier = Modifier.padding(vertical = 12.dp))
+
+                Text(
+                    text = "Menu Grid Columns (3, 4, or 5):",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFF94A3B8),
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf(3, 4, 5).forEach { colsCount ->
+                        val isSelected = menuGridCols == colsCount
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isSelected) Color(android.graphics.Color.parseColor(dotColor)) else Color(0xFF334155))
+                                .clickable {
+                                    menuGridCols = colsCount
+                                    prefs.edit().putInt("menu_grid_cols", colsCount).apply()
+                                    val currentList = getShortcutsList(prefs)
+                                    saveShortcutsList(prefs, currentList)
+                                    updateServiceStyle()
+                                }
+                                .testTag("grid_cols_$colsCount")
+                        ) {
+                            Text(
+                                text = "$colsCount Columns",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = if (isSelected) Color.Black else Color.White
@@ -1360,21 +1427,242 @@ fun SmartDotScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // UPGRADED CUSTOMIZABLE SHORTCUTS CARD
+        // 4. Smart Hardware, AI Assistant Key & Persistence Card
+        var shakeTorchEnabled by remember { mutableStateOf(prefs.getBoolean(FloatingService.PREF_SHAKE_TORCH_ENABLED, false)) }
+        var geminiApiKeyInput by remember { mutableStateOf(prefs.getString(AiAssistantHelper.PREF_GEMINI_API_KEY, "") ?: "") }
+        val accentParseColor = Color(android.graphics.Color.parseColor(dotColor))
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, Color(0xFF334155), RoundedCornerShape(16.dp))
+                .testTag("smart_features_card"),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "Smart Features & Persistence",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFF8FAFC)
+                )
+                Text(
+                    text = "Hardware triggers, free AI assistant key, and background keep-alive for Realme UI.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF64748B),
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+
+                // Shake-to-Torch Toggle
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text(
+                            text = "Shake to Toggle Flashlight",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFF8FAFC)
+                        )
+                        Text(
+                            text = "Double-shake phone firmly to toggle torch (zero vibration)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+                    Switch(
+                        checked = shakeTorchEnabled,
+                        onCheckedChange = { checked ->
+                            shakeTorchEnabled = checked
+                            prefs.edit().putBoolean(FloatingService.PREF_SHAKE_TORCH_ENABLED, checked).apply()
+                            updateServiceStyle()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Black,
+                            checkedTrackColor = accentParseColor
+                        ),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("switch_shake_torch")
+                    )
+                }
+
+                HorizontalDivider(color = Color(0xFF334155), thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
+
+                // AI Assistant Gemini API Key (Optional)
+                Text(
+                    text = "AI Assistant Gemini API Key (Optional)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFF8FAFC)
+                )
+                Text(
+                    text = "Enter a free Google Gemini API key for built-in Ask AI & Screen Summary, or leave empty to open Gemini / ChatGPT web.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF94A3B8),
+                    modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
+                )
+                OutlinedTextField(
+                    value = geminiApiKeyInput,
+                    onValueChange = { geminiApiKeyInput = it },
+                    placeholder = { Text("Paste free Gemini API key (optional)", color = Color(0xFF64748B), fontSize = 12.sp) },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = accentParseColor,
+                        unfocusedBorderColor = Color(0xFF475569),
+                        focusedContainerColor = Color(0xFF0F172A),
+                        unfocusedContainerColor = Color(0xFF0F172A)
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("input_gemini_api_key")
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            prefs.edit().putString(AiAssistantHelper.PREF_GEMINI_API_KEY, geminiApiKeyInput.trim()).apply()
+                            Toast.makeText(context, "AI API key saved.", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = accentParseColor, contentColor = Color.Black),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(42.dp)
+                            .testTag("btn_save_gemini_key")
+                    ) {
+                        Text("Save AI Key", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            geminiApiKeyInput = ""
+                            prefs.edit().remove(AiAssistantHelper.PREF_GEMINI_API_KEY).apply()
+                            Toast.makeText(context, "Cleared AI key (using web fallback).", Toast.LENGTH_SHORT).show()
+                        },
+                        border = BorderStroke(1.dp, Color(0xFF475569)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFCBD5E1)),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.height(42.dp)
+                    ) {
+                        Text("Clear", fontSize = 12.sp)
+                    }
+                }
+
+                HorizontalDivider(color = Color(0xFF334155), thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
+
+                // Battery Optimization & Realme Auto-Launch Persistence
+                Text(
+                    text = "Unkillable Background Persistence",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFF8FAFC)
+                )
+                Text(
+                    text = "Keep Edge Sidebar & Floating Dot alive after reboot and prevent Realme battery killing.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF94A3B8),
+                    modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            val batteryIntent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                data = Uri.parse("package:${context.packageName}")
+                            }
+                            val launched = runCatching {
+                                context.startActivity(batteryIntent)
+                                true
+                            }.getOrDefault(false)
+                            if (!launched) {
+                                runCatching {
+                                    context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                }.onFailure {
+                                    Toast.makeText(context, "Open Battery settings to disable optimization.", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7), contentColor = Color.White),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 48.dp)
+                            .testTag("btn_ignore_battery_opt")
+                    ) {
+                        Text("Keep Alive / Battery", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            val oemCandidates = listOf(
+                                Intent().apply {
+                                    setClassName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity")
+                                },
+                                Intent().apply {
+                                    setClassName("com.coloros.safecenter", "com.coloros.safecenter.startupapp.StartupAppListActivity")
+                                },
+                                Intent().apply {
+                                    setClassName("com.oplus.battery", "com.oplus.powermanager.fuelgaue.PowerControlActivity")
+                                },
+                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+                            )
+                            var opened = false
+                            for (candidate in oemCandidates) {
+                                val ok = runCatching {
+                                    context.startActivity(candidate)
+                                    true
+                                }.getOrDefault(false)
+                                if (ok) {
+                                    opened = true
+                                    break
+                                }
+                            }
+                            if (!opened) {
+                                Toast.makeText(context, "Auto-Launch settings not found.", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        border = BorderStroke(1.dp, accentParseColor),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = accentParseColor),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 48.dp)
+                            .testTag("btn_realme_autolaunch")
+                    ) {
+                        Text("Realme Auto-Launch", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // UNIFIED COMPACT CUSTOM SHORTCUTS CARD (Replaces old Customize Shortcuts card)
         var activeSlotIndex by remember { mutableStateOf(-1) }
         var showSelectorDialog by remember { mutableStateOf(false) }
+        var selectedCategoryFilter by remember { mutableStateOf("All") }
+        var customIntentUriInput by remember {
+            mutableStateOf(prefs.getString(InAppShortcutLauncher.PREF_CUSTOM_INTENT_URI, "") ?: "")
+        }
 
         val shortcutsList = remember {
             mutableStateListOf<String>().apply {
                 addAll(getShortcutsList(prefs))
             }
         }
-
-        // Drag-and-drop variables
-        var draggedIndex by remember { mutableStateOf(-1) }
-        var draggedOffsetY by remember { mutableStateOf(0f) }
-        val density = LocalDensity.current
-        val dragThresholdPx = remember { with(density) { 30.dp.toPx() } }
 
         val swapShortcuts: (Int, Int) -> Unit = { i1, i2 ->
             if (i1 in shortcutsList.indices && i2 in shortcutsList.indices) {
@@ -1401,16 +1689,16 @@ fun SmartDotScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Customize Shortcuts",
+                        text = "Custom Shortcuts",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFFF8FAFC)
                     )
-                    
+
                     val resetDefaults = {
                         val defaultList = listOf(
-                            "home", "back", "recent_apps", "screenshot", 
-                            "flashlight", "wifi", "bluetooth", "open_app_drawer", 
+                            "home", "back", "recent_apps", "screenshot",
+                            "flashlight", "wifi", "bluetooth", "open_app_drawer",
                             "settings", "calculator", "chrome"
                         )
                         shortcutsList.clear()
@@ -1433,7 +1721,6 @@ fun SmartDotScreen(
                         Toast.makeText(context, "Customizations reset to defaults", Toast.LENGTH_SHORT).show()
                     }
 
-                    // Reset button
                     IconButton(
                         onClick = resetDefaults,
                         modifier = Modifier.size(32.dp).testTag("reset_to_default_button")
@@ -1447,210 +1734,108 @@ fun SmartDotScreen(
                 }
 
                 Text(
-                    text = "Press and drag on the ☰ handle on any item below to reorder instantly. Click name to swap, or add/remove as needed.",
+                    text = "Tap any shortcut chip below to swap, reorder, or remove. Supports System, Apps, AI & In-App Deep Links.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color(0xFF94A3B8),
                     modifier = Modifier.padding(bottom = 12.dp)
                 )
 
-                // Render shortcuts list as linear views
+                // Compact 3-column pill grid (replaces bulky vertical list)
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    shortcutsList.forEachIndexed { index, shortcutId ->
-                        val isDragging = draggedIndex == index
-                        val actionName = getActionName(shortcutId)
-                        val actionItem = ACTION_LIST.find { it.id == shortcutId }
-                        val category = actionItem?.category ?: "App Choice"
-                        val desc = actionItem?.description ?: "Launch widget action"
-
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .graphicsLayer {
-                                    if (isDragging) {
-                                        translationY = draggedOffsetY
-                                        shadowElevation = 8.dp.toPx()
-                                        scaleX = 1.02f
-                                        scaleY = 1.02f
-                                    }
-                                }
-                                .border(
-                                    1.dp,
-                                    if (isDragging) Color(android.graphics.Color.parseColor(dotColor)) else Color(0xFF334155),
-                                    RoundedCornerShape(12.dp)
-                                ),
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (isDragging) Color(0xFF0F172A) else Color(0xFF0F172A).copy(alpha = 0.5f)
-                            ),
-                            shape = RoundedCornerShape(12.dp)
+                    shortcutsList.withIndex().chunked(3).forEach { rowEntries ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                // Drag Handle 3 lines
-                                Box(
-                                    modifier = Modifier
-                                        .size(32.dp)
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(Color(0xFF334155).copy(alpha = 0.5f))
-                                        .pointerInput(index) {
-                                            detectDragGestures(
-                                                onDragStart = {
-                                                    draggedIndex = index
-                                                    draggedOffsetY = 0f
-                                                },
-                                                onDrag = { change, dragAmount ->
-                                                    change.consume()
-                                                    draggedOffsetY += dragAmount.y
-                                                    if (draggedOffsetY > dragThresholdPx && index < shortcutsList.lastIndex) {
-                                                        val target = index + 1
-                                                        val temp = shortcutsList[index]
-                                                        shortcutsList[index] = shortcutsList[target]
-                                                        shortcutsList[target] = temp
-                                                        draggedIndex = target
-                                                        draggedOffsetY = 0f
-                                                    } else if (draggedOffsetY < -dragThresholdPx && index > 0) {
-                                                        val target = index - 1
-                                                        val temp = shortcutsList[index]
-                                                        shortcutsList[index] = shortcutsList[target]
-                                                        shortcutsList[target] = temp
-                                                        draggedIndex = target
-                                                        draggedOffsetY = 0f
-                                                    }
-                                                },
-                                                onDragEnd = {
-                                                    draggedIndex = -1
-                                                    draggedOffsetY = 0f
-                                                    saveShortcutsList(prefs, shortcutsList)
-                                                    updateServiceStyle()
-                                                },
-                                                onDragCancel = {
-                                                    draggedIndex = -1
-                                                    draggedOffsetY = 0f
-                                                }
-                                            )
-                                        },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Menu,
-                                        contentDescription = "Drag to reorder",
-                                        tint = Color(0xFF94A3B8),
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.width(10.dp))
-
-                                // Shortcut Icon indicator
-                                Box(
-                                    modifier = Modifier
-                                        .size(32.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF1E293B)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    // Use standard icons for UI aesthetics
-                                    Icon(
-                                        imageVector = Icons.Default.PlayArrow,
-                                        contentDescription = null,
-                                        tint = Color(android.graphics.Color.parseColor(dotColor)),
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.width(10.dp))
-
-                                // Information click triggers dialogue swap
-                                Column(
+                            rowEntries.forEach { indexed ->
+                                val idx = indexed.index
+                                val shortcutId = indexed.value
+                                val label = getActionName(shortcutId)
+                                Surface(
+                                    color = Color(0xFF0F172A),
+                                    shape = RoundedCornerShape(10.dp),
+                                    border = BorderStroke(1.dp, Color(0xFF334155)),
                                     modifier = Modifier
                                         .weight(1f)
+                                        .defaultMinSize(minHeight = 48.dp)
                                         .clickable {
-                                            activeSlotIndex = index
+                                            activeSlotIndex = idx
+                                            selectedCategoryFilter = "All"
                                             showSelectorDialog = true
                                         }
+                                        .testTag("custom_shortcut_chip_$idx")
                                 ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 8.dp)
+                                    ) {
                                         Text(
-                                            text = actionName,
-                                            style = MaterialTheme.typography.bodyMedium,
+                                            text = "${idx + 1}. $label",
+                                            style = MaterialTheme.typography.labelMedium,
                                             fontWeight = FontWeight.Bold,
-                                            color = Color.White
+                                            color = Color(0xFFF8FAFC),
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                         )
-                                        Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = "(${category})",
+                                            text = "Edit",
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = Color(android.graphics.Color.parseColor(dotColor))
+                                            color = Color(android.graphics.Color.parseColor(dotColor)),
+                                            fontSize = 10.sp
                                         )
                                     }
-                                    Text(
-                                        text = desc,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = Color(0xFF94A3B8),
-                                        maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.width(6.dp))
-
-                                // Custom micro up/down triggers
-                                IconButton(
-                                    onClick = { swapShortcuts(index, index - 1) },
-                                    enabled = index > 0,
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.KeyboardArrowUp,
-                                        contentDescription = "Move Up",
-                                        tint = if (index > 0) Color(0xFF94A3B8) else Color(0xFF475569),
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-
-                                IconButton(
-                                    onClick = { swapShortcuts(index, index + 1) },
-                                    enabled = index < shortcutsList.lastIndex,
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.KeyboardArrowDown,
-                                        contentDescription = "Move Down",
-                                        tint = if (index < shortcutsList.lastIndex) Color(0xFF94A3B8) else Color(0xFF475569),
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-
-                                Spacer(modifier = Modifier.width(4.dp))
-
-                                // Remove trigger key
-                                IconButton(
-                                    onClick = {
-                                        if (shortcutsList.size > 1) {
-                                            shortcutsList.removeAt(index)
-                                            saveShortcutsList(prefs, shortcutsList)
-                                            updateServiceStyle()
-                                        } else {
-                                            Toast.makeText(context, "Keep at least 1 shortcut", Toast.LENGTH_SHORT).show()
-                                        }
-                                    },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Delete,
-                                        contentDescription = "Delete shortcut",
-                                        tint = Color(0xFFEF4444),
-                                        modifier = Modifier.size(18.dp)
-                                    )
                                 }
                             }
+                            repeat(3 - rowEntries.size) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
                         }
+                    }
+                }
+
+                // Inline Custom URL / Intent URI quick config for the "custom_url_intent" In-App Shortcut
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = customIntentUriInput,
+                        onValueChange = { customIntentUriInput = it },
+                        placeholder = { Text("Custom URL / Intent URI (https://...)", color = Color(0xFF64748B), fontSize = 11.sp) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            focusedBorderColor = Color(android.graphics.Color.parseColor(dotColor)),
+                            unfocusedBorderColor = Color(0xFF475569),
+                            focusedContainerColor = Color(0xFF0F172A),
+                            unfocusedContainerColor = Color(0xFF0F172A)
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("input_custom_intent_uri")
+                    )
+                    Button(
+                        onClick = {
+                            prefs.edit().putString(InAppShortcutLauncher.PREF_CUSTOM_INTENT_URI, customIntentUriInput.trim()).apply()
+                            Toast.makeText(context, "Custom URL / Intent saved.", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF334155),
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .height(48.dp)
+                            .testTag("btn_save_custom_uri")
+                    ) {
+                        Text("Save", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
                 }
 
@@ -1658,6 +1843,7 @@ fun SmartDotScreen(
                 Button(
                     onClick = {
                         activeSlotIndex = shortcutsList.size
+                        selectedCategoryFilter = "All"
                         showSelectorDialog = true
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
@@ -1680,92 +1866,188 @@ fun SmartDotScreen(
         }
 
         if (showSelectorDialog && activeSlotIndex >= 0) {
+            val isEditingExisting = activeSlotIndex in shortcutsList.indices
+            val categoriesList = remember { listOf("All") + ACTION_LIST.map { it.category }.distinct() }
+            val accentDialogColor = Color(android.graphics.Color.parseColor(dotColor))
+
             AlertDialog(
                 onDismissRequest = { showSelectorDialog = false },
                 title = {
                     Column {
-                        val headerLabelText = if (activeSlotIndex == shortcutsList.size) "Add New Shortcut" else "Remap Slot ${activeSlotIndex + 1}"
+                        val headerLabelText = if (!isEditingExisting) "Add New Shortcut" else "Edit Slot ${activeSlotIndex + 1}"
                         Text(
                             text = headerLabelText,
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFFF8FAFC)
                         )
-                        Text(
-                            text = "Select any tool or action from the 30+ assistant actions suite below.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF94A3B8)
-                        )
+                        if (isEditingExisting) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        if (activeSlotIndex > 0) {
+                                            swapShortcuts(activeSlotIndex, activeSlotIndex - 1)
+                                            activeSlotIndex -= 1
+                                        }
+                                    },
+                                    enabled = activeSlotIndex > 0,
+                                    modifier = Modifier.weight(1f).height(38.dp),
+                                    contentPadding = PaddingValues(horizontal = 6.dp)
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Move Left", modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Left", fontSize = 11.sp)
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        if (activeSlotIndex < shortcutsList.lastIndex) {
+                                            swapShortcuts(activeSlotIndex, activeSlotIndex + 1)
+                                            activeSlotIndex += 1
+                                        }
+                                    },
+                                    enabled = activeSlotIndex < shortcutsList.lastIndex,
+                                    modifier = Modifier.weight(1f).height(38.dp),
+                                    contentPadding = PaddingValues(horizontal = 6.dp)
+                                ) {
+                                    Text("Right", fontSize = 11.sp)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Move Right", modifier = Modifier.size(16.dp))
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        if (shortcutsList.size > 1) {
+                                            shortcutsList.removeAt(activeSlotIndex)
+                                            saveShortcutsList(prefs, shortcutsList)
+                                            updateServiceStyle()
+                                            showSelectorDialog = false
+                                        } else {
+                                            Toast.makeText(context, "Keep at least 1 shortcut", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF4444)),
+                                    border = BorderStroke(1.dp, Color(0xFFEF4444)),
+                                    modifier = Modifier.height(38.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp)
+                                ) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete shortcut", modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
                     }
                 },
                 text = {
-                    Box(
-                        modifier = Modifier
-                            .height(350.dp)
-                            .fillMaxWidth()
-                    ) {
-                        val categories = ACTION_LIST.groupBy { it.category }
-                        val scrollStateDiag = rememberScrollState()
-
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        // Category Filter Strip
                         Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(scrollStateDiag)
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.padding(bottom = 8.dp)
                         ) {
-                            categories.forEach { (cat, actions) ->
-                                Text(
-                                    text = cat.uppercase(),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(android.graphics.Color.parseColor(dotColor)),
-                                    modifier = Modifier.padding(top = 14.dp, bottom = 6.dp)
-                                )
-
-                                actions.forEach { action ->
-                                    val isCurrentValueSelected = activeSlotIndex < shortcutsList.size && shortcutsList[activeSlotIndex] == action.id
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                if (activeSlotIndex == shortcutsList.size) {
-                                                    // Add / append
-                                                    shortcutsList.add(action.id)
-                                                    Toast.makeText(context, "Appended ${action.name} shortcut", Toast.LENGTH_SHORT).show()
-                                                } else {
-                                                    // Replace
-                                                    shortcutsList[activeSlotIndex] = action.id
-                                                    Toast.makeText(context, "Slot ${activeSlotIndex + 1} set to ${action.name}", Toast.LENGTH_SHORT).show()
-                                                }
-                                                // Save setting
-                                                saveShortcutsList(prefs, shortcutsList)
-                                                // Close dialog & update widget
-                                                showSelectorDialog = false
-                                                updateServiceStyle()
-                                            }
-                                            .padding(vertical = 10.dp, horizontal = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
+                            categoriesList.chunked(3).forEach { catRow ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    catRow.forEach { cat ->
+                                        val isCatSelected = selectedCategoryFilter == cat
+                                        Box(
+                                            contentAlignment = Alignment.Center,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(if (isCatSelected) accentDialogColor else Color(0xFF0F172A))
+                                                .clickable { selectedCategoryFilter = cat }
+                                                .padding(vertical = 6.dp, horizontal = 4.dp)
+                                        ) {
                                             Text(
-                                                text = action.name,
-                                                style = MaterialTheme.typography.bodyLarge,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = Color.White
-                                            )
-                                            Text(
-                                                text = action.description,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = Color(0xFF94A3B8)
+                                                text = cat.replace(" Shortcuts", "").replace(" Preferences", ""),
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                color = if (isCatSelected) Color.Black else Color(0xFFCBD5E1)
                                             )
                                         }
-                                        Icon(
-                                            imageVector = Icons.Default.CheckCircle,
-                                            contentDescription = null,
-                                            tint = if (isCurrentValueSelected) Color(android.graphics.Color.parseColor(dotColor)) else Color.Transparent,
-                                            modifier = Modifier.size(20.dp)
-                                        )
                                     }
-                                    HorizontalDivider(color = Color(0xFF334155), thickness = 0.5.dp)
+                                    repeat(3 - catRow.size) {
+                                        Spacer(modifier = Modifier.weight(1f))
+                                    }
+                                }
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .height(300.dp)
+                                .fillMaxWidth()
+                        ) {
+                            val filteredActions = if (selectedCategoryFilter == "All") {
+                                ACTION_LIST
+                            } else {
+                                ACTION_LIST.filter { it.category == selectedCategoryFilter }
+                            }
+                            val categories = filteredActions.groupBy { it.category }
+                            val scrollStateDiag = rememberScrollState()
+
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(scrollStateDiag)
+                            ) {
+                                categories.forEach { (cat, actions) ->
+                                    Text(
+                                        text = cat.uppercase(),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = accentDialogColor,
+                                        modifier = Modifier.padding(top = 10.dp, bottom = 6.dp)
+                                    )
+
+                                    actions.forEach { action ->
+                                        val isCurrentValueSelected = activeSlotIndex < shortcutsList.size && shortcutsList[activeSlotIndex] == action.id
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    if (activeSlotIndex >= shortcutsList.size) {
+                                                        shortcutsList.add(action.id)
+                                                        Toast.makeText(context, "Appended ${action.name} shortcut", Toast.LENGTH_SHORT).show()
+                                                    } else {
+                                                        shortcutsList[activeSlotIndex] = action.id
+                                                        Toast.makeText(context, "Slot ${activeSlotIndex + 1} set to ${action.name}", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                    saveShortcutsList(prefs, shortcutsList)
+                                                    showSelectorDialog = false
+                                                    updateServiceStyle()
+                                                }
+                                                .padding(vertical = 10.dp, horizontal = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = action.name,
+                                                    style = MaterialTheme.typography.bodyLarge,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = Color.White
+                                                )
+                                                Text(
+                                                    text = action.description,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = Color(0xFF94A3B8)
+                                                )
+                                            }
+                                            Icon(
+                                                imageVector = Icons.Default.CheckCircle,
+                                                contentDescription = null,
+                                                tint = if (isCurrentValueSelected) accentDialogColor else Color.Transparent,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                        HorizontalDivider(color = Color(0xFF334155), thickness = 0.5.dp)
+                                    }
                                 }
                             }
                         }
@@ -1773,7 +2055,7 @@ fun SmartDotScreen(
                 },
                 confirmButton = {
                     TextButton(onClick = { showSelectorDialog = false }) {
-                        Text("CANCEL", color = Color(android.graphics.Color.parseColor(dotColor)))
+                        Text("CANCEL", color = accentDialogColor)
                     }
                 },
                 containerColor = Color(0xFF1E293B),
@@ -1868,6 +2150,8 @@ private fun getActionName(actionId: String): String {
         "hotspot" -> "Hotspot"
         "split_screen" -> "Split"
         "floating_window" -> "Float App"
+        "open_menu" -> "Open Menu"
+        "realme_smart_sidebar" -> "Smart Sidebar"
         "open_app_drawer" -> "Drawer"
         "voice_assistant" -> "Assistant"
         "about_app" -> "About"
@@ -1875,6 +2159,18 @@ private fun getActionName(actionId: String): String {
         "contacts" -> "Contacts"
         "messages" -> "Messages"
         "custom_app" -> "Custom"
+        "ask_ai" -> "Ask AI"
+        "chrome_incognito" -> "Incognito"
+        "chrome_search" -> "Chrome Search"
+        "youtube_subscriptions" -> "YT Subs"
+        "youtube_search" -> "YT Search"
+        "whatsapp_chat" -> "WA Chat"
+        "whatsapp_camera" -> "WA Cam"
+        "settings_wifi" -> "Wi-Fi Pref"
+        "settings_bluetooth" -> "BT Pref"
+        "settings_battery" -> "Battery"
+        "settings_app_info" -> "App Info"
+        "custom_url_intent" -> "Custom URL"
         else -> "Shortcut"
     }
 }
@@ -1895,11 +2191,13 @@ val ACTION_LIST = listOf(
     AvailableAction("screenshot", "Screenshot", "System Shortcuts", "Capture system screen shot"),
     AvailableAction("screen_copy", "Screen Text Copy", "System Shortcuts", "Tap any visible text on screen to copy instantly"),
     AvailableAction("screen_translate", "Screen Translate", "System Shortcuts", "Tap any text on screen for instant offline translation"),
-    AvailableAction("screen_record", "Screen Record", "System Shortcuts", "Trigger device screen recorder"),
+    AvailableAction("screen_record", "Screen Record", "System Shortcuts", "Record screen video to Movies/SmartDot"),
+    AvailableAction("ask_ai", "AI Assistant (Ask AI)", "System Shortcuts", "Open Ask AI & AI Screen Summary panel"),
     AvailableAction("notifications", "Notifications", "System Shortcuts", "Expand status bar notification panel"),
     AvailableAction("quick_settings", "Quick Settings", "System Shortcuts", "Expand status bar quick settings panel"),
     AvailableAction("split_screen", "Split Screen", "System Shortcuts", "Initiate system Split Screen Mode"),
     AvailableAction("floating_window", "Floating Window", "System Shortcuts", "Pop out current active app into a movable floating window"),
+    AvailableAction("realme_smart_sidebar", "Realme Smart Sidebar", "System Shortcuts", "Trigger built-in Realme / ColorOS Smart Sidebar"),
     AvailableAction("open_app_drawer", "Open App Drawer", "System Shortcuts", "Open installed launcher app drawer"),
     AvailableAction("voice_assistant", "Voice Assistant", "System Shortcuts", "Activate Google Voice Assistant"),
     AvailableAction("about_app", "About App", "System Shortcuts", "Open local Floating Shortcuts About and Developer suite"),
@@ -1931,7 +2229,20 @@ val ACTION_LIST = listOf(
     AvailableAction("clock", "Alarms and Clock", "Utility Apps", "Open deskclock alarms scheduler"),
     AvailableAction("contacts", "Contacts Manager", "Utility Apps", "Search for telephone directory people"),
     AvailableAction("messages", "Messages SMS", "Utility Apps", "Trigger default messaging SMS interface"),
-    AvailableAction("custom_app", "Custom App Launcher", "Utility Apps", "Launch a custom Android package suffix")
+    AvailableAction("custom_app", "Custom App Launcher", "Utility Apps", "Launch a custom Android package suffix"),
+
+    // In-App Deep-Link Shortcuts
+    AvailableAction("chrome_incognito", "Chrome Incognito", "In-App Shortcuts", "Open new Chrome Incognito tab directly"),
+    AvailableAction("chrome_search", "Chrome Search", "In-App Shortcuts", "Start a fresh Google search in Chrome"),
+    AvailableAction("youtube_subscriptions", "YouTube Subscriptions", "In-App Shortcuts", "Jump straight to YouTube Subscriptions feed"),
+    AvailableAction("youtube_search", "YouTube Search", "In-App Shortcuts", "Open YouTube search directly"),
+    AvailableAction("whatsapp_chat", "WhatsApp Direct Chat", "In-App Shortcuts", "Jump straight to starting a WhatsApp chat"),
+    AvailableAction("whatsapp_camera", "WhatsApp Camera", "In-App Shortcuts", "Open WhatsApp camera capture directly"),
+    AvailableAction("settings_wifi", "Settings: Wi-Fi", "In-App Shortcuts", "Deep link directly to Wi-Fi Settings"),
+    AvailableAction("settings_bluetooth", "Settings: Bluetooth", "In-App Shortcuts", "Deep link directly to Bluetooth Settings"),
+    AvailableAction("settings_battery", "Settings: Battery", "In-App Shortcuts", "Deep link directly to Battery usage Settings"),
+    AvailableAction("settings_app_info", "Settings: App Info", "In-App Shortcuts", "Open App Info for active app or SmartDot"),
+    AvailableAction("custom_url_intent", "Custom URL / Intent", "In-App Shortcuts", "Launch configured Custom URL or Intent URI")
 )
 
 @Composable

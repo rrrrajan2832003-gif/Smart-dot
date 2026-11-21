@@ -334,7 +334,7 @@ class SmartDotUpgradeFeaturesTest {
             .apply { isAccessible = true }
 
         executeAction.invoke(floatingService, "split_screen")
-        ShadowLooper.idleMainLooper()
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(300, TimeUnit.MILLISECONDS)
 
         assertEquals(
             listOf(
