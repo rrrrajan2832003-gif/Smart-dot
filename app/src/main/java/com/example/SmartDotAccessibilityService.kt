@@ -1,11 +1,13 @@
 package com.example
 
 import android.accessibilityservice.AccessibilityService
+import android.graphics.Bitmap
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.os.Build
 import android.text.TextPaint
 import android.util.Log
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlin.math.abs
@@ -106,6 +108,51 @@ class SmartDotAccessibilityService : AccessibilityService() {
         val rawBlocks = extractVisibleScreenTextNodes()
         val density = resources.displayMetrics.density
         return splitNodesIntoWordNodes(rawBlocks, density)
+    }
+
+    /**
+     * Quietly captures the current screen frame in memory ONLY via API 30+ AccessibilityService.takeScreenshot()
+     * (zero MediaProjection dialog, zero gallery/storage writes). Calls [onCaptured] with a software ARGB_8888 Bitmap
+     * that the caller must recycle after ML Kit OCR finishes, or null if unsupported/failed.
+     */
+    fun captureScreenBitmapInMemory(onCaptured: (Bitmap?) -> Unit) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            onCaptured(null)
+            return
+        }
+
+        try {
+            takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                mainExecutor,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: ScreenshotResult) {
+                        var softwareBitmap: Bitmap? = null
+                        val hwBuffer = screenshot.hardwareBuffer
+                        try {
+                            val wrapped = Bitmap.wrapHardwareBuffer(hwBuffer, screenshot.colorSpace)
+                            if (wrapped != null) {
+                                softwareBitmap = wrapped.copy(Bitmap.Config.ARGB_8888, false)
+                                wrapped.recycle()
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed copying hardware screenshot buffer to in-memory Bitmap", e)
+                        } finally {
+                            runCatching { hwBuffer.close() }
+                        }
+                        onCaptured(softwareBitmap)
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        Log.w(TAG, "AccessibilityService.takeScreenshot failed with errorCode=$errorCode")
+                        onCaptured(null)
+                    }
+                }
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "AccessibilityService.takeScreenshot threw exception", e)
+            onCaptured(null)
+        }
     }
 
     companion object {

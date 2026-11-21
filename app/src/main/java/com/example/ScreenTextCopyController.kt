@@ -3,9 +3,11 @@ package com.example
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
 import com.example.database.ClipEntry
@@ -16,9 +18,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Zero-screenshot Screen Text Copy controller powered by SmartDotAccessibilityService.
- * Scans visible AccessibilityNodeInfo bounds on the live screen, shows a transparent
- * overlay with clickable text boxes, and copies the tapped text on "Copy".
+ * In-memory Screen Text Copy controller powered by:
+ * 1) API 30+ AccessibilityService.takeScreenshot() into memory ONLY (zero gallery/storage writes, zero MediaProjection)
+ * 2) Free on-device ML Kit Text Recognition (Latin + Devanagari) extracting exact `Text.Element` word boxes
+ * 3) Graceful fallback to AccessibilityNodeInfo text scanning if in-memory capture is unavailable.
  */
 class ScreenTextCopyController(
     private val context: Context,
@@ -28,14 +31,16 @@ class ScreenTextCopyController(
     private val dismissActivePopup: () -> Unit,
     private val setHostOverlaysVisible: (Boolean) -> Unit,
     private val onAccessibilityRequired: () -> Unit,
-    private val nodeExtractor: () -> List<SmartDotAccessibilityService.ScreenTextNode>? = {
-        SmartDotAccessibilityService.instance?.extractVisibleScreenTextNodes()
-    }
+    private val nodeExtractor: () -> List<SmartDotAccessibilityService.ScreenTextNode>? = DEFAULT_EXTRACTOR,
+    private val ocrHelperFactory: () -> ScreenOcrHelper = { ScreenOcrHelper() },
+    private val screenBitmapCapturer: ((Bitmap?) -> Unit) -> Unit = DEFAULT_BITMAP_CAPTURER
 ) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var overlayController: InlineTextOverlayController? = null
+    private var ocrHelper: ScreenOcrHelper? = null
     private var isActive = false
+    private var ocrRequestToken: Long = 0L
 
     @Volatile
     private var lastSavedText: String? = null
@@ -50,14 +55,20 @@ class ScreenTextCopyController(
         return text == lastSavedText && now - lastSavedTimestampMs < 2000L
     }
 
+    private fun getOrCreateOcrHelper(): ScreenOcrHelper {
+        return ocrHelper ?: ocrHelperFactory().also { ocrHelper = it }
+    }
+
     fun start() {
         if (isActive || isOverlayShowing()) {
             Toast.makeText(context, "Screen Text Copy is already active.", Toast.LENGTH_SHORT).show()
             return
         }
 
-        val testServiceCheck = SmartDotAccessibilityService.instance
-        if (testServiceCheck == null && nodeExtractor === DEFAULT_EXTRACTOR) {
+        if (SmartDotAccessibilityService.instance == null &&
+            nodeExtractor === DEFAULT_EXTRACTOR &&
+            screenBitmapCapturer === DEFAULT_BITMAP_CAPTURER
+        ) {
             dismissActivePopup()
             Toast.makeText(
                 context,
@@ -75,7 +86,7 @@ class ScreenTextCopyController(
         mainHandler.postDelayed({
             if (!isActive) return@postDelayed
             scanAndShowOverlay()
-        }, SCAN_SETTLE_DELAY_MS)
+        }, CAPTURE_HIDE_DELAY_MS)
     }
 
     private fun triggerRescan() {
@@ -84,10 +95,63 @@ class ScreenTextCopyController(
         mainHandler.postDelayed({
             if (!isActive) return@postDelayed
             scanAndShowOverlay()
-        }, SCAN_SETTLE_DELAY_MS)
+        }, CAPTURE_HIDE_DELAY_MS)
     }
 
     internal fun scanAndShowOverlay() {
+        isActive = true
+        val requestId = ++ocrRequestToken
+
+        if (screenBitmapCapturer === DEFAULT_BITMAP_CAPTURER && nodeExtractor !== DEFAULT_EXTRACTOR) {
+            // Test injection path using accessibility nodeExtractor directly
+            fallbackToAccessibilityNodes()
+            return
+        }
+
+        screenBitmapCapturer { capturedBitmap ->
+            if (!isActive || requestId != ocrRequestToken) {
+                runCatching { capturedBitmap?.recycle() }
+                return@screenBitmapCapturer
+            }
+
+            if (capturedBitmap == null) {
+                fallbackToAccessibilityNodes()
+                return@screenBitmapCapturer
+            }
+
+            val metrics = context.resources.displayMetrics
+            val targetW = metrics.widthPixels
+            val targetH = metrics.heightPixels
+
+            serviceScope.launch {
+                val ocrWordNodes = try {
+                    getOrCreateOcrHelper()
+                        .recognizeInMemoryBitmap(capturedBitmap, targetW, targetH)
+                        .wordNodes
+                } catch (e: Exception) {
+                    Log.w(TAG, "ML Kit in-memory OCR failed; falling back to accessibility nodes", e)
+                    emptyList()
+                } finally {
+                    runCatching {
+                        if (!capturedBitmap.isRecycled) {
+                            capturedBitmap.recycle()
+                        }
+                    }
+                }
+
+                withContext(Dispatchers.Main.immediate) {
+                    if (!isActive || requestId != ocrRequestToken) return@withContext
+                    if (ocrWordNodes.isNotEmpty()) {
+                        presentWordNodes(ocrWordNodes)
+                    } else {
+                        fallbackToAccessibilityNodes()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun fallbackToAccessibilityNodes() {
         val rawNodes = nodeExtractor()
         if (rawNodes == null) {
             isActive = false
@@ -105,7 +169,10 @@ class ScreenTextCopyController(
             nodes = rawNodes,
             density = context.resources.displayMetrics.density
         )
+        presentWordNodes(wordNodes)
+    }
 
+    private fun presentWordNodes(wordNodes: List<SmartDotAccessibilityService.ScreenTextNode>) {
         if (wordNodes.isEmpty()) {
             isActive = false
             setHostOverlaysVisible(true)
@@ -148,6 +215,7 @@ class ScreenTextCopyController(
                 triggerRescan()
             },
             onDismiss = {
+                ocrRequestToken++
                 isActive = false
                 setHostOverlaysVisible(true)
             }
@@ -175,16 +243,28 @@ class ScreenTextCopyController(
     }
 
     fun release() {
+        ocrRequestToken++
         mainHandler.removeCallbacksAndMessages(null)
         overlayController?.dismiss()
         overlayController = null
+        ocrHelper?.close()
+        ocrHelper = null
         isActive = false
     }
 
     companion object {
-        private const val SCAN_SETTLE_DELAY_MS = 110L
+        private const val TAG = "ScreenTextCopyCtrl"
+        internal const val CAPTURE_HIDE_DELAY_MS = 50L
         private val DEFAULT_EXTRACTOR: () -> List<SmartDotAccessibilityService.ScreenTextNode>? = {
             SmartDotAccessibilityService.instance?.extractVisibleScreenTextNodes()
+        }
+        private val DEFAULT_BITMAP_CAPTURER: ((Bitmap?) -> Unit) -> Unit = { callback ->
+            val service = SmartDotAccessibilityService.instance
+            if (service != null) {
+                service.captureScreenBitmapInMemory(callback)
+            } else {
+                callback(null)
+            }
         }
     }
 }

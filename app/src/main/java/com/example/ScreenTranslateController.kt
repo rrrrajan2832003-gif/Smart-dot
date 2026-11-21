@@ -3,6 +3,7 @@ package com.example
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
@@ -17,10 +18,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Zero-screenshot Screen Translate controller powered by SmartDotAccessibilityService
- * and 100% free offline Google ML Kit On-Device Translation.
- * Scans visible UI nodes, shows clickable transparent highlight boxes over the live screen,
- * and displays a floating translated bubble + Copy button next to whichever text is tapped.
+ * In-memory Screen Translate controller powered by:
+ * 1) API 30+ AccessibilityService.takeScreenshot() into memory ONLY (zero gallery/storage writes, zero MediaProjection)
+ * 2) Free on-device ML Kit Text Recognition (Latin + Devanagari) extracting screen text (including photos/images/apps)
+ * 3) Free on-device ML Kit Translation rendering translated lines directly in place
+ * 4) Thin 6dp highlighter pen + word tap over translated text to copy selected translated words.
  */
 class ScreenTranslateController(
     private val context: Context,
@@ -32,19 +34,21 @@ class ScreenTranslateController(
     private val dismissActivePopup: () -> Unit,
     private val setHostOverlaysVisible: (Boolean) -> Unit,
     private val onAccessibilityRequired: () -> Unit,
-    private val nodeExtractor: () -> List<SmartDotAccessibilityService.ScreenTextNode>? = {
-        SmartDotAccessibilityService.instance?.extractVisibleScreenTextNodes()
-    },
-    private val translateHelperFactory: () -> ScreenTranslateHelper = { ScreenTranslateHelper() }
+    private val nodeExtractor: () -> List<SmartDotAccessibilityService.ScreenTextNode>? = DEFAULT_EXTRACTOR,
+    private val translateHelperFactory: () -> ScreenTranslateHelper = { ScreenTranslateHelper() },
+    private val ocrHelperFactory: () -> ScreenOcrHelper = { ScreenOcrHelper() },
+    private val screenBitmapCapturer: ((Bitmap?) -> Unit) -> Unit = DEFAULT_BITMAP_CAPTURER
 ) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var translateHelper: ScreenTranslateHelper? = null
+    private var ocrHelper: ScreenOcrHelper? = null
     private var overlayController: InlineTextOverlayController? = null
 
     private var isActive = false
     private var activeTargetLanguage: String = "Hindi"
     private var translationRequestToken: Long = 0L
+    private var ocrRequestToken: Long = 0L
     private var lastScannedNodes: List<SmartDotAccessibilityService.ScreenTextNode> = emptyList()
 
     @Volatile
@@ -64,13 +68,20 @@ class ScreenTranslateController(
         return translateHelper ?: translateHelperFactory().also { translateHelper = it }
     }
 
+    private fun getOrCreateOcrHelper(): ScreenOcrHelper {
+        return ocrHelper ?: ocrHelperFactory().also { ocrHelper = it }
+    }
+
     fun start(targetLanguage: String? = null) {
         if (isActive || isOverlayShowing()) {
             Toast.makeText(context, "Screen Translate is already active.", Toast.LENGTH_SHORT).show()
             return
         }
 
-        if (SmartDotAccessibilityService.instance == null && nodeExtractor === DEFAULT_EXTRACTOR) {
+        if (SmartDotAccessibilityService.instance == null &&
+            nodeExtractor === DEFAULT_EXTRACTOR &&
+            screenBitmapCapturer === DEFAULT_BITMAP_CAPTURER
+        ) {
             dismissActivePopup()
             Toast.makeText(
                 context,
@@ -89,7 +100,7 @@ class ScreenTranslateController(
         mainHandler.postDelayed({
             if (!isActive) return@postDelayed
             scanAndShowOverlay()
-        }, SCAN_SETTLE_DELAY_MS)
+        }, CAPTURE_HIDE_DELAY_MS)
     }
 
     private fun triggerRescan() {
@@ -98,10 +109,62 @@ class ScreenTranslateController(
         mainHandler.postDelayed({
             if (!isActive) return@postDelayed
             scanAndShowOverlay()
-        }, SCAN_SETTLE_DELAY_MS)
+        }, CAPTURE_HIDE_DELAY_MS)
     }
 
     internal fun scanAndShowOverlay() {
+        isActive = true
+        val requestId = ++ocrRequestToken
+
+        if (screenBitmapCapturer === DEFAULT_BITMAP_CAPTURER && nodeExtractor !== DEFAULT_EXTRACTOR) {
+            fallbackToAccessibilityNodes()
+            return
+        }
+
+        screenBitmapCapturer { capturedBitmap ->
+            if (!isActive || requestId != ocrRequestToken) {
+                runCatching { capturedBitmap?.recycle() }
+                return@screenBitmapCapturer
+            }
+
+            if (capturedBitmap == null) {
+                fallbackToAccessibilityNodes()
+                return@screenBitmapCapturer
+            }
+
+            val metrics = context.resources.displayMetrics
+            val targetW = metrics.widthPixels
+            val targetH = metrics.heightPixels
+
+            serviceScope.launch {
+                val ocrLineNodes = try {
+                    getOrCreateOcrHelper()
+                        .recognizeInMemoryBitmap(capturedBitmap, targetW, targetH)
+                        .lineNodes
+                } catch (e: Exception) {
+                    Log.w(TAG, "ML Kit OCR for translation failed; falling back to accessibility nodes", e)
+                    emptyList()
+                } finally {
+                    runCatching {
+                        if (!capturedBitmap.isRecycled) {
+                            capturedBitmap.recycle()
+                        }
+                    }
+                }
+
+                withContext(Dispatchers.Main.immediate) {
+                    if (!isActive || requestId != ocrRequestToken) return@withContext
+                    if (ocrLineNodes.isNotEmpty()) {
+                        presentTranslateNodes(ocrLineNodes)
+                    } else {
+                        fallbackToAccessibilityNodes()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun fallbackToAccessibilityNodes() {
         val nodes = nodeExtractor()
         if (nodes == null) {
             isActive = false
@@ -116,6 +179,10 @@ class ScreenTranslateController(
         }
 
         val visibleTextNodes = nodes.filter { it.hasVisibleText }.ifEmpty { nodes }
+        presentTranslateNodes(visibleTextNodes)
+    }
+
+    private fun presentTranslateNodes(visibleTextNodes: List<SmartDotAccessibilityService.ScreenTextNode>) {
         if (visibleTextNodes.isEmpty()) {
             isActive = false
             setHostOverlaysVisible(true)
@@ -152,7 +219,7 @@ class ScreenTranslateController(
                 saveTargetLanguage(newLang)
                 runBulkTranslation(lastScannedNodes, newLang)
             },
-            onTranslatedLabelTapped = { translatedText ->
+            onCopyClicked = { translatedText ->
                 copyAndSaveText(translatedText)
                 Toast.makeText(
                     context,
@@ -164,6 +231,7 @@ class ScreenTranslateController(
                 triggerRescan()
             },
             onDismiss = {
+                ocrRequestToken++
                 translationRequestToken++
                 lastScannedNodes = emptyList()
                 isActive = false
@@ -235,20 +303,31 @@ class ScreenTranslateController(
     }
 
     fun release() {
+        ocrRequestToken++
         translationRequestToken++
         mainHandler.removeCallbacksAndMessages(null)
         overlayController?.dismiss()
         overlayController = null
         translateHelper?.close()
         translateHelper = null
+        ocrHelper?.close()
+        ocrHelper = null
         isActive = false
     }
 
     companion object {
         private const val TAG = "ScreenTranslateCtrl"
-        private const val SCAN_SETTLE_DELAY_MS = 110L
+        internal const val CAPTURE_HIDE_DELAY_MS = 50L
         private val DEFAULT_EXTRACTOR: () -> List<SmartDotAccessibilityService.ScreenTextNode>? = {
             SmartDotAccessibilityService.instance?.extractVisibleScreenTextNodes()
+        }
+        private val DEFAULT_BITMAP_CAPTURER: ((Bitmap?) -> Unit) -> Unit = { callback ->
+            val service = SmartDotAccessibilityService.instance
+            if (service != null) {
+                service.captureScreenBitmapInMemory(callback)
+            } else {
+                callback(null)
+            }
         }
     }
 }

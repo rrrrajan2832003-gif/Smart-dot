@@ -123,7 +123,7 @@ class InlineTextOverlayController(
         accentColor: Int,
         initialTargetLanguage: String,
         onTargetLanguageChanged: (newTargetLang: String) -> Unit,
-        onTranslatedLabelTapped: (translatedText: String) -> Unit,
+        onCopyClicked: (translatedTextToCopy: String) -> Unit,
         onRescanRequested: () -> Unit,
         onDismiss: () -> Unit
     ) {
@@ -132,12 +132,12 @@ class InlineTextOverlayController(
             accentColor = accentColor,
             initialTargetLanguage = initialTargetLanguage,
             onTargetLanguageChanged = onTargetLanguageChanged,
-            onCopyClicked = {},
+            onCopyClicked = onCopyClicked,
             onRescanRequested = onRescanRequested,
             onDismiss = onDismiss
         ) ?: return
 
-        val (_, selView, _, _, _) = refs
+        val (root, selView, controlsPill, copyPill, tvCopyLabel) = refs
 
         statusPillView?.apply {
             text = context.getString(R.string.screen_translate_translating)
@@ -146,9 +146,20 @@ class InlineTextOverlayController(
 
         selView.configureTranslateMode(
             accentColor = accentColor,
-            onTranslatedNodeTapped = { item ->
+            onCopySelectionChanged = { combinedText, anchorRect ->
                 langDropdownView?.visibility = View.GONE
-                onTranslatedLabelTapped(item.result.translatedText)
+                val clean = combinedText.trim()
+                if (clean.isEmpty() || anchorRect == null) {
+                    currentAnchorRect = null
+                    activeCopyableText = ""
+                    copyPill.visibility = View.GONE
+                    return@configureTranslateMode
+                }
+                currentAnchorRect = RectF(anchorRect)
+                activeCopyableText = clean
+                tvCopyLabel.text = context.getString(R.string.screen_copy_action)
+                copyPill.visibility = View.VISIBLE
+                positionCopyPill(root, controlsPill, copyPill, anchorRect, context.resources.displayMetrics.density)
             },
             onScrollDismissRequested = {
                 dismissWithCallback()
@@ -249,6 +260,7 @@ class InlineTextOverlayController(
                 currentTargetLanguage = selectedLang
                 btnLangChip.text = "$selectedLang ▾"
                 langDropdown.visibility = View.GONE
+                selView.clearSelection()
                 statusPill.text = context.getString(R.string.screen_translate_translating)
                 statusPill.visibility = View.VISIBLE
                 onTargetLanguageChanged?.invoke(selectedLang)

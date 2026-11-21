@@ -3,6 +3,7 @@ package com.example
 import android.app.Application
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.drawable.ColorDrawable
@@ -62,7 +63,6 @@ class ScreenTranslateTest {
         assertEquals(TranslateLanguage.HINDI, enToHi.targetLanguageTag)
         assertEquals("आपका स्वागत है", enToHi.translatedText)
 
-        // When target is Hindi and tapped text is already Hindi, autoFlipIfSameAsTarget translates to English.
         val hiToEn = runBlocking {
             helper.translateTextDetailed("नमस्ते भारत", "Hindi", autoFlipIfSameAsTarget = true)
         }
@@ -105,22 +105,33 @@ class ScreenTranslateTest {
     }
 
     @Test
-    fun `ScreenTranslateController opens transparent overlay, bulk-translates immediately in place, switches language live, and copies on label tap`() {
+    fun `ScreenTranslateController runs in-memory ML Kit OCR for image lines, recycles Bitmap, translates live, and supports 6dp highlighter word copy`() {
         val scope = CoroutineScope(Dispatchers.Main + Job())
         val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.clearPrimaryClip()
+        val inMemoryBitmap = Bitmap.createBitmap(1080, 2400, Bitmap.Config.ARGB_8888)
+
+        val ocrHelper = ScreenOcrHelper(
+            customOcrRunner = {
+                val latin = listOf(
+                    ScreenOcrHelper.OcrRawItem("System Settings", Rect(100, 220, 560, 280), isLine = true),
+                    ScreenOcrHelper.OcrRawItem("Notifications", Rect(100, 360, 480, 420), isLine = true)
+                )
+                latin to emptyList()
+            }
+        )
 
         val translateHelper = ScreenTranslateHelper(
             identifyLanguageFn = { "en" },
             translateBlockFn = { _, dst, text, _ ->
                 when (dst) {
                     TranslateLanguage.HINDI -> when (text) {
-                        "Settings" -> "सेटिंग्स"
+                        "System Settings" -> "सिस्टम सेटिंग्स"
                         "Notifications" -> "सूचनाएं"
                         else -> text
                     }
                     TranslateLanguage.SPANISH -> when (text) {
-                        "Settings" -> "Ajustes"
+                        "System Settings" -> "Ajustes del sistema"
                         "Notifications" -> "Notificaciones"
                         else -> text
                     }
@@ -131,12 +142,6 @@ class ScreenTranslateTest {
 
         var overlaysVisible = true
         var savedLang = "Hindi"
-        val nodes = listOf(
-            SmartDotAccessibilityService.ScreenTextNode(0, "Settings", Rect(100, 220, 360, 280), hasVisibleText = true),
-            SmartDotAccessibilityService.ScreenTextNode(1, "Notifications", Rect(100, 360, 420, 420), hasVisibleText = true),
-            SmartDotAccessibilityService.ScreenTextNode(2, "Back button", Rect(20, 40, 80, 100), hasVisibleText = false)
-        )
-
         val controller = ScreenTranslateController(
             context = appContext,
             serviceScope = scope,
@@ -147,15 +152,24 @@ class ScreenTranslateTest {
             dismissActivePopup = {},
             setHostOverlaysVisible = { overlaysVisible = it },
             onAccessibilityRequired = {},
-            nodeExtractor = { nodes },
-            translateHelperFactory = { translateHelper }
+            nodeExtractor = { emptyList() },
+            translateHelperFactory = { translateHelper },
+            ocrHelperFactory = { ocrHelper },
+            screenBitmapCapturer = { cb -> cb(inMemoryBitmap) }
         )
 
         controller.start("Hindi")
-        ShadowLooper.idleMainLooper(180, TimeUnit.MILLISECONDS)
+        assertFalse(overlaysVisible)
+        ShadowLooper.idleMainLooper(ScreenTranslateController.CAPTURE_HIDE_DELAY_MS + 10L, TimeUnit.MILLISECONDS)
+
+        val deadlineShow = System.currentTimeMillis() + 3000L
+        while (!controller.isOverlayShowing() && System.currentTimeMillis() < deadlineShow) {
+            ShadowLooper.idleMainLooper(25, TimeUnit.MILLISECONDS)
+            Thread.sleep(15)
+        }
 
         assertTrue(controller.isOverlayShowing())
-        assertFalse(overlaysVisible)
+        assertTrue("Screen bitmap must be recycled after OCR", inMemoryBitmap.isRecycled)
 
         val overlayField = ScreenTranslateController::class.java
             .getDeclaredField("overlayController")
@@ -177,7 +191,6 @@ class ScreenTranslateTest {
         )
         root.layout(0, 0, 1080, 2400)
 
-        // Bulk translation runs automatically without tapping each item; icon-only node (id=2) is skipped.
         val deadline = System.currentTimeMillis() + 3000L
         while (selView.getRenderedTranslatedLabelsSnapshot().size < 2 && System.currentTimeMillis() < deadline) {
             ShadowLooper.idleMainLooper(25, TimeUnit.MILLISECONDS)
@@ -186,12 +199,12 @@ class ScreenTranslateTest {
 
         val hindiLabels = selView.getRenderedTranslatedLabelsSnapshot()
         assertEquals(2, hindiLabels.size)
-        assertEquals("सेटिंग्स", hindiLabels[0].item.result.translatedText)
+        assertEquals("सिस्टम सेटिंग्स", hindiLabels[0].item.result.translatedText)
         assertEquals("सूचनाएं", hindiLabels[1].item.result.translatedText)
         assertEquals(View.GONE, root.findViewById<TextView>(R.id.tv_inline_status_pill).visibility)
         assertEquals(View.GONE, root.findViewById<LinearLayout>(R.id.btn_inline_ocr_copy).visibility)
 
-        // Switch target language to Spanish in the top bar -> bulk re-translates in place immediately.
+        // Switch target language to Spanish -> clears any prior selection and bulk re-translates in place
         val langChip = root.findViewById<TextView>(R.id.btn_inline_target_lang)
         val dropdown = root.findViewById<LinearLayout>(R.id.inline_lang_dropdown)
         langChip.performClick()
@@ -203,19 +216,112 @@ class ScreenTranslateTest {
 
         val deadlineEs = System.currentTimeMillis() + 3000L
         while (
-            selView.getRenderedTranslatedLabelsSnapshot().firstOrNull()?.item?.result?.translatedText != "Ajustes" &&
+            selView.getRenderedTranslatedLabelsSnapshot().firstOrNull()?.item?.result?.translatedText != "Ajustes del sistema" &&
             System.currentTimeMillis() < deadlineEs
         ) {
             ShadowLooper.idleMainLooper(25, TimeUnit.MILLISECONDS)
             Thread.sleep(15)
         }
 
-        val spanishLabels = selView.getRenderedTranslatedLabelsSnapshot()
-        assertEquals("Ajustes", spanishLabels[0].item.result.translatedText)
-        assertEquals("Notificaciones", spanishLabels[1].item.result.translatedText)
+        val translatedWords = selView.getMappedTranslatedWordNodesSnapshot()
+        assertEquals(listOf("Ajustes", "del", "sistema", "Notificaciones"), translatedWords.map { it.node.text })
 
-        // Tap any translated label directly -> copies translated text to clipboard and shows Copied toast.
-        val targetRect = spanishLabels[0].rect
+        // Highlight specific translated words ("Ajustes" + "del") with the thin 6dp highlighter drag
+        val w0Rect = selView.getMappedRectForCopyNode(0)!!
+        val w1Rect = selView.getMappedRectForCopyNode(1)!!
+        val copyBtn = root.findViewById<LinearLayout>(R.id.btn_inline_ocr_copy)
+
+        val down = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, w0Rect.centerX(), w0Rect.centerY(), 0)
+        val move = MotionEvent.obtain(100L, 130L, MotionEvent.ACTION_MOVE, w1Rect.centerX(), w1Rect.centerY(), 0)
+        val up = MotionEvent.obtain(100L, 160L, MotionEvent.ACTION_UP, w1Rect.centerX(), w1Rect.centerY(), 0)
+        selView.dispatchTouchEvent(down)
+        selView.dispatchTouchEvent(move)
+        assertTrue(selView.isHighlighterTrailActive())
+        assertEquals(View.GONE, copyBtn.visibility)
+        selView.dispatchTouchEvent(up)
+        down.recycle()
+        move.recycle()
+        up.recycle()
+        ShadowLooper.idleMainLooper()
+
+        assertFalse(selView.isHighlighterTrailActive())
+        assertEquals("Ajustes del", selView.getCombinedSelectedCopyText())
+        assertEquals(View.VISIBLE, copyBtn.visibility)
+
+        // Tap Copy pill -> copies ONLY the highlighted translated words ("Ajustes del") and dismisses overlay
+        copyBtn.performClick()
+        ShadowLooper.idleMainLooper()
+
+        assertEquals("Ajustes del", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+        assertEquals(appContext.getString(R.string.screen_copy_copied), ShadowToast.getTextOfLatestToast())
+        assertFalse(controller.isOverlayShowing())
+        assertTrue(overlaysVisible)
+
+        controller.release()
+        scope.cancel()
+    }
+
+    @Test
+    fun `ScreenTranslateController supports single-word tap on translated text in accessibility fallback mode`() {
+        val scope = CoroutineScope(Dispatchers.Main + Job())
+        val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.clearPrimaryClip()
+
+        val translateHelper = ScreenTranslateHelper(
+            identifyLanguageFn = { "en" },
+            translateBlockFn = { _, dst, text, _ ->
+                if (dst == TranslateLanguage.HINDI && text == "Settings") "सेटिंग्स" else text
+            }
+        )
+
+        var overlaysVisible = true
+        val nodes = listOf(
+            SmartDotAccessibilityService.ScreenTextNode(0, "Settings", Rect(100, 220, 360, 280), hasVisibleText = true),
+            SmartDotAccessibilityService.ScreenTextNode(1, "Back button", Rect(20, 40, 80, 100), hasVisibleText = false)
+        )
+
+        val controller = ScreenTranslateController(
+            context = appContext,
+            serviceScope = scope,
+            clipboardManager = clipboard,
+            getAccentColor = { Color.parseColor("#00E5FF") },
+            getSavedTargetLanguage = { "Hindi" },
+            saveTargetLanguage = {},
+            dismissActivePopup = {},
+            setHostOverlaysVisible = { overlaysVisible = it },
+            onAccessibilityRequired = {},
+            nodeExtractor = { nodes },
+            translateHelperFactory = { translateHelper },
+            screenBitmapCapturer = { cb -> cb(null) }
+        )
+
+        controller.start("Hindi")
+        ShadowLooper.idleMainLooper(80, TimeUnit.MILLISECONDS)
+        assertTrue(controller.isOverlayShowing())
+
+        val overlayField = ScreenTranslateController::class.java
+            .getDeclaredField("overlayController")
+            .apply { isAccessible = true }
+        val overlayCtrl = overlayField.get(controller) as InlineTextOverlayController
+        val rootField = InlineTextOverlayController::class.java
+            .getDeclaredField("overlayView")
+            .apply { isAccessible = true }
+        val root = rootField.get(overlayCtrl) as View
+        val selView = root.findViewById<InlineTextSelectionView>(R.id.inline_ocr_selection_view)
+
+        root.measure(
+            View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(2400, View.MeasureSpec.EXACTLY)
+        )
+        root.layout(0, 0, 1080, 2400)
+
+        val deadline = System.currentTimeMillis() + 3000L
+        while (selView.getMappedTranslatedWordNodesSnapshot().isEmpty() && System.currentTimeMillis() < deadline) {
+            ShadowLooper.idleMainLooper(25, TimeUnit.MILLISECONDS)
+            Thread.sleep(15)
+        }
+
+        val targetRect = selView.getMappedRectForCopyNode(0)!!
         val down = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, targetRect.centerX(), targetRect.centerY(), 0)
         val up = MotionEvent.obtain(100L, 130L, MotionEvent.ACTION_UP, targetRect.centerX(), targetRect.centerY(), 0)
         selView.dispatchTouchEvent(down)
@@ -224,10 +330,10 @@ class ScreenTranslateTest {
         up.recycle()
         ShadowLooper.idleMainLooper()
 
-        assertEquals("Ajustes", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
-        assertEquals(appContext.getString(R.string.screen_copy_copied), ShadowToast.getTextOfLatestToast())
+        val copyBtn = root.findViewById<LinearLayout>(R.id.btn_inline_ocr_copy)
+        assertEquals(View.VISIBLE, copyBtn.visibility)
+        assertEquals("सेटिंग्स", selView.getCombinedSelectedCopyText())
 
-        // Tap Close -> dismisses cleanly and restores host overlays
         root.findViewById<LinearLayout>(R.id.btn_inline_ocr_close).performClick()
         assertFalse(controller.isOverlayShowing())
         assertTrue(overlaysVisible)

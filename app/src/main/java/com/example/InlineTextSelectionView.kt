@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.text.Layout
@@ -21,14 +22,15 @@ import kotlin.math.abs
 import kotlin.math.hypot
 
 /**
- * Transparent overlay view aligned 1:1 over the live screen with ZERO unselected boxes,
+ * 100% transparent overlay view aligned 1:1 over the live screen with ZERO unselected boxes,
  * ZERO borders, and ZERO strokes.
  *
- * - COPY mode: Invisible hit-areas over each text Rect; tapping softly highlights ONLY the
- *   tapped text (borderless tint) and anchors a floating "Copy" pill beside it.
- * - TRANSLATE mode: Automatically renders clean, borderless, background-matched translated
- *   text pills directly over each original text Rect in place; tapping any translated label
- *   copies that translated text immediately.
+ * Both COPY and TRANSLATE modes share the exact same sleek thin (6dp) highlighter pen gesture:
+ * - Single tap on any word highlights strictly that word (2dp inward-padded RoundRect inside its box)
+ *   and anchors the floating "Copy" pill right beside it.
+ * - Dragging a finger draws a thin 6dp highlighter stroke and selects ONLY intersecting words
+ *   (strict tight collision radius so adjacent words above/below/beside are never accidentally grabbed),
+ *   showing the "Copy" pill on ACTION_UP.
  */
 class InlineTextSelectionView @JvmOverloads constructor(
     context: Context,
@@ -58,26 +60,29 @@ class InlineTextSelectionView @JvmOverloads constructor(
     private var translatedItems: List<ScreenTranslateHelper.TranslatedNode> = emptyList()
     private var accentColor: Int = Color.parseColor("#00E5FF")
 
-    private var selectedCopyNodeIds = LinkedHashSet<Int>()
-    private var flashedTranslateNodeId: Int? = null
+    private var selectedWordIds = LinkedHashSet<Int>()
     private val mappedCopyNodes = mutableListOf<MappedCopyNode>()
+    private val mappedTranslatedWordNodes = mutableListOf<MappedCopyNode>()
     private val renderedTranslatedLabels = mutableListOf<RenderedTranslatedLabel>()
 
     private var onCopySelectionChanged: ((selectedText: String, anchorRect: RectF?) -> Unit)? = null
-    private var onTranslatedNodeTapped: ((item: ScreenTranslateHelper.TranslatedNode) -> Unit)? = null
     private var onScrollDismissRequested: (() -> Unit)? = null
 
     private val density = context.resources.displayMetrics.density
     private val tapTouchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat().coerceIn(8f * density, 14f * density)
     private val scrollDismissThresholdPx = 72f * density
-    private val cornerRadius = 6f * density
+    private val pillCornerRadius = 6f * density
+    private val highlightCornerRadius = 4f * density
+    private val highlightInsetPad = 2f * density
     private val labelPadX = 2.5f * density
     private val labelPadY = 1.5f * density
-    private val exactPad = 4f * density
-    private val nearPad = 10f * density
-    private val highlighterHitRadius = 8f * density
 
-    // Zero stroke/border paints for text outlines — only soft borderless fills and live highlighter marker trail.
+    // Tight tap & stroke collision tolerances so adjacent rows/words are never grabbed by mistake
+    private val exactPad = 2f * density
+    private val nearPad = 4f * density
+    private val highlighterHitRadius = 1.5f * density
+
+    // Zero stroke/border paints for text outlines — borderless selection fills + sleek thin 6dp highlighter pen
     private val selectedHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
     }
@@ -85,7 +90,7 @@ class InlineTextSelectionView @JvmOverloads constructor(
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
-        strokeWidth = 24f * density
+        strokeWidth = 6f * density
     }
     private val translatedLabelBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
@@ -102,11 +107,6 @@ class InlineTextSelectionView @JvmOverloads constructor(
     private var lastTouchY = 0f
     private var downHitNodeId: Int? = null
 
-    private val clearFlashRunnable = Runnable {
-        flashedTranslateNodeId = null
-        invalidate()
-    }
-
     init {
         setWillNotDraw(false)
         setBackgroundColor(Color.TRANSPARENT)
@@ -120,97 +120,108 @@ class InlineTextSelectionView @JvmOverloads constructor(
         onCopySelectionChanged: (selectedText: String, anchorRect: RectF?) -> Unit,
         onScrollDismissRequested: () -> Unit
     ) {
-        removeCallbacks(clearFlashRunnable)
         this.mode = DisplayMode.COPY
         this.rawNodes = nodes
         this.translatedItems = emptyList()
         this.accentColor = accentColor
-        this.selectedCopyNodeIds.clear()
-        this.flashedTranslateNodeId = null
+        this.selectedWordIds.clear()
         this.isHighlighterDragging = false
         this.highlighterPath.reset()
         this.onCopySelectionChanged = onCopySelectionChanged
-        this.onTranslatedNodeTapped = null
         this.onScrollDismissRequested = onScrollDismissRequested
 
-        selectedHighlightPaint.color = Color.argb(
-            82,
-            Color.red(accentColor),
-            Color.green(accentColor),
-            Color.blue(accentColor)
-        )
-        highlighterStrokePaint.color = Color.argb(
-            96,
-            Color.red(accentColor),
-            Color.green(accentColor),
-            Color.blue(accentColor)
-        )
-
+        applyAccentPaints(accentColor)
         recomputeAllRects()
         invalidate()
     }
 
     fun configureTranslateMode(
         accentColor: Int,
-        onTranslatedNodeTapped: (item: ScreenTranslateHelper.TranslatedNode) -> Unit,
+        onCopySelectionChanged: (selectedText: String, anchorRect: RectF?) -> Unit,
         onScrollDismissRequested: () -> Unit
     ) {
-        removeCallbacks(clearFlashRunnable)
         this.mode = DisplayMode.TRANSLATE
         this.rawNodes = emptyList()
         this.translatedItems = emptyList()
         this.accentColor = accentColor
-        this.selectedCopyNodeIds.clear()
-        this.flashedTranslateNodeId = null
+        this.selectedWordIds.clear()
         this.isHighlighterDragging = false
         this.highlighterPath.reset()
-        this.onCopySelectionChanged = null
-        this.onTranslatedNodeTapped = onTranslatedNodeTapped
+        this.onCopySelectionChanged = onCopySelectionChanged
         this.onScrollDismissRequested = onScrollDismissRequested
 
-        selectedHighlightPaint.color = Color.argb(
-            76,
-            Color.red(accentColor),
-            Color.green(accentColor),
-            Color.blue(accentColor)
-        )
-
+        applyAccentPaints(accentColor)
         recomputeAllRects()
         invalidate()
+    }
+
+    private fun applyAccentPaints(color: Int) {
+        selectedHighlightPaint.color = Color.argb(
+            84,
+            Color.red(color),
+            Color.green(color),
+            Color.blue(color)
+        )
+        highlighterStrokePaint.color = Color.argb(
+            135,
+            Color.red(color),
+            Color.green(color),
+            Color.blue(color)
+        )
     }
 
     fun setBulkTranslations(items: List<ScreenTranslateHelper.TranslatedNode>) {
         this.mode = DisplayMode.TRANSLATE
         this.translatedItems = items
-        this.flashedTranslateNodeId = null
+        this.selectedWordIds.clear()
+        this.isHighlighterDragging = false
+        this.highlighterPath.reset()
         recomputeAllRects()
         invalidate()
+        onCopySelectionChanged?.invoke("", null)
     }
 
-    fun getSelectedCopyNodes(): List<SmartDotAccessibilityService.ScreenTextNode> {
-        if (selectedCopyNodeIds.isEmpty()) return emptyList()
-        return rawNodes.filter { it.id in selectedCopyNodeIds }
+    private fun activeWordList(): List<MappedCopyNode> =
+        if (mode == DisplayMode.COPY) mappedCopyNodes else mappedTranslatedWordNodes
+
+    fun getSelectedWordNodes(): List<SmartDotAccessibilityService.ScreenTextNode> {
+        if (selectedWordIds.isEmpty()) return emptyList()
+        return activeWordList()
+            .filter { it.node.id in selectedWordIds }
+            .map { it.node }
     }
+
+    fun getSelectedCopyNodes(): List<SmartDotAccessibilityService.ScreenTextNode> =
+        getSelectedWordNodes()
 
     fun getSelectedCopyNode(): SmartDotAccessibilityService.ScreenTextNode? =
-        getSelectedCopyNodes().firstOrNull()
+        getSelectedWordNodes().firstOrNull()
 
-    fun getCombinedSelectedCopyText(): String =
-        getSelectedCopyNodes().joinToString(" ") { it.text }
+    fun getCombinedSelectedText(): String =
+        getSelectedWordNodes().joinToString(" ") { it.text }
+
+    fun getCombinedSelectedCopyText(): String = getCombinedSelectedText()
 
     fun isHighlighterTrailActive(): Boolean = isHighlighterDragging
 
+    fun getHighlighterStrokeWidthPx(): Float = highlighterStrokePaint.strokeWidth
+
     fun getMappedRectForCopyNode(nodeId: Int): RectF? =
-        mappedCopyNodes.firstOrNull { it.node.id == nodeId }?.rect?.let { RectF(it) }
+        activeWordList().firstOrNull { it.node.id == nodeId }?.rect?.let { RectF(it) }
+
+    fun getHighlightDrawRect(nodeId: Int): RectF? =
+        getMappedRectForCopyNode(nodeId)?.let { computeSnugHighlightRect(it) }
 
     fun getRenderedTranslatedLabelsSnapshot(): List<RenderedTranslatedLabel> =
         renderedTranslatedLabels.toList()
 
     fun getMappedCopyNodesSnapshot(): List<MappedCopyNode> = mappedCopyNodes.toList()
 
+    fun getMappedTranslatedWordNodesSnapshot(): List<MappedCopyNode> = mappedTranslatedWordNodes.toList()
+
     fun clearSelection() {
-        if (selectedCopyNodeIds.isEmpty() && !isHighlighterDragging) return
-        selectedCopyNodeIds.clear()
+        if (selectedWordIds.isEmpty() && !isHighlighterDragging) return
+        selectedWordIds.clear()
         isHighlighterDragging = false
         highlighterPath.reset()
         invalidate()
@@ -220,7 +231,7 @@ class InlineTextSelectionView @JvmOverloads constructor(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         recomputeAllRects()
-        if (mode == DisplayMode.COPY && selectedCopyNodeIds.isNotEmpty() && !isHighlighterDragging) {
+        if (selectedWordIds.isNotEmpty() && !isHighlighterDragging) {
             emitCurrentSelectionToController()
         }
     }
@@ -228,13 +239,14 @@ class InlineTextSelectionView @JvmOverloads constructor(
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
         recomputeAllRects()
-        if (changed && mode == DisplayMode.COPY && selectedCopyNodeIds.isNotEmpty() && !isHighlighterDragging) {
+        if (changed && selectedWordIds.isNotEmpty() && !isHighlighterDragging) {
             emitCurrentSelectionToController()
         }
     }
 
     internal fun recomputeAllRects() {
         mappedCopyNodes.clear()
+        mappedTranslatedWordNodes.clear()
         renderedTranslatedLabels.clear()
 
         val loc = IntArray(2)
@@ -261,6 +273,10 @@ class InlineTextSelectionView @JvmOverloads constructor(
             color = textColor
         }
 
+        val innerPadX = 2f * density
+        val wordRegex = Regex("\\S+")
+        var nextTranslatedWordId = 0
+
         for (item in translatedItems) {
             val bounds = item.node.boundsInScreen
             val local = RectF(
@@ -277,15 +293,97 @@ class InlineTextSelectionView @JvmOverloads constructor(
             val layout = buildFittedStaticLayout(item.result.translatedText, labelPaint, availW, availH)
             val textOffsetY = ((local.height() - layout.height) / 2f).coerceAtLeast(1f * density)
 
-            renderedTranslatedLabels.add(
-                RenderedTranslatedLabel(
-                    item = item,
-                    rect = local,
-                    layout = layout,
-                    textOffsetY = textOffsetY
-                )
+            val rendered = RenderedTranslatedLabel(
+                item = item,
+                rect = local,
+                layout = layout,
+                textOffsetY = textOffsetY
             )
+            renderedTranslatedLabels.add(rendered)
+
+            val translatedText = item.result.translatedText
+            val originX = local.left + innerPadX
+            val originY = local.top + textOffsetY
+            val lineCount = layout.lineCount.coerceAtLeast(1)
+
+            for (match in wordRegex.findAll(translatedText)) {
+                val word = match.value
+                val startIdx = match.range.first
+                val endIdx = (match.range.last + 1).coerceAtMost(translatedText.length)
+                val lineIdx = layout.getLineForOffset(startIdx).coerceIn(0, lineCount - 1)
+                val lineTop = (originY + layout.getLineTop(lineIdx)).coerceIn(local.top, local.bottom - 2f)
+                val lineBottom = (originY + layout.getLineBottom(lineIdx)).coerceIn(lineTop + 2f, local.bottom)
+
+                val lineStart = layout.getLineStart(lineIdx).coerceIn(0, translatedText.length)
+                val lineEnd = layout.getLineEnd(lineIdx).coerceIn(lineStart, translatedText.length)
+
+                var leftX = originX + layout.getPrimaryHorizontal(startIdx)
+                var rightX = if (endIdx <= lineEnd) {
+                    originX + layout.getPrimaryHorizontal(endIdx)
+                } else {
+                    originX + layout.getPrimaryHorizontal(lineEnd)
+                }
+
+                // Fallback when Robolectric/headless StaticLayout returns 0f for getPrimaryHorizontal
+                val rawSpan = abs(rightX - leftX)
+                if (rawSpan < 1f || (startIdx > lineStart && abs(leftX - originX) < 0.5f)) {
+                    val lineSlice = translatedText.substring(lineStart, lineEnd)
+                    val relStart = (startIdx - lineStart).coerceIn(0, lineSlice.length)
+                    val relEnd = (endIdx - lineStart).coerceIn(relStart, lineSlice.length)
+                    val prefixText = lineSlice.substring(0, relStart)
+                    val wordText = lineSlice.substring(relStart, relEnd)
+                    val totalLineW = measureTextCompat(layout.paint, lineSlice).coerceAtLeast(1f)
+                    val prefixW = measureTextCompat(layout.paint, prefixText)
+                    val wordW = measureTextCompat(layout.paint, wordText).coerceAtLeast(4f)
+                    val maxDrawW = (local.width() - innerPadX * 2f).coerceAtLeast(4f)
+                    val scale = if (totalLineW > maxDrawW) maxDrawW / totalLineW else 1f
+                    leftX = originX + prefixW * scale
+                    rightX = leftX + wordW * scale
+                }
+
+                val wordLeft = minOf(leftX, rightX).coerceIn(local.left, (local.right - 2f).coerceAtLeast(local.left))
+                val wordRight = maxOf(leftX, rightX).coerceIn(wordLeft + 2f, local.right.coerceAtLeast(wordLeft + 2f))
+                val wordRectF = RectF(wordLeft, lineTop, wordRight, lineBottom)
+
+                val id = nextTranslatedWordId++
+                mappedTranslatedWordNodes.add(
+                    MappedCopyNode(
+                        node = SmartDotAccessibilityService.ScreenTextNode(
+                            id = id,
+                            text = word,
+                            boundsInScreen = Rect(
+                                wordRectF.left.toInt(),
+                                wordRectF.top.toInt(),
+                                wordRectF.right.toInt(),
+                                wordRectF.bottom.toInt()
+                            ),
+                            hasVisibleText = true
+                        ),
+                        rect = wordRectF
+                    )
+                )
+            }
         }
+    }
+
+    private fun measureTextCompat(paint: TextPaint, text: String): Float {
+        if (text.isEmpty()) return 0f
+        val measured = paint.measureText(text)
+        if (paint.textSize >= 8f && paint.measureText("MMMM") < paint.textSize) {
+            return text.length * paint.textSize * 0.54f
+        }
+        return measured
+    }
+
+    private fun computeSnugHighlightRect(source: RectF): RectF {
+        val padX = if (source.width() > highlightInsetPad * 3f) highlightInsetPad else 0f
+        val padY = if (source.height() > highlightInsetPad * 3f) highlightInsetPad else 0f
+        return RectF(
+            source.left + padX,
+            source.top + padY,
+            source.right - padX,
+            source.bottom - padY
+        )
     }
 
     private fun resolveAdaptiveLabelColors(): Pair<Int, Int> {
@@ -354,10 +452,11 @@ class InlineTextSelectionView @JvmOverloads constructor(
         super.onDraw(canvas)
 
         if (mode == DisplayMode.COPY) {
-            // Zero unselected borders/outlines — draw only highlighted selected words and active highlighter trail.
+            // Zero unselected borders/outlines — draw only snug 2dp-padded highlights strictly inside matched word boxes
             for (mapped in mappedCopyNodes) {
-                if (mapped.node.id in selectedCopyNodeIds) {
-                    canvas.drawRoundRect(mapped.rect, cornerRadius, cornerRadius, selectedHighlightPaint)
+                if (mapped.node.id in selectedWordIds) {
+                    val drawRect = computeSnugHighlightRect(mapped.rect)
+                    canvas.drawRoundRect(drawRect, highlightCornerRadius, highlightCornerRadius, selectedHighlightPaint)
                 }
             }
             if (isHighlighterDragging && !highlighterPath.isEmpty) {
@@ -366,19 +465,32 @@ class InlineTextSelectionView @JvmOverloads constructor(
             return
         }
 
+        // 1. Draw borderless background-matched translated line pills in place
+        for (rendered in renderedTranslatedLabels) {
+            canvas.drawRoundRect(rendered.rect, pillCornerRadius, pillCornerRadius, translatedLabelBgPaint)
+        }
+
+        // 2. Draw snug 2dp-padded highlights under selected translated words for razor-sharp contrast
+        for (mapped in mappedTranslatedWordNodes) {
+            if (mapped.node.id in selectedWordIds) {
+                val drawRect = computeSnugHighlightRect(mapped.rect)
+                canvas.drawRoundRect(drawRect, highlightCornerRadius, highlightCornerRadius, selectedHighlightPaint)
+            }
+        }
+
+        // 3. Draw translated text cleanly on top
         val innerPadX = 2f * density
         for (rendered in renderedTranslatedLabels) {
-            // Clean borderless pill matching background + fitted translated text inside Rect.
-            canvas.drawRoundRect(rendered.rect, cornerRadius, cornerRadius, translatedLabelBgPaint)
-            if (rendered.item.node.id == flashedTranslateNodeId) {
-                canvas.drawRoundRect(rendered.rect, cornerRadius, cornerRadius, selectedHighlightPaint)
-            }
-
             val saveCount = canvas.save()
             canvas.clipRect(rendered.rect)
             canvas.translate(rendered.rect.left + innerPadX, rendered.rect.top + rendered.textOffsetY)
             rendered.layout.draw(canvas)
             canvas.restoreToCount(saveCount)
+        }
+
+        // 4. Draw thin 6dp highlighter stroke while dragging over translated words
+        if (isHighlighterDragging && !highlighterPath.isEmpty) {
+            canvas.drawPath(highlighterPath, highlighterStrokePaint)
         }
     }
 
@@ -396,99 +508,72 @@ class InlineTextSelectionView @JvmOverloads constructor(
             }
 
             MotionEvent.ACTION_MOVE -> {
-                if (mode == DisplayMode.COPY) {
-                    val x = event.x
-                    val y = event.y
-                    if (!isHighlighterDragging) {
-                        val moved = hypot(x - downX, y - downY)
-                        if (moved >= tapTouchSlop) {
-                            isHighlighterDragging = true
-                            selectedCopyNodeIds.clear()
-                            onCopySelectionChanged?.invoke("", null)
-                            highlighterPath.moveTo(downX, downY)
-                            highlightWordsIntersectingSegment(downX, downY, x, y)
-                        }
+                val x = event.x
+                val y = event.y
+                if (!isHighlighterDragging) {
+                    val moved = hypot(x - downX, y - downY)
+                    if (moved >= tapTouchSlop) {
+                        isHighlighterDragging = true
+                        selectedWordIds.clear()
+                        onCopySelectionChanged?.invoke("", null)
+                        highlighterPath.moveTo(downX, downY)
+                        highlightWordsIntersectingSegment(downX, downY, x, y)
                     }
-                    if (isHighlighterDragging) {
-                        val midX = (lastTouchX + x) * 0.5f
-                        val midY = (lastTouchY + y) * 0.5f
-                        highlighterPath.quadTo(lastTouchX, lastTouchY, midX, midY)
-                        highlightWordsIntersectingSegment(lastTouchX, lastTouchY, x, y)
-                        lastTouchX = x
-                        lastTouchY = y
-                        invalidate()
-                    }
-                    return true
                 }
+                if (isHighlighterDragging) {
+                    val midX = (lastTouchX + x) * 0.5f
+                    val midY = (lastTouchY + y) * 0.5f
+                    highlighterPath.quadTo(lastTouchX, lastTouchY, midX, midY)
+                    highlightWordsIntersectingSegment(lastTouchX, lastTouchY, x, y)
+                    lastTouchX = x
+                    lastTouchY = y
+                    invalidate()
+                }
+                return true
             }
 
             MotionEvent.ACTION_UP -> {
                 val dx = event.x - downX
                 val dy = event.y - downY
-                val distance = hypot(dx, dy)
 
-                if (mode == DisplayMode.COPY) {
-                    if (isHighlighterDragging) {
-                        highlightWordsIntersectingSegment(lastTouchX, lastTouchY, event.x, event.y)
-                        highlighterPath.reset()
-                        isHighlighterDragging = false
+                if (isHighlighterDragging) {
+                    highlightWordsIntersectingSegment(lastTouchX, lastTouchY, event.x, event.y)
+                    highlighterPath.reset()
+                    isHighlighterDragging = false
+                    invalidate()
+
+                    if (selectedWordIds.isNotEmpty()) {
+                        emitCurrentSelectionToController()
+                    } else {
+                        onCopySelectionChanged?.invoke("", null)
+                        if (downHitNodeId == null &&
+                            abs(dy) >= scrollDismissThresholdPx &&
+                            abs(dy) > abs(dx) * 1.8f
+                        ) {
+                            onScrollDismissRequested?.invoke()
+                        }
+                    }
+                    return true
+                }
+
+                // Single tap without drag -> select ONLY that single word and show Copy pill beside it
+                performClick()
+                val hitId = findTappedNodeId(event.x, event.y) ?: downHitNodeId
+                if (hitId != null) {
+                    if (selectedWordIds.size == 1 && selectedWordIds.contains(hitId)) {
+                        selectedWordIds.clear()
                         invalidate()
-
-                        if (selectedCopyNodeIds.isNotEmpty()) {
-                            emitCurrentSelectionToController()
-                        } else {
-                            onCopySelectionChanged?.invoke("", null)
-                            if (downHitNodeId == null &&
-                                abs(dy) >= scrollDismissThresholdPx &&
-                                abs(dy) > abs(dx) * 1.8f
-                            ) {
-                                onScrollDismissRequested?.invoke()
-                            }
-                        }
-                        return true
+                        onCopySelectionChanged?.invoke("", null)
+                    } else {
+                        selectedWordIds.clear()
+                        selectedWordIds.add(hitId)
+                        invalidate()
+                        emitCurrentSelectionToController()
                     }
-
-                    // Single tap without drag -> select ONLY that single word.
-                    performClick()
-                    val hitId = findTappedNodeId(event.x, event.y) ?: downHitNodeId
-                    if (hitId != null) {
-                        if (selectedCopyNodeIds.size == 1 && selectedCopyNodeIds.contains(hitId)) {
-                            selectedCopyNodeIds.clear()
-                            invalidate()
-                            onCopySelectionChanged?.invoke("", null)
-                        } else {
-                            selectedCopyNodeIds.clear()
-                            selectedCopyNodeIds.add(hitId)
-                            invalidate()
-                            emitCurrentSelectionToController()
-                        }
-                    } else if (selectedCopyNodeIds.isNotEmpty()) {
-                        clearSelection()
-                    }
-                    return true
+                } else if (selectedWordIds.isNotEmpty()) {
+                    clearSelection()
                 }
-
-                if (distance <= tapTouchSlop) {
-                    performClick()
-                    val hitId = findTappedNodeId(event.x, event.y) ?: downHitNodeId
-                    if (hitId != null) {
-                        val tapped = renderedTranslatedLabels.firstOrNull { it.item.node.id == hitId }?.item
-                        if (tapped != null) {
-                            flashedTranslateNodeId = hitId
-                            invalidate()
-                            removeCallbacks(clearFlashRunnable)
-                            postDelayed(clearFlashRunnable, 220L)
-                            onTranslatedNodeTapped?.invoke(tapped)
-                        }
-                    }
-                    return true
-                }
-
-                // Dismiss cleanly if user swipes across empty screen area so scrolling is never trapped.
-                if (downHitNodeId == null && abs(dy) >= scrollDismissThresholdPx) {
-                    onScrollDismissRequested?.invoke()
-                    return true
-                }
+                return true
             }
 
             MotionEvent.ACTION_CANCEL -> {
@@ -508,7 +593,7 @@ class InlineTextSelectionView @JvmOverloads constructor(
     }
 
     private fun emitCurrentSelectionToController() {
-        val selectedMapped = mappedCopyNodes.filter { it.node.id in selectedCopyNodeIds }
+        val selectedMapped = activeWordList().filter { it.node.id in selectedWordIds }
         if (selectedMapped.isEmpty()) {
             onCopySelectionChanged?.invoke("", null)
             return
@@ -522,9 +607,9 @@ class InlineTextSelectionView @JvmOverloads constructor(
     }
 
     private fun highlightWordsIntersectingSegment(x1: Float, y1: Float, x2: Float, y2: Float) {
-        for (mapped in mappedCopyNodes) {
+        for (mapped in activeWordList()) {
             if (segmentIntersectsRect(x1, y1, x2, y2, mapped.rect, highlighterHitRadius)) {
-                selectedCopyNodeIds.add(mapped.node.id)
+                selectedWordIds.add(mapped.node.id)
             }
         }
     }
@@ -568,15 +653,12 @@ class InlineTextSelectionView @JvmOverloads constructor(
     }
 
     private fun findTappedNodeId(x: Float, y: Float): Int? {
-        val candidates: List<Pair<Int, RectF>> = if (mode == DisplayMode.COPY) {
-            mappedCopyNodes.map { it.node.id to it.rect }
-        } else {
-            renderedTranslatedLabels.map { it.item.node.id to it.rect }
-        }
+        val candidates = activeWordList()
 
         var bestId: Int? = null
         var bestArea = Float.MAX_VALUE
-        for ((id, r) in candidates) {
+        for (mapped in candidates) {
+            val r = mapped.rect
             if (x >= r.left - exactPad &&
                 x <= r.right + exactPad &&
                 y >= r.top - exactPad &&
@@ -585,7 +667,7 @@ class InlineTextSelectionView @JvmOverloads constructor(
                 val area = r.width().coerceAtLeast(1f) * r.height().coerceAtLeast(1f)
                 if (area < bestArea) {
                     bestArea = area
-                    bestId = id
+                    bestId = mapped.node.id
                 }
             }
         }
@@ -593,7 +675,8 @@ class InlineTextSelectionView @JvmOverloads constructor(
 
         var closestId: Int? = null
         var minDistSq = Float.MAX_VALUE
-        for ((id, r) in candidates) {
+        for (mapped in candidates) {
+            val r = mapped.rect
             if (x >= r.left - nearPad &&
                 x <= r.right + nearPad &&
                 y >= r.top - nearPad &&
@@ -604,7 +687,7 @@ class InlineTextSelectionView @JvmOverloads constructor(
                 val dSq = (x - cx) * (x - cx) + (y - cy) * (y - cy)
                 if (dSq < minDistSq) {
                     minDistSq = dSq
-                    closestId = id
+                    closestId = mapped.node.id
                 }
             }
         }

@@ -3,6 +3,7 @@ package com.example
 import android.app.Application
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.drawable.ColorDrawable
@@ -21,7 +22,6 @@ import kotlinx.coroutines.cancel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -131,16 +131,102 @@ class ScreenTextCopyTest {
             words.map { it.text }
         )
 
-        // Single-line words sit on the same row strictly left-to-right inside [60, 420]
         assertTrue(words[0].boundsInScreen.left >= 60)
         assertTrue(words[0].boundsInScreen.right <= words[1].boundsInScreen.left)
         assertTrue(words[1].boundsInScreen.right <= words[2].boundsInScreen.left)
         assertTrue(words[2].boundsInScreen.right <= 420)
 
-        // Multi-line paragraph places line 2 ("Epsilon") cleanly below line 1 ("Alpha")
         val alphaRect = words[3].boundsInScreen
         val epsilonRect = words[7].boundsInScreen
         assertTrue(epsilonRect.top >= alphaRect.bottom - 2)
+    }
+
+    @Test
+    fun `ScreenOcrHelper merges Latin and Devanagari scripts, scales coordinates, and extracts word and line nodes`() {
+        val latinItems = listOf(
+            ScreenOcrHelper.OcrRawItem("Photo Banner", Rect(50, 100, 350, 140), isLine = true),
+            ScreenOcrHelper.OcrRawItem("Photo", Rect(50, 100, 160, 140), isLine = false),
+            ScreenOcrHelper.OcrRawItem("Banner", Rect(180, 100, 350, 140), isLine = false),
+            // Garbled Latin echo overlapping Devanagari box should be suppressed in favor of Devanagari script
+            ScreenOcrHelper.OcrRawItem("garbled", Rect(55, 200, 245, 250), isLine = true),
+            ScreenOcrHelper.OcrRawItem("grbl", Rect(55, 200, 245, 250), isLine = false)
+        )
+        val devanagariItems = listOf(
+            ScreenOcrHelper.OcrRawItem("नमस्ते भारत", Rect(50, 200, 250, 250), isLine = true),
+            ScreenOcrHelper.OcrRawItem("नमस्ते", Rect(50, 200, 145, 250), isLine = false),
+            ScreenOcrHelper.OcrRawItem("भारत", Rect(155, 200, 250, 250), isLine = false)
+        )
+
+        val result = ScreenOcrHelper.mergeScaleAndBuildNodes(
+            latinItems = latinItems,
+            devanagariItems = devanagariItems,
+            scaleX = 2f,
+            scaleY = 2f,
+            maxWidth = 1080,
+            maxHeight = 2400
+        )
+
+        assertEquals(listOf("Photo", "Banner", "नमस्ते", "भारत"), result.wordNodes.map { it.text })
+        assertEquals(Rect(100, 200, 320, 280), result.wordNodes[0].boundsInScreen)
+        assertEquals(listOf("Photo Banner", "नमस्ते भारत"), result.lineNodes.map { it.text })
+    }
+
+    @Test
+    fun `InlineTextSelectionView uses thin 6dp highlighter stroke, snug 2dp highlight rect, and does not spill to adjacent rows`() {
+        val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val controller = InlineTextOverlayController(appContext, wm)
+        val density = appContext.resources.displayMetrics.density
+
+        // Two vertically close rows (row 1: bottom=240, row 2: top=256 — 16px apart)
+        val ocrWords = listOf(
+            SmartDotAccessibilityService.ScreenTextNode(0, "First", Rect(80, 190, 220, 240)),
+            SmartDotAccessibilityService.ScreenTextNode(1, "Row", Rect(240, 190, 360, 240)),
+            SmartDotAccessibilityService.ScreenTextNode(2, "Adjacent", Rect(80, 256, 230, 306)),
+            SmartDotAccessibilityService.ScreenTextNode(3, "Below", Rect(250, 256, 370, 306))
+        )
+
+        controller.showCopyOverlay(
+            nodes = ocrWords,
+            accentColor = Color.parseColor("#00E5FF"),
+            onCopyClicked = {},
+            onRescanRequested = {},
+            onDismiss = {}
+        )
+
+        val root = getOverlayRoot(controller)
+        root.measure(
+            View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(2400, View.MeasureSpec.EXACTLY)
+        )
+        root.layout(0, 0, 1080, 2400)
+
+        val selView = root.findViewById<InlineTextSelectionView>(R.id.inline_ocr_selection_view)
+        assertEquals(6f * density, selView.getHighlighterStrokeWidthPx(), 0.01f)
+
+        // Verify snug highlight box stays strictly inside original Element bounding box with 2dp inset
+        val firstWordRect = selView.getMappedRectForCopyNode(0)!!
+        val snugRect = selView.getHighlightDrawRect(0)!!
+        assertEquals(firstWordRect.left + 2f * density, snugRect.left, 0.01f)
+        assertEquals(firstWordRect.top + 2f * density, snugRect.top, 0.01f)
+        assertEquals(firstWordRect.right - 2f * density, snugRect.right, 0.01f)
+        assertEquals(firstWordRect.bottom - 2f * density, snugRect.bottom, 0.01f)
+
+        // Drag straight along row 1 only; tight 1.5dp collision must NOT grab row 2 below
+        val rowRect = selView.getMappedRectForCopyNode(1)!!
+        val down = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, firstWordRect.centerX(), firstWordRect.centerY(), 0)
+        val move = MotionEvent.obtain(100L, 120L, MotionEvent.ACTION_MOVE, rowRect.centerX(), rowRect.centerY(), 0)
+        val up = MotionEvent.obtain(100L, 140L, MotionEvent.ACTION_UP, rowRect.centerX(), rowRect.centerY(), 0)
+        selView.dispatchTouchEvent(down)
+        selView.dispatchTouchEvent(move)
+        selView.dispatchTouchEvent(up)
+        down.recycle()
+        move.recycle()
+        up.recycle()
+
+        assertEquals(listOf("First", "Row"), selView.getSelectedCopyNodes().map { it.text })
+        assertEquals("First Row", selView.getCombinedSelectedCopyText())
+
+        controller.dismiss()
     }
 
     @Test
@@ -186,7 +272,6 @@ class ScreenTextCopyTest {
         )
         root.layout(0, 0, 1080, 2400)
 
-        // Tap ONLY the single word "₹850" (id = 3)
         val targetRect = selView.getMappedRectForCopyNode(3)!!
         tapAt(selView, targetRect.centerX(), targetRect.centerY())
 
@@ -194,7 +279,6 @@ class ScreenTextCopyTest {
         assertEquals("₹850", selView.getCombinedSelectedCopyText())
         assertEquals(View.VISIBLE, copyBtn.visibility)
 
-        // Tap "Copy" pill -> copies ONLY that tapped word and dismisses overlay
         copyBtn.performClick()
         assertEquals("₹850", copiedPayload)
         assertFalse(controller.isShowing())
@@ -238,7 +322,6 @@ class ScreenTextCopyTest {
         val importantRect = selView.getMappedRectForCopyNode(1)!!
         val wordsRect = selView.getMappedRectForCopyNode(2)!!
 
-        // Drag highlighter finger smoothly over "important" and "words" (skipping "Save" and "here")
         val down = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, importantRect.centerX(), importantRect.centerY(), 0)
         selView.dispatchTouchEvent(down)
         down.recycle()
@@ -251,7 +334,6 @@ class ScreenTextCopyTest {
         selView.dispatchTouchEvent(moveEnd)
         moveEnd.recycle()
 
-        // While dragging: highlighter trail is active, Copy pill stays hidden, intersected words highlight dynamically
         assertTrue(selView.isHighlighterTrailActive())
         assertEquals(View.GONE, copyBtn.visibility)
         assertEquals(listOf("important", "words"), selView.getSelectedCopyNodes().map { it.text })
@@ -260,7 +342,6 @@ class ScreenTextCopyTest {
         selView.dispatchTouchEvent(up)
         up.recycle()
 
-        // On ACTION_UP: trail resets cleanly, words stay highlighted, Copy pill appears
         assertFalse(selView.isHighlighterTrailActive())
         assertEquals("important words", selView.getCombinedSelectedCopyText())
         assertEquals(View.VISIBLE, copyBtn.visibility)
@@ -302,7 +383,86 @@ class ScreenTextCopyTest {
     }
 
     @Test
-    fun `ScreenTextCopyController splits paragraphs to words, highlights across rows on drag, copies via ClipboardManager, and closes`() {
+    fun `ScreenTextCopyController hides overlays for 50ms, runs in-memory ML Kit OCR for exact photo words, and recycles Bitmap`() {
+        val scope = CoroutineScope(Dispatchers.Main + Job())
+        val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.clearPrimaryClip()
+
+        var overlaysVisible = true
+        var popupDismissed = false
+        val inMemoryBitmap = Bitmap.createBitmap(1080, 2400, Bitmap.Config.ARGB_8888)
+
+        val ocrHelper = ScreenOcrHelper(
+            customOcrRunner = {
+                val latin = listOf(
+                    ScreenOcrHelper.OcrRawItem("Sale 50%", Rect(120, 300, 420, 360), isLine = true),
+                    ScreenOcrHelper.OcrRawItem("Sale", Rect(120, 300, 240, 360), isLine = false),
+                    ScreenOcrHelper.OcrRawItem("50%", Rect(260, 300, 420, 360), isLine = false)
+                )
+                val dev = listOf(
+                    ScreenOcrHelper.OcrRawItem("छूट", Rect(440, 300, 560, 360), isLine = true),
+                    ScreenOcrHelper.OcrRawItem("छूट", Rect(440, 300, 560, 360), isLine = false)
+                )
+                latin to dev
+            }
+        )
+
+        val controller = ScreenTextCopyController(
+            context = appContext,
+            serviceScope = scope,
+            clipboardManager = clipboard,
+            getAccentColor = { Color.parseColor("#00E5FF") },
+            dismissActivePopup = { popupDismissed = true },
+            setHostOverlaysVisible = { overlaysVisible = it },
+            onAccessibilityRequired = {},
+            nodeExtractor = { emptyList() },
+            ocrHelperFactory = { ocrHelper },
+            screenBitmapCapturer = { cb -> cb(inMemoryBitmap) }
+        )
+
+        controller.start()
+        assertTrue(popupDismissed)
+        assertFalse(overlaysVisible)
+        assertFalse("Capture must wait for 50ms hide delay before scanning", controller.isOverlayShowing())
+
+        ShadowLooper.idleMainLooper(ScreenTextCopyController.CAPTURE_HIDE_DELAY_MS + 10L, TimeUnit.MILLISECONDS)
+        val deadline = System.currentTimeMillis() + 3000L
+        while (!controller.isOverlayShowing() && System.currentTimeMillis() < deadline) {
+            ShadowLooper.idleMainLooper(25, TimeUnit.MILLISECONDS)
+            Thread.sleep(15)
+        }
+
+        assertTrue(controller.isOverlayShowing())
+        assertTrue("In-memory Bitmap must be recycled immediately after OCR", inMemoryBitmap.isRecycled)
+
+        val overlayField = ScreenTextCopyController::class.java
+            .getDeclaredField("overlayController")
+            .apply { isAccessible = true }
+        val overlayCtrl = overlayField.get(controller) as InlineTextOverlayController
+        val root = getOverlayRoot(overlayCtrl)
+        root.measure(
+            View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(2400, View.MeasureSpec.EXACTLY)
+        )
+        root.layout(0, 0, 1080, 2400)
+
+        val selView = root.findViewById<InlineTextSelectionView>(R.id.inline_ocr_selection_view)
+        assertEquals(listOf("Sale", "50%", "छूट"), selView.getMappedCopyNodesSnapshot().map { it.node.text })
+
+        val targetRect = selView.getMappedRectForCopyNode(1)!!
+        tapAt(selView, targetRect.centerX(), targetRect.centerY())
+        root.findViewById<LinearLayout>(R.id.btn_inline_ocr_copy).performClick()
+        ShadowLooper.idleMainLooper()
+
+        assertEquals("50%", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+        assertTrue(overlaysVisible)
+
+        controller.release()
+        scope.cancel()
+    }
+
+    @Test
+    fun `ScreenTextCopyController falls back to accessibility word splitting when screen capture is null`() {
         val scope = CoroutineScope(Dispatchers.Main + Job())
         val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.clearPrimaryClip()
@@ -322,11 +482,12 @@ class ScreenTextCopyTest {
             dismissActivePopup = {},
             setHostOverlaysVisible = { overlaysVisible = it },
             onAccessibilityRequired = { accessibilityPrompted = true },
-            nodeExtractor = { extractedNodes }
+            nodeExtractor = { extractedNodes },
+            screenBitmapCapturer = { cb -> cb(null) }
         )
 
         controller.start()
-        ShadowLooper.idleMainLooper(180, TimeUnit.MILLISECONDS)
+        ShadowLooper.idleMainLooper(80, TimeUnit.MILLISECONDS)
 
         assertFalse(accessibilityPrompted)
         assertTrue(controller.isOverlayShowing())
@@ -344,13 +505,11 @@ class ScreenTextCopyTest {
         root.layout(0, 0, 1080, 2400)
 
         val selView = root.findViewById<InlineTextSelectionView>(R.id.inline_ocr_selection_view)
-        // Words: 0="Tap", 1="Me", 2="Too", 3="नमस्ते", 4="भारत"
         assertEquals(5, selView.getMappedCopyNodesSnapshot().size)
 
         val tooRect = selView.getMappedRectForCopyNode(2)!!
         val namasteRect = selView.getMappedRectForCopyNode(3)!!
 
-        // Drag diagonally from "Too" on row 1 to "नमस्ते" on row 2
         val down = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, tooRect.centerX(), tooRect.centerY(), 0)
         val move = MotionEvent.obtain(100L, 130L, MotionEvent.ACTION_MOVE, namasteRect.centerX(), namasteRect.centerY(), 0)
         val up = MotionEvent.obtain(100L, 160L, MotionEvent.ACTION_UP, namasteRect.centerX(), namasteRect.centerY(), 0)
@@ -389,7 +548,8 @@ class ScreenTextCopyTest {
             dismissActivePopup = {},
             setHostOverlaysVisible = {},
             onAccessibilityRequired = { accessibilityPrompted = true },
-            nodeExtractor = { null }
+            nodeExtractor = { null },
+            screenBitmapCapturer = { cb -> cb(null) }
         )
 
         controller.scanAndShowOverlay()
