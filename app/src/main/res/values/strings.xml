@@ -23,4 +23,18 @@
     <string name="freeform_prompt_dont_ask">Don\'t Ask Again</string>
     <string name="freeform_enable_toast">Turn on \"Enable freeform windows\" in Developer Options for movable &amp; resizable floating windows.</string>
     <string name="freeform_unlock_dev_options_toast">Open Settings &gt; About phone and tap Build number 7 times to unlock Developer Options.</string>
+    <string name="screen_translate_mode_online">⚡ Online</string>
+    <string name="screen_translate_mode_offline">Offline</string>
+    <string name="screen_action_speak">Speak</string>
+    <string name="screen_action_translate">Translate</string>
+    <string name="screen_action_search">Search</string>
+    <string name="screen_action_save_image">Save Img</string>
+    <string name="cutout_action_save">Save</string>
+    <string name="cutout_action_visual_search">Lens</string>
+    <string name="cutout_action_copy_text">Text</string>
+    <string name="cutout_saved_gallery">Saved to Gallery (Pictures/SmartDot)</string>
+    <string name="cutout_save_failed">Could not save image to Gallery.</string>
+    <string name="cutout_no_text">No readable text found inside the selected box.</string>
+    <string name="split_screen_oem_fallback">Opened Recents — tap the app icon to start Split Screen.</string>
+    <string name="floating_window_no_active_app">Open any app first, then tap Floating Window.</string>
 </resources>

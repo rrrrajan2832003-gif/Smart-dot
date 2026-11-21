@@ -53,7 +53,8 @@ class ScreenTranslateTest {
                     src == TranslateLanguage.HINDI && dst == TranslateLanguage.ENGLISH -> "Hello India"
                     else -> text
                 }
-            }
+            },
+            onlineTranslateFn = { _, _ -> null }
         )
 
         val enToHi = runBlocking {
@@ -85,7 +86,8 @@ class ScreenTranslateTest {
                     dst == TranslateLanguage.HINDI && text == "Settings" -> "सेटिंग्स"
                     else -> text
                 }
-            }
+            },
+            onlineTranslateFn = { _, _ -> null }
         )
 
         val nodes = listOf(
@@ -137,7 +139,8 @@ class ScreenTranslateTest {
                     }
                     else -> text
                 }
-            }
+            },
+            onlineTranslateFn = { _, _ -> null }
         )
 
         var overlaysVisible = true
@@ -271,7 +274,8 @@ class ScreenTranslateTest {
             identifyLanguageFn = { "en" },
             translateBlockFn = { _, dst, text, _ ->
                 if (dst == TranslateLanguage.HINDI && text == "Settings") "सेटिंग्स" else text
-            }
+            },
+            onlineTranslateFn = { _, _ -> null }
         )
 
         var overlaysVisible = true
@@ -337,6 +341,138 @@ class ScreenTranslateTest {
         root.findViewById<LinearLayout>(R.id.btn_inline_ocr_close).performClick()
         assertFalse(controller.isOverlayShowing())
         assertTrue(overlaysVisible)
+
+        controller.release()
+        scope.cancel()
+    }
+
+    @Test
+    fun `ScreenTranslateHelper uses online fast mode first without model download and falls back cleanly`() {
+        val rawJson = """[[["नमस्ते दुनिया","Hello World",null,null,1]],null,"en"]"""
+        val parsed = ScreenTranslateHelper.parseGoogleFreeTranslateJson(rawJson)
+        assertEquals("नमस्ते दुनिया" to "en", parsed)
+
+        var downloadTriggered = false
+        var offlineFallbackCalls = 0
+        val helper = ScreenTranslateHelper(
+            identifyLanguageFn = { "en" },
+            translateBlockFn = { _, _, text, onDownloadStarted ->
+                offlineFallbackCalls++
+                onDownloadStarted()
+                "Offline($text)"
+            },
+            onlineTranslateFn = { _, text ->
+                if (text == "ForceOffline") null else ("Instant($text)" to "en")
+            }
+        )
+
+        val onlineResult = runBlocking {
+            helper.translateTextDetailed(
+                text = "Settings",
+                targetLanguageName = "Hindi",
+                preferOnline = true,
+                onModelDownloading = { downloadTriggered = true }
+            )
+        }
+        assertEquals("Instant(Settings)", onlineResult.translatedText)
+        assertFalse("Online mode must not trigger ML Kit download", downloadTriggered)
+        assertEquals(0, offlineFallbackCalls)
+
+        val fallbackResult = runBlocking {
+            helper.translateTextDetailed(
+                text = "ForceOffline",
+                targetLanguageName = "Hindi",
+                preferOnline = true,
+                onModelDownloading = { downloadTriggered = true }
+            )
+        }
+        assertEquals("Offline(ForceOffline)", fallbackResult.translatedText)
+        assertTrue("Offline fallback must trigger ML Kit path when online fails", downloadTriggered)
+        assertEquals(1, offlineFallbackCalls)
+
+        helper.close()
+    }
+
+    @Test
+    fun `ScreenTranslateController Online-Fast Mode toggle pill switches mode and re-translates live`() {
+        val scope = CoroutineScope(Dispatchers.Main + Job())
+        val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.clearPrimaryClip()
+
+        var savedOnlineMode = true
+        val translateHelper = ScreenTranslateHelper(
+            identifyLanguageFn = { "en" },
+            translateBlockFn = { _, _, text, _ -> "Offline-$text" },
+            onlineTranslateFn = { _, text -> "Online-$text" to "en" }
+        )
+
+        val nodes = listOf(
+            SmartDotAccessibilityService.ScreenTextNode(0, "Messages", Rect(100, 220, 360, 280), hasVisibleText = true)
+        )
+
+        val controller = ScreenTranslateController(
+            context = appContext,
+            serviceScope = scope,
+            clipboardManager = clipboard,
+            getAccentColor = { Color.parseColor("#00E5FF") },
+            getSavedTargetLanguage = { "Hindi" },
+            saveTargetLanguage = {},
+            getSavedOnlineMode = { savedOnlineMode },
+            saveOnlineMode = { savedOnlineMode = it },
+            dismissActivePopup = {},
+            setHostOverlaysVisible = {},
+            onAccessibilityRequired = {},
+            nodeExtractor = { nodes },
+            translateHelperFactory = { translateHelper },
+            screenBitmapCapturer = { cb -> cb(null) }
+        )
+
+        controller.start("Hindi")
+        ShadowLooper.idleMainLooper(80, TimeUnit.MILLISECONDS)
+        assertTrue(controller.isOverlayShowing())
+
+        val overlayField = ScreenTranslateController::class.java
+            .getDeclaredField("overlayController")
+            .apply { isAccessible = true }
+        val overlayCtrl = overlayField.get(controller) as InlineTextOverlayController
+        val rootField = InlineTextOverlayController::class.java
+            .getDeclaredField("overlayView")
+            .apply { isAccessible = true }
+        val root = rootField.get(overlayCtrl) as View
+        val selView = root.findViewById<InlineTextSelectionView>(R.id.inline_ocr_selection_view)
+        val modeChip = root.findViewById<TextView>(R.id.btn_inline_translate_mode)
+
+        root.measure(
+            View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(2400, View.MeasureSpec.EXACTLY)
+        )
+        root.layout(0, 0, 1080, 2400)
+
+        val deadlineOnline = System.currentTimeMillis() + 3000L
+        while (selView.getRenderedTranslatedLabelsSnapshot().isEmpty() && System.currentTimeMillis() < deadlineOnline) {
+            ShadowLooper.idleMainLooper(25, TimeUnit.MILLISECONDS)
+            Thread.sleep(15)
+        }
+
+        assertEquals(View.VISIBLE, modeChip.visibility)
+        assertEquals(appContext.getString(R.string.screen_translate_mode_online), modeChip.text.toString())
+        assertEquals("Online-Messages", selView.getRenderedTranslatedLabelsSnapshot().first().item.result.translatedText)
+
+        // Toggle Online -> Offline mode
+        modeChip.performClick()
+        ShadowLooper.idleMainLooper()
+        assertFalse(savedOnlineMode)
+        assertEquals(appContext.getString(R.string.screen_translate_mode_offline), modeChip.text.toString())
+
+        val deadlineOffline = System.currentTimeMillis() + 3000L
+        while (
+            selView.getRenderedTranslatedLabelsSnapshot().firstOrNull()?.item?.result?.translatedText != "Offline-Messages" &&
+            System.currentTimeMillis() < deadlineOffline
+        ) {
+            ShadowLooper.idleMainLooper(25, TimeUnit.MILLISECONDS)
+            Thread.sleep(15)
+        }
+        assertEquals("Offline-Messages", selView.getRenderedTranslatedLabelsSnapshot().first().item.result.translatedText)
 
         controller.release()
         scope.cancel()

@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PointF
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
@@ -65,8 +66,18 @@ class InlineTextSelectionView @JvmOverloads constructor(
     private val mappedTranslatedWordNodes = mutableListOf<MappedCopyNode>()
     private val renderedTranslatedLabels = mutableListOf<RenderedTranslatedLabel>()
 
+    private enum class CutoutDragMode {
+        NONE,
+        MOVE,
+        RESIZE_TL,
+        RESIZE_TR,
+        RESIZE_BL,
+        RESIZE_BR
+    }
+
     private var onCopySelectionChanged: ((selectedText: String, anchorRect: RectF?) -> Unit)? = null
     private var onScrollDismissRequested: (() -> Unit)? = null
+    private var onCutoutChanged: ((cutoutRect: RectF?) -> Unit)? = null
 
     private val density = context.resources.displayMetrics.density
     private val tapTouchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat().coerceIn(8f * density, 14f * density)
@@ -99,7 +110,31 @@ class InlineTextSelectionView @JvmOverloads constructor(
         typeface = Typeface.DEFAULT_BOLD
     }
 
+    private val cutoutScrimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.argb(104, 15, 23, 42)
+    }
+    private val cutoutBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2.5f * density
+    }
+    private val cutoutHandlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+    }
+    private val cutoutHandleStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * density
+        color = Color.WHITE
+    }
+
     private val highlighterPath = Path()
+    private val strokePoints = ArrayList<PointF>(64)
+    private var cutoutRect: RectF? = null
+    private var cutoutDragMode: CutoutDragMode = CutoutDragMode.NONE
+    private val minCutoutSizePx = 56f * density
+    private val cornerHandleHitRadiusPx = 26f * density
+    private val handleDotRadiusPx = 7f * density
+
     private var isHighlighterDragging = false
     private var downX = 0f
     private var downY = 0f
@@ -118,17 +153,22 @@ class InlineTextSelectionView @JvmOverloads constructor(
         nodes: List<SmartDotAccessibilityService.ScreenTextNode>,
         accentColor: Int,
         onCopySelectionChanged: (selectedText: String, anchorRect: RectF?) -> Unit,
-        onScrollDismissRequested: () -> Unit
+        onScrollDismissRequested: () -> Unit,
+        onCutoutChanged: ((cutoutRect: RectF?) -> Unit)? = null
     ) {
         this.mode = DisplayMode.COPY
         this.rawNodes = nodes
         this.translatedItems = emptyList()
         this.accentColor = accentColor
         this.selectedWordIds.clear()
+        this.cutoutRect = null
+        this.cutoutDragMode = CutoutDragMode.NONE
+        this.strokePoints.clear()
         this.isHighlighterDragging = false
         this.highlighterPath.reset()
         this.onCopySelectionChanged = onCopySelectionChanged
         this.onScrollDismissRequested = onScrollDismissRequested
+        this.onCutoutChanged = onCutoutChanged
 
         applyAccentPaints(accentColor)
         recomputeAllRects()
@@ -168,6 +208,8 @@ class InlineTextSelectionView @JvmOverloads constructor(
             Color.green(color),
             Color.blue(color)
         )
+        cutoutBorderPaint.color = color
+        cutoutHandlePaint.color = color
     }
 
     fun setBulkTranslations(items: List<ScreenTranslateHelper.TranslatedNode>) {
@@ -220,12 +262,34 @@ class InlineTextSelectionView @JvmOverloads constructor(
     fun getMappedTranslatedWordNodesSnapshot(): List<MappedCopyNode> = mappedTranslatedWordNodes.toList()
 
     fun clearSelection() {
-        if (selectedWordIds.isEmpty() && !isHighlighterDragging) return
+        val hadState = selectedWordIds.isNotEmpty() || isHighlighterDragging || cutoutRect != null
+        if (!hadState) return
         selectedWordIds.clear()
+        cutoutRect = null
+        cutoutDragMode = CutoutDragMode.NONE
+        strokePoints.clear()
         isHighlighterDragging = false
         highlighterPath.reset()
         invalidate()
         onCopySelectionChanged?.invoke("", null)
+        onCutoutChanged?.invoke(null)
+    }
+
+    fun getActiveCutoutRect(): RectF? = cutoutRect?.let { RectF(it) }
+
+    fun clearCutout() {
+        if (cutoutRect == null) return
+        cutoutRect = null
+        cutoutDragMode = CutoutDragMode.NONE
+        invalidate()
+        onCutoutChanged?.invoke(null)
+    }
+
+    fun getWordsInsideCutout(): List<SmartDotAccessibilityService.ScreenTextNode> {
+        val box = cutoutRect ?: return emptyList()
+        return mappedCopyNodes
+            .filter { RectF.intersects(box, it.rect) }
+            .map { it.node }
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
@@ -452,6 +516,32 @@ class InlineTextSelectionView @JvmOverloads constructor(
         super.onDraw(canvas)
 
         if (mode == DisplayMode.COPY) {
+            val activeBox = cutoutRect
+            if (activeBox != null) {
+                val vw = width.toFloat().coerceAtLeast(1f)
+                val vh = height.toFloat().coerceAtLeast(1f)
+                // Darken outer region around the transparent Circle-to-Search cutout window
+                canvas.drawRect(0f, 0f, vw, activeBox.top, cutoutScrimPaint)
+                canvas.drawRect(0f, activeBox.bottom, vw, vh, cutoutScrimPaint)
+                canvas.drawRect(0f, activeBox.top, activeBox.left, activeBox.bottom, cutoutScrimPaint)
+                canvas.drawRect(activeBox.right, activeBox.top, vw, activeBox.bottom, cutoutScrimPaint)
+
+                canvas.drawRoundRect(activeBox, 10f * density, 10f * density, cutoutBorderPaint)
+
+                // Corner drag handles
+                val corners = listOf(
+                    activeBox.left to activeBox.top,
+                    activeBox.right to activeBox.top,
+                    activeBox.left to activeBox.bottom,
+                    activeBox.right to activeBox.bottom
+                )
+                for ((cx, cy) in corners) {
+                    canvas.drawCircle(cx, cy, handleDotRadiusPx, cutoutHandlePaint)
+                    canvas.drawCircle(cx, cy, handleDotRadiusPx, cutoutHandleStrokePaint)
+                }
+                return
+            }
+
             // Zero unselected borders/outlines — draw only snug 2dp-padded highlights strictly inside matched word boxes
             for (mapped in mappedCopyNodes) {
                 if (mapped.node.id in selectedWordIds) {
@@ -501,6 +591,20 @@ class InlineTextSelectionView @JvmOverloads constructor(
                 downY = event.y
                 lastTouchX = event.x
                 lastTouchY = event.y
+                strokePoints.clear()
+                strokePoints.add(PointF(event.x, event.y))
+
+                val activeBox = cutoutRect
+                if (mode == DisplayMode.COPY && activeBox != null) {
+                    val hitMode = detectCutoutHitMode(activeBox, event.x, event.y)
+                    if (hitMode != CutoutDragMode.NONE) {
+                        cutoutDragMode = hitMode
+                        return true
+                    }
+                    // Drag or tap outside cutout clears cutout so user can select again
+                    clearCutout()
+                }
+
                 downHitNodeId = findTappedNodeId(downX, downY)
                 isHighlighterDragging = false
                 highlighterPath.reset()
@@ -510,6 +614,17 @@ class InlineTextSelectionView @JvmOverloads constructor(
             MotionEvent.ACTION_MOVE -> {
                 val x = event.x
                 val y = event.y
+
+                if (mode == DisplayMode.COPY && cutoutDragMode != CutoutDragMode.NONE && cutoutRect != null) {
+                    updateCutoutRectForDrag(x - lastTouchX, y - lastTouchY)
+                    lastTouchX = x
+                    lastTouchY = y
+                    invalidate()
+                    cutoutRect?.let { onCutoutChanged?.invoke(RectF(it)) }
+                    return true
+                }
+
+                strokePoints.add(PointF(x, y))
                 if (!isHighlighterDragging) {
                     val moved = hypot(x - downX, y - downY)
                     if (moved >= tapTouchSlop) {
@@ -536,10 +651,37 @@ class InlineTextSelectionView @JvmOverloads constructor(
                 val dx = event.x - downX
                 val dy = event.y - downY
 
+                if (mode == DisplayMode.COPY && cutoutDragMode != CutoutDragMode.NONE) {
+                    updateCutoutRectForDrag(event.x - lastTouchX, event.y - lastTouchY)
+                    cutoutDragMode = CutoutDragMode.NONE
+                    invalidate()
+                    cutoutRect?.let { onCutoutChanged?.invoke(RectF(it)) }
+                    return true
+                }
+
                 if (isHighlighterDragging) {
+                    strokePoints.add(PointF(event.x, event.y))
                     highlightWordsIntersectingSegment(lastTouchX, lastTouchY, event.x, event.y)
                     highlighterPath.reset()
                     isHighlighterDragging = false
+
+                    val loopBounds = if (mode == DisplayMode.COPY) {
+                        CircleCutoutAndMediaHelper.detectCircleLoopBounds(strokePoints, density)
+                    } else {
+                        null
+                    }
+                    strokePoints.clear()
+
+                    if (loopBounds != null) {
+                        selectedWordIds.clear()
+                        val clamped = clampCutoutToView(loopBounds)
+                        cutoutRect = clamped
+                        invalidate()
+                        onCopySelectionChanged?.invoke("", null)
+                        onCutoutChanged?.invoke(RectF(clamped))
+                        return true
+                    }
+
                     invalidate()
 
                     if (selectedWordIds.isNotEmpty()) {
@@ -556,6 +698,7 @@ class InlineTextSelectionView @JvmOverloads constructor(
                     return true
                 }
 
+                strokePoints.clear()
                 // Single tap without drag -> select ONLY that single word and show Copy pill beside it
                 performClick()
                 val hitId = findTappedNodeId(event.x, event.y) ?: downHitNodeId
@@ -577,6 +720,8 @@ class InlineTextSelectionView @JvmOverloads constructor(
             }
 
             MotionEvent.ACTION_CANCEL -> {
+                cutoutDragMode = CutoutDragMode.NONE
+                strokePoints.clear()
                 if (isHighlighterDragging) {
                     isHighlighterDragging = false
                     highlighterPath.reset()
@@ -586,6 +731,65 @@ class InlineTextSelectionView @JvmOverloads constructor(
             }
         }
         return super.onTouchEvent(event)
+    }
+
+    private fun detectCutoutHitMode(box: RectF, x: Float, y: Float): CutoutDragMode {
+        return when {
+            hypot(x - box.left, y - box.top) <= cornerHandleHitRadiusPx -> CutoutDragMode.RESIZE_TL
+            hypot(x - box.right, y - box.top) <= cornerHandleHitRadiusPx -> CutoutDragMode.RESIZE_TR
+            hypot(x - box.left, y - box.bottom) <= cornerHandleHitRadiusPx -> CutoutDragMode.RESIZE_BL
+            hypot(x - box.right, y - box.bottom) <= cornerHandleHitRadiusPx -> CutoutDragMode.RESIZE_BR
+            box.contains(x, y) -> CutoutDragMode.MOVE
+            else -> CutoutDragMode.NONE
+        }
+    }
+
+    private fun updateCutoutRectForDrag(deltaX: Float, deltaY: Float) {
+        val box = cutoutRect ?: return
+        val maxW = width.toFloat().takeIf { it > minCutoutSizePx }
+            ?: context.resources.displayMetrics.widthPixels.toFloat().coerceAtLeast(minCutoutSizePx)
+        val maxH = height.toFloat().takeIf { it > minCutoutSizePx }
+            ?: context.resources.displayMetrics.heightPixels.toFloat().coerceAtLeast(minCutoutSizePx)
+
+        when (cutoutDragMode) {
+            CutoutDragMode.MOVE -> {
+                val w = box.width()
+                val h = box.height()
+                val newLeft = (box.left + deltaX).coerceIn(0f, (maxW - w).coerceAtLeast(0f))
+                val newTop = (box.top + deltaY).coerceIn(0f, (maxH - h).coerceAtLeast(0f))
+                box.set(newLeft, newTop, newLeft + w, newTop + h)
+            }
+            CutoutDragMode.RESIZE_TL -> {
+                box.left = (box.left + deltaX).coerceIn(0f, box.right - minCutoutSizePx)
+                box.top = (box.top + deltaY).coerceIn(0f, box.bottom - minCutoutSizePx)
+            }
+            CutoutDragMode.RESIZE_TR -> {
+                box.right = (box.right + deltaX).coerceIn(box.left + minCutoutSizePx, maxW)
+                box.top = (box.top + deltaY).coerceIn(0f, box.bottom - minCutoutSizePx)
+            }
+            CutoutDragMode.RESIZE_BL -> {
+                box.left = (box.left + deltaX).coerceIn(0f, box.right - minCutoutSizePx)
+                box.bottom = (box.bottom + deltaY).coerceIn(box.top + minCutoutSizePx, maxH)
+            }
+            CutoutDragMode.RESIZE_BR -> {
+                box.right = (box.right + deltaX).coerceIn(box.left + minCutoutSizePx, maxW)
+                box.bottom = (box.bottom + deltaY).coerceIn(box.top + minCutoutSizePx, maxH)
+            }
+            CutoutDragMode.NONE -> Unit
+        }
+    }
+
+    private fun clampCutoutToView(raw: RectF): RectF {
+        val maxW = width.toFloat().takeIf { it > minCutoutSizePx }
+            ?: context.resources.displayMetrics.widthPixels.toFloat().coerceAtLeast(minCutoutSizePx)
+        val maxH = height.toFloat().takeIf { it > minCutoutSizePx }
+            ?: context.resources.displayMetrics.heightPixels.toFloat().coerceAtLeast(minCutoutSizePx)
+
+        val left = raw.left.coerceIn(0f, (maxW - minCutoutSizePx).coerceAtLeast(0f))
+        val top = raw.top.coerceIn(0f, (maxH - minCutoutSizePx).coerceAtLeast(0f))
+        val right = raw.right.coerceIn(left + minCutoutSizePx, maxW)
+        val bottom = raw.bottom.coerceIn(top + minCutoutSizePx, maxH)
+        return RectF(left, top, right, bottom)
     }
 
     override fun performClick(): Boolean {

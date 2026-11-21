@@ -34,6 +34,8 @@ class ScreenTranslateController(
     private val dismissActivePopup: () -> Unit,
     private val setHostOverlaysVisible: (Boolean) -> Unit,
     private val onAccessibilityRequired: () -> Unit,
+    private val getSavedOnlineMode: () -> Boolean = { true },
+    private val saveOnlineMode: (Boolean) -> Unit = {},
     private val nodeExtractor: () -> List<SmartDotAccessibilityService.ScreenTextNode>? = DEFAULT_EXTRACTOR,
     private val translateHelperFactory: () -> ScreenTranslateHelper = { ScreenTranslateHelper() },
     private val ocrHelperFactory: () -> ScreenOcrHelper = { ScreenOcrHelper() },
@@ -47,6 +49,7 @@ class ScreenTranslateController(
 
     private var isActive = false
     private var activeTargetLanguage: String = "Hindi"
+    private var activeOnlineMode: Boolean = true
     private var translationRequestToken: Long = 0L
     private var ocrRequestToken: Long = 0L
     private var lastScannedNodes: List<SmartDotAccessibilityService.ScreenTextNode> = emptyList()
@@ -93,6 +96,7 @@ class ScreenTranslateController(
         }
 
         activeTargetLanguage = targetLanguage ?: getSavedTargetLanguage()
+        activeOnlineMode = getSavedOnlineMode()
         isActive = true
         dismissActivePopup()
         setHostOverlaysVisible(false)
@@ -214,10 +218,16 @@ class ScreenTranslateController(
         controller.showTranslateOverlay(
             accentColor = accentColor,
             initialTargetLanguage = activeTargetLanguage,
+            initialOnlineMode = activeOnlineMode,
+            onTranslationModeToggled = { useOnline ->
+                activeOnlineMode = useOnline
+                saveOnlineMode(useOnline)
+                runBulkTranslation(lastScannedNodes, activeTargetLanguage, useOnline)
+            },
             onTargetLanguageChanged = { newLang ->
                 activeTargetLanguage = newLang
                 saveTargetLanguage(newLang)
-                runBulkTranslation(lastScannedNodes, newLang)
+                runBulkTranslation(lastScannedNodes, newLang, activeOnlineMode)
             },
             onCopyClicked = { translatedText ->
                 copyAndSaveText(translatedText)
@@ -239,12 +249,13 @@ class ScreenTranslateController(
             }
         )
 
-        runBulkTranslation(visibleTextNodes, activeTargetLanguage)
+        runBulkTranslation(visibleTextNodes, activeTargetLanguage, activeOnlineMode)
     }
 
     private fun runBulkTranslation(
         nodes: List<SmartDotAccessibilityService.ScreenTextNode>,
-        targetLanguage: String
+        targetLanguage: String,
+        preferOnline: Boolean
     ) {
         if (nodes.isEmpty()) return
         val requestId = ++translationRequestToken
@@ -254,6 +265,7 @@ class ScreenTranslateController(
                 val translatedNodes = helper.translateNodesBulk(
                     nodes = nodes,
                     targetLanguageName = targetLanguage,
+                    preferOnline = preferOnline,
                     onModelDownloading = {
                         mainHandler.post {
                             if (requestId == translationRequestToken && isOverlayShowing()) {
@@ -270,11 +282,11 @@ class ScreenTranslateController(
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Offline ML Kit bulk translation failed", e)
+                Log.e(TAG, "Screen bulk translation failed", e)
                 withContext(Dispatchers.Main.immediate) {
                     if (requestId == translationRequestToken && isOverlayShowing()) {
                         overlayController?.showTranslatingIndicator(
-                            "Offline model unavailable: ${e.localizedMessage ?: "Connect once to download"}"
+                            "Translation unavailable: ${e.localizedMessage ?: "Check internet or connect once"}"
                         )
                     }
                 }

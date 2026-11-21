@@ -5,11 +5,14 @@ import android.graphics.Bitmap
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.text.TextPaint
 import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -155,6 +158,116 @@ class SmartDotAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * Triggers Android 9+ (API 28) system Lock Screen via AccessibilityService global action.
+     * Returns true if the global action was dispatched, false on unsupported OS versions or failure.
+     */
+    fun performLockScreen(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            return false
+        }
+        return try {
+            performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+        } catch (e: Exception) {
+            Log.w(TAG, "Lock screen global action failed", e)
+            false
+        }
+    }
+
+    internal var performGlobalActionTestHook: ((Int) -> Boolean)? = null
+    internal var activeRootTestHook: AccessibilityNodeInfo? = null
+
+    private fun dispatchGlobalAction(action: Int): Boolean {
+        performGlobalActionTestHook?.let { return it(action) }
+        return runCatching { performGlobalAction(action) }.getOrDefault(false)
+    }
+
+    private fun safeRootInActiveWindow(): AccessibilityNodeInfo? {
+        return activeRootTestHook ?: runCatching { rootInActiveWindow }.getOrNull()
+    }
+
+    /**
+     * Initiates Split Screen (API 24+). If OEM firmware blocks GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN
+     * (e.g. returns false on MIUI/OneUI/ColorOS), falls back to opening Recents so the user
+     * can pick split-screen cleanly from the app icon.
+     * Returns true if direct Split Screen succeeded, false when fallback was triggered.
+     */
+    fun performSplitScreen(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            return false
+        }
+        val toggled = dispatchGlobalAction(GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN)
+        if (toggled) {
+            return true
+        }
+        // Fallback: open Recents overview for OEM split-screen selection
+        dispatchGlobalAction(GLOBAL_ACTION_RECENTS)
+        return false
+    }
+
+    /**
+     * Collects AccessibilityNodeInfo roots across the active window and system overlay/panel windows.
+     */
+    fun collectAccessibleRoots(): List<AccessibilityNodeInfo> {
+        val roots = ArrayList<AccessibilityNodeInfo>()
+        safeRootInActiveWindow()?.let { roots.add(it) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            runCatching { windows }?.getOrNull()?.forEach { win ->
+                val r = runCatching { win.root }.getOrNull()
+                if (r != null && roots.none { it == r }) {
+                    roots.add(r)
+                }
+            }
+        }
+        return roots
+    }
+
+    /**
+     * Automated 1-Tap Quick-Tile Clicker: opens Quick Settings, finds the tile or switch
+     * matching [target], clicks it via ACTION_CLICK, and dismisses the shade automatically.
+     */
+    fun performQuickTileToggle(
+        target: QuickTileAutomation.QuickTileTarget,
+        onCompleted: (toggled: Boolean) -> Unit
+    ) {
+        QuickTileAutomation.automateQuickSettingsToggle(
+            target = target,
+            handler = Handler(Looper.getMainLooper()),
+            performGlobalActionFn = { action -> dispatchGlobalAction(action) },
+            rootsProvider = { collectAccessibleRoots() },
+            onResult = onCompleted
+        )
+    }
+
+    /**
+     * Detects the package name of the currently active foreground app, skipping SmartDot's own
+     * overlay package and Android SystemUI windows.
+     */
+    fun getActiveForegroundPackageName(excludedPackage: String = packageName): String? {
+        val activePkg = runCatching { safeRootInActiveWindow()?.packageName?.toString() }.getOrNull()
+        if (!activePkg.isNullOrBlank() &&
+            activePkg != excludedPackage &&
+            activePkg != "com.android.systemui"
+        ) {
+            return activePkg
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            val windowList = runCatching { windows }.getOrNull().orEmpty()
+            for (win in windowList) {
+                if (win.type != AccessibilityWindowInfo.TYPE_APPLICATION) continue
+                val pkg = runCatching { win.root?.packageName?.toString() }.getOrNull()
+                if (!pkg.isNullOrBlank() &&
+                    pkg != excludedPackage &&
+                    pkg != "com.android.systemui"
+                ) {
+                    return pkg
+                }
+            }
+        }
+        return null
+    }
+
     companion object {
         private const val TAG = "SmartDotAccessibility"
         private const val ROW_SORT_TOLERANCE_PX = 24
@@ -163,6 +276,10 @@ class SmartDotAccessibilityService : AccessibilityService() {
         @Volatile
         var instance: SmartDotAccessibilityService? = null
             private set
+
+        internal fun setInstanceForTest(service: SmartDotAccessibilityService?) {
+            instance = service
+        }
 
         fun isEnabled(): Boolean {
             return instance != null

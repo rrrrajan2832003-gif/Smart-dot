@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
@@ -164,6 +165,25 @@ class MainActivity : ComponentActivity() {
                                 )
                             )
                             NavigationBarItem(
+                                selected = currentTab == "gestures",
+                                onClick = { currentTab = "gestures" },
+                                icon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Build,
+                                        contentDescription = "Gestures"
+                                    )
+                                },
+                                label = { Text("Gestures") },
+                                modifier = Modifier.testTag("nav_tab_gestures"),
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = Color.Black,
+                                    selectedTextColor = activeColor,
+                                    unselectedIconColor = Color(0xFF94A3B8),
+                                    unselectedTextColor = Color(0xFF94A3B8),
+                                    indicatorColor = activeColor
+                                )
+                            )
+                            NavigationBarItem(
                                 selected = currentTab == "about",
                                 onClick = { currentTab = "about" },
                                 icon = {
@@ -184,8 +204,8 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 ) { innerPadding ->
-                    if (currentTab == "settings") {
-                        SmartDotScreen(
+                    when (currentTab) {
+                        "settings" -> SmartDotScreen(
                             modifier = Modifier.padding(innerPadding),
                             hasOverlayPermission = hasOverlay,
                             hasNotificationPermission = hasNotification,
@@ -199,8 +219,11 @@ class MainActivity : ComponentActivity() {
                                 syncOverlayToggles(dotOn, sidebarOn)
                             }
                         )
-                    } else {
-                        AboutAppScreen(
+                        "gestures" -> GesturesScreen(
+                            modifier = Modifier.padding(innerPadding),
+                            dotColor = dotColor
+                        )
+                        else -> AboutAppScreen(
                             modifier = Modifier.padding(innerPadding),
                             dotColor = dotColor
                         )
@@ -373,6 +396,7 @@ fun SmartDotScreen(
     LaunchedEffect(isServiceRunning) {
         dotEnabled = prefs.getBoolean("floating_dot_enabled", true)
         sidebarEnabled = prefs.getBoolean("sidebar_enabled", true)
+        dotPositionLocked = prefs.getBoolean("dot_position_locked", false)
     }
 
     fun updateServiceStyle() {
@@ -633,6 +657,49 @@ fun SmartDotScreen(
                                     .testTag("switch_edge_sidebar")
                             )
                         }
+
+                        HorizontalDivider(
+                            color = Color(0xFF334155).copy(alpha = 0.7f),
+                            thickness = 1.dp,
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        )
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                                Text(
+                                    text = "Lock Position",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFF8FAFC)
+                                )
+                                Text(
+                                    text = "Freeze Dot & Sidebar so dragging runs swipe gestures",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+                            Switch(
+                                checked = dotPositionLocked,
+                                onCheckedChange = { isChecked ->
+                                    dotPositionLocked = isChecked
+                                    prefs.edit().putBoolean("dot_position_locked", isChecked).apply()
+                                    updateServiceStyle()
+                                },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.Black,
+                                    checkedTrackColor = activeAccent
+                                ),
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("switch_lock_position")
+                            )
+                        }
                     }
                 }
 
@@ -814,37 +881,7 @@ fun SmartDotScreen(
                     }
                 }
 
-                Divider(color = Color(0xFF334155), modifier = Modifier.padding(vertical = 12.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Lock Handle Position",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFFF8FAFC)
-                        )
-                        Text(
-                            text = "Disable dragging of the Floating Shortcuts overlay.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF64748B)
-                        )
-                    }
-                    Switch(
-                        checked = dotPositionLocked,
-                        onCheckedChange = { isChecked ->
-                            dotPositionLocked = isChecked
-                            prefs.edit().putBoolean("dot_position_locked", isChecked).apply()
-                            updateServiceStyle()
-                        }
-                    )
-                }
-
-                Divider(color = Color(0xFF334155), modifier = Modifier.padding(vertical = 12.dp))
+                HorizontalDivider(color = Color(0xFF334155), thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1801,6 +1838,7 @@ private fun getActionName(actionId: String): String {
         "home" -> "Home"
         "back" -> "Back"
         "recent_apps" -> "Recents"
+        "lock_screen" -> "Lock Screen"
         "screenshot" -> "Screenshot"
         "screen_copy" -> "Text Copy"
         "screen_translate" -> "Screen Translate"
@@ -1829,6 +1867,7 @@ private fun getActionName(actionId: String): String {
         "airplane_mode" -> "Airplane"
         "hotspot" -> "Hotspot"
         "split_screen" -> "Split"
+        "floating_window" -> "Float App"
         "open_app_drawer" -> "Drawer"
         "voice_assistant" -> "Assistant"
         "about_app" -> "About"
@@ -1852,6 +1891,7 @@ val ACTION_LIST = listOf(
     AvailableAction("home", "Home", "System Shortcuts", "Go to device Home screen"),
     AvailableAction("back", "Back", "System Shortcuts", "Go back to previous screen"),
     AvailableAction("recent_apps", "Recent Apps", "System Shortcuts", "Open system Recents screen"),
+    AvailableAction("lock_screen", "Lock Screen", "System Shortcuts", "Lock the device screen immediately"),
     AvailableAction("screenshot", "Screenshot", "System Shortcuts", "Capture system screen shot"),
     AvailableAction("screen_copy", "Screen Text Copy", "System Shortcuts", "Tap any visible text on screen to copy instantly"),
     AvailableAction("screen_translate", "Screen Translate", "System Shortcuts", "Tap any text on screen for instant offline translation"),
@@ -1859,6 +1899,7 @@ val ACTION_LIST = listOf(
     AvailableAction("notifications", "Notifications", "System Shortcuts", "Expand status bar notification panel"),
     AvailableAction("quick_settings", "Quick Settings", "System Shortcuts", "Expand status bar quick settings panel"),
     AvailableAction("split_screen", "Split Screen", "System Shortcuts", "Initiate system Split Screen Mode"),
+    AvailableAction("floating_window", "Floating Window", "System Shortcuts", "Pop out current active app into a movable floating window"),
     AvailableAction("open_app_drawer", "Open App Drawer", "System Shortcuts", "Open installed launcher app drawer"),
     AvailableAction("voice_assistant", "Voice Assistant", "System Shortcuts", "Activate Google Voice Assistant"),
     AvailableAction("about_app", "About App", "System Shortcuts", "Open local Floating Shortcuts About and Developer suite"),

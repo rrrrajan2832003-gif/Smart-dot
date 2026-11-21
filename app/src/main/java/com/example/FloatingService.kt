@@ -63,7 +63,11 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import android.content.ActivityNotFoundException
+import android.speech.RecognizerIntent
+import android.view.VelocityTracker
 import kotlin.math.abs
+import kotlin.math.hypot
 
 class FloatingService : Service() {
 
@@ -308,11 +312,13 @@ class FloatingService : Service() {
         imgFloatingDot.setOnTouchListener(object : View.OnTouchListener {
             private var maxX = 0
             private var maxY = 0
+            private var velocityTracker: VelocityTracker? = null
 
             override fun onTouch(v: View?, event: MotionEvent?): Boolean {
                 if (event == null) return false
+                val isPositionLocked = prefs.getBoolean("dot_position_locked", false)
 
-                when (event.action) {
+                when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         startTime = System.currentTimeMillis()
                         initialX = params.x
@@ -320,6 +326,15 @@ class FloatingService : Service() {
                         startRawX = event.rawX
                         startRawY = event.rawY
                         isDragging = false
+
+                        velocityTracker?.recycle()
+                        velocityTracker = VelocityTracker.obtain().also { tracker ->
+                            val rawEvent = MotionEvent.obtain(event).apply {
+                                setLocation(event.rawX, event.rawY)
+                            }
+                            tracker.addMovement(rawEvent)
+                            rawEvent.recycle()
+                        }
 
                         // Precalculate boundaries on touch down to avoid costly work during dragging (ACTION_MOVE)
                         val metrics = resources.displayMetrics
@@ -330,6 +345,14 @@ class FloatingService : Service() {
                         return true
                     }
                     MotionEvent.ACTION_MOVE -> {
+                        velocityTracker?.let { tracker ->
+                            val rawEvent = MotionEvent.obtain(event).apply {
+                                setLocation(event.rawX, event.rawY)
+                            }
+                            tracker.addMovement(rawEvent)
+                            rawEvent.recycle()
+                        }
+
                         val diffX = event.rawX - startRawX
                         val diffY = event.rawY - startRawY
 
@@ -340,7 +363,8 @@ class FloatingService : Service() {
                             isDragging = true
                         }
 
-                        if (isDragging) {
+                        // When Lock Position is ON, keep the Floating Dot fixed in place so swipes trigger gestures cleanly
+                        if (!isPositionLocked && isDragging) {
                             params.x = (initialX + diffX.toInt()).coerceIn(0, maxX)
                             params.y = (initialY + diffY.toInt()).coerceIn(0, maxY)
 
@@ -357,15 +381,52 @@ class FloatingService : Service() {
                         val finalDiffX = event.rawX - startRawX
                         val finalDiffY = event.rawY - startRawY
 
-                        if (!isDragging || (abs(finalDiffX) < dragDistanceThreshold && abs(finalDiffY) < dragDistanceThreshold && duration < clickTimeThreshold)) {
-                            lastX = params.x.coerceIn(0, maxX)
-                            lastY = params.y.coerceIn(0, maxY)
-                            handleDotClick()
-                        } else {
-                            lastX = params.x.coerceIn(0, maxX)
-                            lastY = params.y.coerceIn(0, maxY)
-                            saveLocation(lastX, lastY)
+                        var speed = 0f
+                        velocityTracker?.let { tracker ->
+                            val rawEvent = MotionEvent.obtain(event).apply {
+                                setLocation(event.rawX, event.rawY)
+                            }
+                            tracker.addMovement(rawEvent)
+                            rawEvent.recycle()
+                            tracker.computeCurrentVelocity(1000)
+                            speed = hypot(tracker.xVelocity, tracker.yVelocity)
+                            tracker.recycle()
                         }
+                        velocityTracker = null
+
+                        if (isPositionLocked) {
+                            val dotSwipeThreshold = prefs.getInt("sidebar_sensitivity", 25).coerceAtLeast(22) * density
+                            val direction = SwipeGestureHelper.detectSwipeDirection(
+                                dx = finalDiffX,
+                                dy = finalDiffY,
+                                velocityPxPerSec = speed,
+                                minDeltaPx = dotSwipeThreshold,
+                                inwardIsRight = false
+                            )
+                            if (direction != null) {
+                                v?.let {
+                                    runCatching { it.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP) }
+                                }
+                                executeSwipeGesture(direction, isSidebarOrigin = false)
+                            } else if (abs(finalDiffX) < dragDistanceThreshold && abs(finalDiffY) < dragDistanceThreshold && duration < clickTimeThreshold) {
+                                handleDotClick()
+                            }
+                        } else {
+                            if (!isDragging || (abs(finalDiffX) < dragDistanceThreshold && abs(finalDiffY) < dragDistanceThreshold && duration < clickTimeThreshold)) {
+                                lastX = params.x.coerceIn(0, maxX)
+                                lastY = params.y.coerceIn(0, maxY)
+                                handleDotClick()
+                            } else {
+                                lastX = params.x.coerceIn(0, maxX)
+                                lastY = params.y.coerceIn(0, maxY)
+                                saveLocation(lastX, lastY)
+                            }
+                        }
+                        return true
+                    }
+                    MotionEvent.ACTION_CANCEL -> {
+                        velocityTracker?.recycle()
+                        velocityTracker = null
                         return true
                     }
                 }
@@ -940,6 +1001,7 @@ class FloatingService : Service() {
             "screen_translate" -> R.drawable.ic_tab_translate
             "notifications" -> R.drawable.ic_radial_notifications
             "quick_settings" -> R.drawable.ic_radial_quick_settings
+            "lock_screen" -> android.R.drawable.ic_lock_lock
             "settings" -> R.drawable.ic_radial_settings
             "whatsapp" -> R.drawable.ic_radial_whatsapp
             "calculator" -> R.drawable.ic_radial_calculator
@@ -962,6 +1024,7 @@ class FloatingService : Service() {
             "airplane_mode" -> android.R.drawable.ic_menu_directions
             "hotspot" -> android.R.drawable.ic_menu_share
             "split_screen" -> android.R.drawable.ic_menu_crop
+            "floating_window" -> R.drawable.ic_floating_window
             "open_app_drawer" -> R.drawable.ic_tab_apps
             "voice_assistant" -> android.R.drawable.ic_btn_speak_now
             "about_app" -> android.R.drawable.ic_menu_info_details
@@ -984,6 +1047,7 @@ class FloatingService : Service() {
             "screen_record" -> "Screen Rec"
             "notifications" -> "Notif"
             "quick_settings" -> "Quick Set"
+            "lock_screen" -> "Lock"
             "settings" -> "Dash"
             "whatsapp" -> "WhatsApp"
             "calculator" -> "Calc"
@@ -1006,6 +1070,7 @@ class FloatingService : Service() {
             "airplane_mode" -> "Airplane"
             "hotspot" -> "Hotspot"
             "split_screen" -> "Split"
+            "floating_window" -> "Float App"
             "open_app_drawer" -> "Drawer"
             "voice_assistant" -> "Assistant"
             "about_app" -> "About"
@@ -1030,14 +1095,119 @@ class FloatingService : Service() {
         }
     }
 
+    private fun executeSwipeGesture(
+        direction: SwipeGestureHelper.SwipeDirection,
+        isSidebarOrigin: Boolean
+    ) {
+        val actionId = SwipeGestureHelper.getAssignedAction(prefs, direction)
+        if (actionId != "none") {
+            executeAction(actionId)
+        } else if (isSidebarOrigin && direction == SwipeGestureHelper.SwipeDirection.SWIPE_LEFT) {
+            showSidebarPanel()
+        }
+    }
+
+    private fun triggerVoiceAssistant() {
+        activePopupWindow?.dismiss()
+        val assistantIntents = listOf(
+            Intent(Intent.ACTION_VOICE_COMMAND).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            Intent(Intent.ACTION_ASSIST).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            Intent(RecognizerIntent.ACTION_WEB_SEARCH).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        )
+        for (candidate in assistantIntents) {
+            try {
+                startActivity(candidate)
+                return
+            } catch (_: ActivityNotFoundException) {
+                // Fall through to next Voice Assistant intent
+            } catch (e: Exception) {
+                Log.w("FloatingService", "Voice assistant launch failed for ${candidate.action}", e)
+            }
+        }
+        Toast.makeText(this, "Voice Assistant not found on this device", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun triggerOneTapQuickTileToggle(target: QuickTileAutomation.QuickTileTarget) {
+        activePopupWindow?.dismiss()
+        val directResult = QuickTileAutomation.tryDirectApiToggle(this, target)
+        if (directResult != null) {
+            Toast.makeText(
+                this,
+                "${target.displayName} ${if (directResult) "ON" else "OFF"}",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+
+        val sInstance = SmartDotAccessibilityService.instance
+        if (sInstance != null) {
+            sInstance.performQuickTileToggle(target) { toggled ->
+                if (!toggled) {
+                    runCatching {
+                        startActivity(QuickTileAutomation.buildFallbackSettingsIntent(target))
+                    }
+                }
+            }
+        } else {
+            runCatching {
+                startActivity(QuickTileAutomation.buildFallbackSettingsIntent(target))
+            }
+        }
+    }
+
+    private fun triggerPopOutActiveAppWindow() {
+        activePopupWindow?.dismiss()
+        val sInstance = SmartDotAccessibilityService.instance
+        if (sInstance == null) {
+            showAccessibilityDialog()
+            return
+        }
+        val activePkg = sInstance.getActiveForegroundPackageName(excludedPackage = packageName)
+        if (activePkg.isNullOrBlank()) {
+            Toast.makeText(this, getString(R.string.floating_window_no_active_app), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val pm = packageManager
+        val launchIntent = pm.getLaunchIntentForPackage(activePkg)
+        if (launchIntent == null) {
+            Toast.makeText(this, getString(R.string.floating_window_no_active_app), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val appLabel = runCatching {
+            val appInfo = pm.getApplicationInfo(activePkg, 0)
+            pm.getApplicationLabel(appInfo).toString()
+        }.getOrNull() ?: activePkg
+        FreeformWindowLauncher.launchInFreeformWindow(this, launchIntent, appLabel)
+    }
+
     private fun executeAction(actionId: String) {
         val context = this
         val pm = packageManager
         try {
             when (actionId) {
+                "none" -> return
                 "home" -> performGlobalActionSafety(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
                 "back" -> performGlobalActionSafety(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
                 "recent_apps" -> performGlobalActionSafety(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS)
+                "lock_screen" -> {
+                    activePopupWindow?.dismiss()
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        val sInstance = SmartDotAccessibilityService.instance
+                        if (sInstance != null) {
+                            sInstance.performLockScreen()
+                        } else {
+                            showAccessibilityDialog()
+                        }
+                    } else {
+                        Toast.makeText(this, "Lock Screen requires Android 9 or above.", Toast.LENGTH_SHORT).show()
+                    }
+                }
                 "screenshot" -> triggerScreenshot()
                 "screen_copy" -> startScreenTextCopy()
                 "screen_translate" -> startScreenTranslate()
@@ -1055,12 +1225,26 @@ class FloatingService : Service() {
                 "notifications" -> performGlobalActionSafety(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
                 "quick_settings" -> performGlobalActionSafety(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS)
                 "split_screen" -> {
+                    activePopupWindow?.dismiss()
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                        performGlobalActionSafety(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN)
+                        val sInstance = SmartDotAccessibilityService.instance
+                        if (sInstance != null) {
+                            val ok = sInstance.performSplitScreen()
+                            if (!ok) {
+                                Toast.makeText(
+                                    this,
+                                    getString(R.string.split_screen_oem_fallback),
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        } else {
+                            showAccessibilityDialog()
+                        }
                     } else {
                         Toast.makeText(this, "Split screen is supported on Nougat and above.", Toast.LENGTH_SHORT).show()
                     }
                 }
+                "floating_window" -> triggerPopOutActiveAppWindow()
                 "open_app_drawer" -> {
                     if (!switchActivePopupToAppsTab()) {
                         val homeIntent = Intent(Intent.ACTION_MAIN).apply {
@@ -1070,36 +1254,11 @@ class FloatingService : Service() {
                         startActivity(homeIntent)
                     }
                 }
-                "voice_assistant" -> {
-                    val intent = Intent(Intent.ACTION_VOICE_COMMAND).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    if (intent.resolveActivity(pm) != null) {
-                        activePopupWindow?.dismiss()
-                        startActivity(intent)
-                    } else {
-                        Toast.makeText(context, "Voice Assistant not found", Toast.LENGTH_SHORT).show()
-                    }
-                }
+                "voice_assistant" -> triggerVoiceAssistant()
                 "flashlight" -> toggleFlashlight()
-                "wifi" -> {
-                    val intent = Intent(android.provider.Settings.ACTION_WIFI_SETTINGS).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    startActivity(intent)
-                }
-                "mobile_data" -> {
-                    val intent = Intent(android.provider.Settings.ACTION_DATA_ROAMING_SETTINGS).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    startActivity(intent)
-                }
-                "bluetooth" -> {
-                    val intent = Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    startActivity(intent)
-                }
+                "wifi" -> triggerOneTapQuickTileToggle(QuickTileAutomation.QuickTileTarget.WIFI)
+                "mobile_data" -> triggerOneTapQuickTileToggle(QuickTileAutomation.QuickTileTarget.MOBILE_DATA)
+                "bluetooth" -> triggerOneTapQuickTileToggle(QuickTileAutomation.QuickTileTarget.BLUETOOTH)
                 "brightness" -> {
                     val intent = Intent(android.provider.Settings.ACTION_DISPLAY_SETTINGS).apply {
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -1154,12 +1313,7 @@ class FloatingService : Service() {
                         Toast.makeText(this, "Not supported on this version of Android.", Toast.LENGTH_SHORT).show()
                     }
                 }
-                "auto_rotate" -> {
-                    val intent = Intent(android.provider.Settings.ACTION_DISPLAY_SETTINGS).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    startActivity(intent)
-                }
+                "auto_rotate" -> triggerOneTapQuickTileToggle(QuickTileAutomation.QuickTileTarget.AUTO_ROTATE)
                 "dark_mode" -> {
                     val intent = Intent(android.provider.Settings.ACTION_DISPLAY_SETTINGS).apply {
                         flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -1772,6 +1926,12 @@ class FloatingService : Service() {
             },
             onAccessibilityRequired = {
                 showAccessibilityDialog()
+            },
+            getSavedOnlineMode = {
+                prefs.getBoolean("translate_online_mode", true)
+            },
+            saveOnlineMode = { useOnline ->
+                prefs.edit().putBoolean("translate_online_mode", useOnline).apply()
             }
         ).also { screenTranslateController = it }
     }
@@ -1903,18 +2063,39 @@ class FloatingService : Service() {
 
     private fun bindCalculatorTab(popupView: View, accentColor: Int) {
         val screen = popupView.findViewById<TextView>(R.id.tv_calc_screen)
-        
+        val previewScreen = popupView.findViewById<TextView>(R.id.tv_calc_preview)
+
+        fun updateDisplay(hidePreview: Boolean = false) {
+            screen.text = if (currentExpr.isEmpty()) "0" else currentExpr
+            if (hidePreview) {
+                previewScreen?.text = ""
+                previewScreen?.visibility = View.GONE
+                return
+            }
+            val livePreview = CalculatorEvaluator.evaluateLivePreview(currentExpr)
+            if (livePreview != null) {
+                previewScreen?.text = "= $livePreview"
+                previewScreen?.setTextColor(accentColor)
+                previewScreen?.visibility = View.VISIBLE
+            } else {
+                previewScreen?.text = ""
+                previewScreen?.visibility = View.GONE
+            }
+        }
+
+        updateDisplay()
+
         fun appendCalc(char: String) {
-            if (currentExpr == "0" || currentExpr == "Error") {
+            if (currentExpr == "0" || currentExpr == "Error" || currentExpr == "Div By Zero") {
                 currentExpr = ""
             }
             currentExpr += char
-            screen.text = currentExpr
+            updateDisplay()
         }
 
         val btnIds = listOf(
-            R.id.btn_calc_0, R.id.btn_calc_1, R.id.btn_calc_2, 
-            R.id.btn_calc_3, R.id.btn_calc_4, R.id.btn_calc_5, 
+            R.id.btn_calc_0, R.id.btn_calc_1, R.id.btn_calc_2,
+            R.id.btn_calc_3, R.id.btn_calc_4, R.id.btn_calc_5,
             R.id.btn_calc_6, R.id.btn_calc_7, R.id.btn_calc_8, R.id.btn_calc_9
         )
 
@@ -1933,14 +2114,14 @@ class FloatingService : Service() {
 
         popupView.findViewById<Button>(R.id.btn_calc_clear).setOnClickListener {
             currentExpr = ""
-            screen.text = "0"
+            updateDisplay(hidePreview = true)
         }
 
         popupView.findViewById<Button>(R.id.btn_calc_back).setOnClickListener {
             if (currentExpr.isNotEmpty()) {
                 currentExpr = currentExpr.substring(0, currentExpr.length - 1)
-                screen.text = if (currentExpr.isEmpty()) "0" else currentExpr
             }
+            updateDisplay()
         }
 
         // Core interactive evaluation algorithm
@@ -1948,64 +2129,20 @@ class FloatingService : Service() {
             setBackgroundColor(accentColor)
             setOnClickListener {
                 if (currentExpr.isNotEmpty()) {
-                    val result = evaluateMathExpression(currentExpr)
-                    screen.text = result
+                    val result = CalculatorEvaluator.evaluateFinal(currentExpr)
                     currentExpr = result
+                    updateDisplay(hidePreview = true)
                 }
             }
         }
     }
 
-    // Robust dual-operand evaluator that supports simple expressions natively without collapsing
     private fun evaluateMathExpression(expr: String): String {
-        try {
-            val formatStr = expr.replace(" ", "")
-            // Support single operator calculation cleanly as primary use-case
-            val operators = listOf("+", "-", "*", "/", "%")
-            var activeOperator = ""
-            var opIndex = -1
-
-            for (op in operators) {
-                val idx = formatStr.lastIndexOf(op)
-                if (idx > 0) {
-                    activeOperator = op
-                    opIndex = idx
-                    break
-                }
-            }
-
-            if (opIndex != -1) {
-                val val1Str = formatStr.substring(0, opIndex)
-                val val2Str = formatStr.substring(opIndex + 1)
-                val double1 = val1Str.toDouble()
-                val double2 = val2Str.toDouble()
-
-                val resDouble = when (activeOperator) {
-                    "+" -> double1 + double2
-                    "-" -> double1 - double2
-                    "*" -> double1 * double2
-                    "/" -> {
-                        if (double2 == 0.0) return "Div By Zero"
-                        double1 / double2
-                    }
-                    "%" -> double1 % double2
-                    else -> 0.0
-                }
-
-                return if (resDouble % 1.0 == 0.0) {
-                    resDouble.toLong().toString()
-                } else {
-                    String.format(Locale.US, "%.4f", resDouble).trimEnd('0').trimEnd('.')
-                }
-            }
-            return expr
-        } catch (e: Exception) {
-            return "Error"
-        }
+        return CalculatorEvaluator.evaluateFinal(expr)
     }
 
     // -------------------------------------------------------------
-    // Tab 6: Google Lens-style Screen & Phrase Translator (ML Kit On-Device)
+    // Tab 6: Google Lens-style Screen & Phrase Translator (Fast Online + Offline ML Kit Fallback)
     // -------------------------------------------------------------
     private fun bindTranslateTab(popupView: View, accentColor: Int) {
         val spTarget = popupView.findViewById<Spinner>(R.id.sp_lang_target)
@@ -2058,6 +2195,7 @@ class FloatingService : Service() {
             }
 
             val selection = spTarget.selectedItem?.toString() ?: "Hindi"
+            val preferOnline = prefs.getBoolean("translate_online_mode", true)
             tvOutput.text = "Translating..."
             serviceScope.launch {
                 try {
@@ -2065,6 +2203,7 @@ class FloatingService : Service() {
                     val translated = helper.translateSingleText(
                         text = text,
                         targetLanguageName = selection,
+                        preferOnline = preferOnline,
                         onModelDownloading = {
                             Handler(Looper.getMainLooper()).post {
                                 Toast.makeText(
@@ -2418,7 +2557,9 @@ class FloatingService : Service() {
                 Gravity.TOP or Gravity.START
             }
             val screenHeight = resources.displayMetrics.heightPixels
-            y = (screenHeight - handleHeight) / 2
+            val maxSidebarY = (screenHeight - handleHeight).coerceAtLeast(0)
+            val defaultSidebarY = ((screenHeight - handleHeight) / 2).coerceAtLeast(0)
+            y = prefs.getInt("sidebar_last_y", defaultSidebarY).coerceIn(0, maxSidebarY)
             x = 0
         }
 
@@ -2429,44 +2570,67 @@ class FloatingService : Service() {
             private var isDragging = false
             private var startTimes = 0L
             private var maxY = 0
+            private var velocityTracker: VelocityTracker? = null
 
             override fun onTouch(v: View, event: MotionEvent): Boolean {
                 val fullAlpha = sidebarOpacityPercent / 100f
-                when (event.action) {
+                val isPositionLocked = prefs.getBoolean("dot_position_locked", false)
+                when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         startTouchX = event.rawX
                         startTouchY = event.rawY
                         initialY = sparams.y
                         isDragging = false
                         startTimes = System.currentTimeMillis()
-                        
+
+                        velocityTracker?.recycle()
+                        velocityTracker = VelocityTracker.obtain().also { tracker ->
+                            val rawEvent = MotionEvent.obtain(event).apply {
+                                setLocation(event.rawX, event.rawY)
+                            }
+                            tracker.addMovement(rawEvent)
+                            rawEvent.recycle()
+                        }
+
                         // Precalculate the sidebar limits on touch down once per gesture
                         val screenHeight = resources.displayMetrics.heightPixels
                         maxY = (screenHeight - handleHeight).coerceAtLeast(0)
-                        
+
                         if (sidebarVibration) {
                             try {
                                 v.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
                             } catch (e: Exception) {}
                         }
-                        
+
                         if (sidebarAutoHide) {
                             handle.animate().alpha(fullAlpha).setDuration(120).start()
                         }
                         return true
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        val diffY = event.rawY - startTouchY
-                        if (!isDragging && abs(diffY) > 8 * density) {
-                            isDragging = true
+                        velocityTracker?.let { tracker ->
+                            val rawEvent = MotionEvent.obtain(event).apply {
+                                setLocation(event.rawX, event.rawY)
+                            }
+                            tracker.addMovement(rawEvent)
+                            rawEvent.recycle()
                         }
-                        if (isDragging) {
-                            val newY = (initialY + diffY).toInt()
-                            sparams.y = newY.coerceIn(0, maxY)
-                            try {
-                                windowManager.updateViewLayout(handle, sparams)
-                            } catch (e: Exception) {
-                                // Prevent intense logs under gesture operations
+
+                        val diffX = event.rawX - startTouchX
+                        val diffY = event.rawY - startTouchY
+                        // When Lock Position is ON, keep sidebar anchored in place so swipes trigger directional gestures cleanly
+                        if (!isPositionLocked) {
+                            if (!isDragging && abs(diffY) > 8 * density && abs(diffY) > abs(diffX) * 0.9f) {
+                                isDragging = true
+                            }
+                            if (isDragging) {
+                                val newY = (initialY + diffY).toInt()
+                                sparams.y = newY.coerceIn(0, maxY)
+                                try {
+                                    windowManager.updateViewLayout(handle, sparams)
+                                } catch (e: Exception) {
+                                    // Prevent intense logs under gesture operations
+                                }
                             }
                         }
                         return true
@@ -2476,8 +2640,59 @@ class FloatingService : Service() {
                         val diffY = event.rawY - startTouchY
                         val duration = System.currentTimeMillis() - startTimes
 
+                        var speed = 0f
+                        velocityTracker?.let { tracker ->
+                            val rawEvent = MotionEvent.obtain(event).apply {
+                                setLocation(event.rawX, event.rawY)
+                            }
+                            tracker.addMovement(rawEvent)
+                            rawEvent.recycle()
+                            tracker.computeCurrentVelocity(1000)
+                            speed = hypot(tracker.xVelocity, tracker.yVelocity)
+                            tracker.recycle()
+                        }
+                        velocityTracker = null
+
                         if (sidebarAutoHide) {
                             handle.animate().alpha(0.20f).setDuration(250).setStartDelay(1200).start()
+                        }
+
+                        val swipeThreshold = sidebarSensitivity.coerceAtLeast(18) * density
+                        val inwardIsRight = sidebarEdge != "Right"
+
+                        if (isPositionLocked) {
+                            val direction = SwipeGestureHelper.detectSwipeDirection(
+                                dx = diffX,
+                                dy = diffY,
+                                velocityPxPerSec = speed,
+                                minDeltaPx = swipeThreshold,
+                                inwardIsRight = inwardIsRight
+                            )
+                            if (direction != null) {
+                                if (sidebarVibration) {
+                                    try {
+                                        v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                                    } catch (e: Exception) {}
+                                }
+                                executeSwipeGesture(direction, isSidebarOrigin = true)
+                                return true
+                            }
+                            if (duration < 300 && abs(diffX) < 15 * density && abs(diffY) < 15 * density) {
+                                Log.i("FloatingService", "Sidebar clicked (locked).")
+                                if (sidebarVibration) {
+                                    try {
+                                        v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                                    } catch (e: Exception) {}
+                                }
+                                showSidebarPanel()
+                            }
+                            return true
+                        }
+
+                        // Unlocked Position Mode: save vertical reposition if dragged; otherwise detect tap or inward swipe
+                        if (isDragging) {
+                            prefs.edit().putInt("sidebar_last_y", sparams.y.coerceIn(0, maxY)).apply()
+                            return true
                         }
 
                         // Tap Check
@@ -2492,28 +2707,29 @@ class FloatingService : Service() {
                             return true
                         }
 
-                        // Swipe Inward Check
-                        if (duration < 400) {
-                            val swipeThreshold = sidebarSensitivity * density
-                            val isSwipeInward = if (sidebarEdge == "Right") {
-                                diffX < -swipeThreshold
-                            } else {
-                                diffX > swipeThreshold
+                        // Inward Swipe Check (when unlocked, horizontal/inward swipe fires mapped Swipe Left/Inward or opens panel)
+                        val direction = SwipeGestureHelper.detectSwipeDirection(
+                            dx = diffX,
+                            dy = diffY,
+                            velocityPxPerSec = speed,
+                            minDeltaPx = swipeThreshold,
+                            inwardIsRight = inwardIsRight
+                        )
+                        if (direction == SwipeGestureHelper.SwipeDirection.SWIPE_LEFT) {
+                            Log.i("FloatingService", "Sidebar swiped inward.")
+                            if (sidebarVibration) {
+                                try {
+                                    v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                                } catch (e: Exception) {}
                             }
-                            if (isSwipeInward) {
-                                Log.i("FloatingService", "Sidebar swiped.")
-                                if (sidebarVibration) {
-                                    try {
-                                        v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-                                    } catch (e: Exception) {}
-                                }
-                                showSidebarPanel()
-                                return true
-                            }
+                            executeSwipeGesture(direction, isSidebarOrigin = true)
+                            return true
                         }
                         return true
                     }
                     MotionEvent.ACTION_CANCEL -> {
+                        velocityTracker?.recycle()
+                        velocityTracker = null
                         if (sidebarAutoHide) {
                             handle.animate().alpha(0.20f).setDuration(250).start()
                         }

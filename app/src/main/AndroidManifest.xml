@@ -4,6 +4,14 @@
 
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -30,6 +38,22 @@
             <action android:name="android.intent.action.SENDTO" />
             <data android:scheme="mailto" />
         </intent>
+        <!-- Intent queries for Voice Assistant & Web Search -->
+        <intent>
+            <action android:name="android.intent.action.VOICE_COMMAND" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.ASSIST" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.WEB_SEARCH" />
+        </intent>
+        <!-- Intent queries for Visual Search / Google Lens -->
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <package android:name="com.google.android.googlequicksearchbox" />
     </queries>
 
     <application
@@ -76,6 +100,16 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
     </application>
 

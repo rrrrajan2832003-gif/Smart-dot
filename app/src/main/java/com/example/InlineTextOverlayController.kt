@@ -54,9 +54,14 @@ class InlineTextOverlayController(
     private var selectionView: InlineTextSelectionView? = null
     private var controlsPillView: LinearLayout? = null
     private var targetLangChipView: TextView? = null
+    private var translateModeChipView: TextView? = null
     private var langDropdownView: LinearLayout? = null
     private var statusPillView: TextView? = null
+    private var wordActionBarView: LinearLayout? = null
     private var copyPillView: LinearLayout? = null
+    private var wordTranslateBubbleView: LinearLayout? = null
+    private var wordTranslatedTextView: TextView? = null
+    private var cutoutActionBarView: LinearLayout? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var displayListener: DisplayManager.DisplayListener? = null
@@ -65,7 +70,9 @@ class InlineTextOverlayController(
 
     private var currentMode: OverlayMode = OverlayMode.COPY
     private var currentTargetLanguage: String = "Hindi"
+    private var currentOnlineMode: Boolean = true
     private var currentAnchorRect: RectF? = null
+    private var currentCutoutRect: RectF? = null
     private var activeCopyableText: String = ""
     private var capturedRotation: Int = Surface.ROTATION_0
     private val safeInsets = Rect()
@@ -77,7 +84,14 @@ class InlineTextOverlayController(
         accentColor: Int,
         onCopyClicked: (textToCopy: String) -> Unit,
         onRescanRequested: () -> Unit,
-        onDismiss: () -> Unit
+        onDismiss: () -> Unit,
+        onSpeakClicked: ((textToSpeak: String) -> Unit)? = null,
+        onTranslateWordRequested: ((text: String, onTranslated: (String) -> Unit) -> Unit)? = null,
+        onSearchClicked: ((query: String) -> Unit)? = null,
+        onSaveFullImageClicked: (() -> Unit)? = null,
+        onCutoutSaveClicked: ((cutoutRect: RectF, viewW: Int, viewH: Int) -> Unit)? = null,
+        onCutoutVisualSearchClicked: ((cutoutRect: RectF, viewW: Int, viewH: Int) -> Unit)? = null,
+        onCutoutCopyTextClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int) -> Unit)? = null
     ) {
         val refs = setupBaseOverlay(
             mode = OverlayMode.COPY,
@@ -86,27 +100,37 @@ class InlineTextOverlayController(
             onTargetLanguageChanged = null,
             onCopyClicked = onCopyClicked,
             onRescanRequested = onRescanRequested,
-            onDismiss = onDismiss
+            onDismiss = onDismiss,
+            onSpeakClicked = onSpeakClicked,
+            onTranslateWordRequested = onTranslateWordRequested,
+            onSearchClicked = onSearchClicked,
+            onSaveFullImageClicked = onSaveFullImageClicked,
+            onCutoutSaveClicked = onCutoutSaveClicked,
+            onCutoutVisualSearchClicked = onCutoutVisualSearchClicked,
+            onCutoutCopyTextClicked = onCutoutCopyTextClicked
         ) ?: return
 
-        val (root, selView, controlsPill, copyPill, tvCopyLabel) = refs
+        val (root, selView, controlsPill, wordActionBar, copyPill, tvCopyLabel) = refs
 
         selView.configureCopyMode(
             nodes = nodes,
             accentColor = accentColor,
             onCopySelectionChanged = { combinedText, anchorRect ->
+                wordTranslateBubbleView?.visibility = View.GONE
                 val clean = combinedText.trim()
                 if (clean.isEmpty() || anchorRect == null) {
                     currentAnchorRect = null
                     activeCopyableText = ""
                     copyPill.visibility = View.GONE
+                    wordActionBar.visibility = View.GONE
                     return@configureCopyMode
                 }
                 currentAnchorRect = RectF(anchorRect)
                 activeCopyableText = clean
                 tvCopyLabel.text = context.getString(R.string.screen_copy_action)
                 copyPill.visibility = View.VISIBLE
-                positionCopyPill(root, controlsPill, copyPill, anchorRect, context.resources.displayMetrics.density)
+                wordActionBar.visibility = View.VISIBLE
+                positionFloatingBar(root, controlsPill, wordActionBar, anchorRect, preferBelow = false, density = context.resources.displayMetrics.density)
             },
             onScrollDismissRequested = {
                 dismissWithCallback()
@@ -115,6 +139,20 @@ class InlineTextOverlayController(
                     context.getString(R.string.screen_copy_scroll_dismissed),
                     Toast.LENGTH_SHORT
                 ).show()
+            },
+            onCutoutChanged = { cutoutRect ->
+                val cutoutBar = cutoutActionBarView ?: return@configureCopyMode
+                wordTranslateBubbleView?.visibility = View.GONE
+                if (cutoutRect == null) {
+                    currentCutoutRect = null
+                    cutoutBar.visibility = View.GONE
+                    return@configureCopyMode
+                }
+                currentCutoutRect = RectF(cutoutRect)
+                wordActionBar.visibility = View.GONE
+                copyPill.visibility = View.GONE
+                cutoutBar.visibility = View.VISIBLE
+                positionFloatingBar(root, controlsPill, cutoutBar, cutoutRect, preferBelow = true, density = context.resources.displayMetrics.density)
             }
         )
     }
@@ -122,6 +160,8 @@ class InlineTextOverlayController(
     fun showTranslateOverlay(
         accentColor: Int,
         initialTargetLanguage: String,
+        initialOnlineMode: Boolean = true,
+        onTranslationModeToggled: ((useOnlineMode: Boolean) -> Unit)? = null,
         onTargetLanguageChanged: (newTargetLang: String) -> Unit,
         onCopyClicked: (translatedTextToCopy: String) -> Unit,
         onRescanRequested: () -> Unit,
@@ -131,13 +171,15 @@ class InlineTextOverlayController(
             mode = OverlayMode.TRANSLATE,
             accentColor = accentColor,
             initialTargetLanguage = initialTargetLanguage,
+            initialOnlineMode = initialOnlineMode,
+            onTranslationModeToggled = onTranslationModeToggled,
             onTargetLanguageChanged = onTargetLanguageChanged,
             onCopyClicked = onCopyClicked,
             onRescanRequested = onRescanRequested,
             onDismiss = onDismiss
         ) ?: return
 
-        val (root, selView, controlsPill, copyPill, tvCopyLabel) = refs
+        val (root, selView, controlsPill, wordActionBar, copyPill, tvCopyLabel) = refs
 
         statusPillView?.apply {
             text = context.getString(R.string.screen_translate_translating)
@@ -153,13 +195,15 @@ class InlineTextOverlayController(
                     currentAnchorRect = null
                     activeCopyableText = ""
                     copyPill.visibility = View.GONE
+                    wordActionBar.visibility = View.GONE
                     return@configureTranslateMode
                 }
                 currentAnchorRect = RectF(anchorRect)
                 activeCopyableText = clean
                 tvCopyLabel.text = context.getString(R.string.screen_copy_action)
                 copyPill.visibility = View.VISIBLE
-                positionCopyPill(root, controlsPill, copyPill, anchorRect, context.resources.displayMetrics.density)
+                wordActionBar.visibility = View.VISIBLE
+                positionFloatingBar(root, controlsPill, wordActionBar, anchorRect, preferBelow = false, density = context.resources.displayMetrics.density)
             },
             onScrollDismissRequested = {
                 dismissWithCallback()
@@ -190,6 +234,7 @@ class InlineTextOverlayController(
         val root: View,
         val selectionView: InlineTextSelectionView,
         val controlsPill: LinearLayout,
+        val wordActionBar: LinearLayout,
         val copyPill: LinearLayout,
         val copyLabel: TextView
     )
@@ -198,16 +243,27 @@ class InlineTextOverlayController(
         mode: OverlayMode,
         accentColor: Int,
         initialTargetLanguage: String,
+        initialOnlineMode: Boolean = true,
+        onTranslationModeToggled: ((Boolean) -> Unit)? = null,
         onTargetLanguageChanged: ((String) -> Unit)?,
         onCopyClicked: (String) -> Unit,
         onRescanRequested: () -> Unit,
-        onDismiss: () -> Unit
+        onDismiss: () -> Unit,
+        onSpeakClicked: ((String) -> Unit)? = null,
+        onTranslateWordRequested: ((String, (String) -> Unit) -> Unit)? = null,
+        onSearchClicked: ((String) -> Unit)? = null,
+        onSaveFullImageClicked: (() -> Unit)? = null,
+        onCutoutSaveClicked: ((RectF, Int, Int) -> Unit)? = null,
+        onCutoutVisualSearchClicked: ((RectF, Int, Int) -> Unit)? = null,
+        onCutoutCopyTextClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)? = null
     ): BaseOverlayRefs? {
         dismissInternal()
 
         currentMode = mode
         currentTargetLanguage = initialTargetLanguage
+        currentOnlineMode = initialOnlineMode
         currentAnchorRect = null
+        currentCutoutRect = null
         activeCopyableText = ""
         activeDismissCallback = onDismiss
         safeInsets.set(0, 0, 0, 0)
@@ -216,21 +272,40 @@ class InlineTextOverlayController(
         val root = LayoutInflater.from(context).inflate(R.layout.overlay_inline_ocr, null)
         val selView = root.findViewById<InlineTextSelectionView>(R.id.inline_ocr_selection_view)
         val controlsPill = root.findViewById<LinearLayout>(R.id.inline_ocr_controls_pill)
+        val btnModeToggle = root.findViewById<TextView>(R.id.btn_inline_translate_mode)
         val btnLangChip = root.findViewById<TextView>(R.id.btn_inline_target_lang)
         val langDropdown = root.findViewById<LinearLayout>(R.id.inline_lang_dropdown)
         val statusPill = root.findViewById<TextView>(R.id.tv_inline_status_pill)
         val btnRescan = root.findViewById<ImageButton>(R.id.btn_inline_ocr_rescan)
         val btnClose = root.findViewById<LinearLayout>(R.id.btn_inline_ocr_close)
+        val wordActionBar = root.findViewById<LinearLayout>(R.id.inline_word_action_bar)
         val copyPill = root.findViewById<LinearLayout>(R.id.btn_inline_ocr_copy)
         val ivCopyIcon = root.findViewById<ImageView>(R.id.iv_inline_ocr_copy_icon)
         val tvCopyLabel = root.findViewById<TextView>(R.id.tv_inline_ocr_copy_label)
+        val btnSpeak = root.findViewById<TextView>(R.id.btn_inline_word_speak)
+        val btnWordTranslate = root.findViewById<TextView>(R.id.btn_inline_word_translate)
+        val btnWordSearch = root.findViewById<TextView>(R.id.btn_inline_word_search)
+        val btnSaveFull = root.findViewById<TextView>(R.id.btn_inline_word_save_full)
+        val wordTranslateBubble = root.findViewById<LinearLayout>(R.id.inline_word_translate_bubble)
+        val tvWordTranslated = root.findViewById<TextView>(R.id.tv_inline_word_translated_text)
+        val btnCopyTranslated = root.findViewById<TextView>(R.id.btn_inline_word_translate_copy)
+        val cutoutBar = root.findViewById<LinearLayout>(R.id.inline_cutout_action_bar)
+        val btnCutoutSave = root.findViewById<TextView>(R.id.btn_cutout_save)
+        val btnCutoutVisualSearch = root.findViewById<TextView>(R.id.btn_cutout_visual_search)
+        val btnCutoutCopyText = root.findViewById<TextView>(R.id.btn_cutout_copy_text)
+        val btnCutoutClose = root.findViewById<ImageButton>(R.id.btn_cutout_close)
 
         selectionView = selView
         controlsPillView = controlsPill
+        translateModeChipView = btnModeToggle
         targetLangChipView = btnLangChip
         langDropdownView = langDropdown
         statusPillView = statusPill
+        wordActionBarView = wordActionBar
         copyPillView = copyPill
+        wordTranslateBubbleView = wordTranslateBubble
+        wordTranslatedTextView = tvWordTranslated
+        cutoutActionBarView = cutoutBar
 
         val density = context.resources.displayMetrics.density
 
@@ -246,7 +321,29 @@ class InlineTextOverlayController(
             setColor(Color.argb(220, 15, 23, 42))
         }
 
+        fun applyModeChipStyle(online: Boolean) {
+            if (online) {
+                btnModeToggle.text = context.getString(R.string.screen_translate_mode_online)
+                btnModeToggle.setTextColor(Color.parseColor("#34D399"))
+            } else {
+                btnModeToggle.text = context.getString(R.string.screen_translate_mode_offline)
+                btnModeToggle.setTextColor(Color.parseColor("#94A3B8"))
+            }
+        }
+
         if (mode == OverlayMode.TRANSLATE) {
+            btnModeToggle.visibility = View.VISIBLE
+            applyModeChipStyle(currentOnlineMode)
+            btnModeToggle.setOnClickListener {
+                langDropdown.visibility = View.GONE
+                currentOnlineMode = !currentOnlineMode
+                applyModeChipStyle(currentOnlineMode)
+                selView.clearSelection()
+                statusPill.text = context.getString(R.string.screen_translate_translating)
+                statusPill.visibility = View.VISIBLE
+                onTranslationModeToggled?.invoke(currentOnlineMode)
+            }
+
             btnLangChip.visibility = View.VISIBLE
             btnLangChip.text = "$currentTargetLanguage ▾"
             btnLangChip.setTextColor(accentColor)
@@ -274,6 +371,7 @@ class InlineTextOverlayController(
                 }
             }
         } else {
+            btnModeToggle.visibility = View.GONE
             btnLangChip.visibility = View.GONE
             langDropdown.visibility = View.GONE
             statusPill.visibility = View.GONE
@@ -284,9 +382,34 @@ class InlineTextOverlayController(
         tvCopyLabel.setTextColor(copyTextColor)
         copyPill.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = 24f * density
+            cornerRadius = 20f * density
             setColor(accentColor)
         }
+        wordActionBar.background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 24f * density
+            setColor(Color.argb(236, 15, 23, 42))
+            setStroke((1 * density).toInt(), Color.argb(90, 148, 163, 184))
+        }
+        wordTranslateBubble.background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 16f * density
+            setColor(Color.argb(242, 15, 23, 42))
+            setStroke((1.5f * density).toInt(), accentColor)
+        }
+        cutoutBar.background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 24f * density
+            setColor(Color.argb(238, 15, 23, 42))
+            setStroke((1.5f * density).toInt(), accentColor)
+        }
+
+        // In Translate mode keep Copy focused; in Copy mode show the full 5-action pill
+        val wordExtrasVis = if (mode == OverlayMode.COPY) View.VISIBLE else View.GONE
+        btnSpeak.visibility = wordExtrasVis
+        btnWordTranslate.visibility = wordExtrasVis
+        btnWordSearch.visibility = wordExtrasVis
+        btnSaveFull.visibility = wordExtrasVis
 
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val sysBars = insets.getInsets(
@@ -320,8 +443,13 @@ class InlineTextOverlayController(
                 return@addOnLayoutChangeListener
             }
             currentAnchorRect?.let { anchor ->
-                if (copyPill.visibility == View.VISIBLE) {
-                    positionCopyPill(root, controlsPill, copyPill, anchor, density)
+                if (wordActionBar.visibility == View.VISIBLE) {
+                    positionFloatingBar(root, controlsPill, wordActionBar, anchor, preferBelow = false, density = density)
+                }
+            }
+            currentCutoutRect?.let { box ->
+                if (cutoutBar.visibility == View.VISIBLE) {
+                    positionFloatingBar(root, controlsPill, cutoutBar, box, preferBelow = true, density = density)
                 }
             }
         }
@@ -335,6 +463,78 @@ class InlineTextOverlayController(
             }
         }
 
+        btnSpeak.setOnClickListener {
+            val chosen = activeCopyableText.trim()
+            if (chosen.isNotEmpty()) {
+                onSpeakClicked?.invoke(chosen)
+            }
+        }
+
+        btnWordTranslate.setOnClickListener {
+            val chosen = activeCopyableText.trim()
+            if (chosen.isEmpty()) return@setOnClickListener
+            tvWordTranslated.text = context.getString(R.string.screen_translate_translating)
+            wordTranslateBubble.visibility = View.VISIBLE
+            currentAnchorRect?.let { anchor ->
+                positionFloatingBar(root, controlsPill, wordTranslateBubble, anchor, preferBelow = true, density = density)
+            }
+            onTranslateWordRequested?.invoke(chosen) { translated ->
+                if (overlayView != null) {
+                    tvWordTranslated.text = translated
+                    wordTranslateBubble.visibility = View.VISIBLE
+                    currentAnchorRect?.let { anchor ->
+                        positionFloatingBar(root, controlsPill, wordTranslateBubble, anchor, preferBelow = true, density = density)
+                    }
+                }
+            }
+        }
+
+        btnCopyTranslated.setOnClickListener {
+            val txt = tvWordTranslated.text?.toString()?.trim().orEmpty()
+            if (txt.isNotEmpty()) {
+                dismissInternal()
+                onCopyClicked(txt)
+                onDismiss()
+            }
+        }
+
+        btnWordSearch.setOnClickListener {
+            val chosen = activeCopyableText.trim()
+            if (chosen.isNotEmpty()) {
+                dismissInternal()
+                onSearchClicked?.invoke(chosen)
+                onDismiss()
+            }
+        }
+
+        btnSaveFull.setOnClickListener {
+            onSaveFullImageClicked?.invoke()
+        }
+
+        btnCutoutSave.setOnClickListener {
+            val box = currentCutoutRect ?: selView.getActiveCutoutRect() ?: return@setOnClickListener
+            onCutoutSaveClicked?.invoke(box, selView.width, selView.height)
+        }
+
+        btnCutoutVisualSearch.setOnClickListener {
+            val box = currentCutoutRect ?: selView.getActiveCutoutRect() ?: return@setOnClickListener
+            dismissInternal()
+            onCutoutVisualSearchClicked?.invoke(box, selView.width, selView.height)
+            onDismiss()
+        }
+
+        btnCutoutCopyText.setOnClickListener {
+            val box = currentCutoutRect ?: selView.getActiveCutoutRect() ?: return@setOnClickListener
+            val overlapping = selView.getWordsInsideCutout()
+            onCutoutCopyTextClicked?.invoke(box, overlapping, selView.width, selView.height)
+        }
+
+        btnCutoutClose.setOnClickListener {
+            currentCutoutRect = null
+            cutoutBar.visibility = View.GONE
+            selView.clearCutout()
+        }
+
         btnRescan.setOnClickListener {
             dismissInternal()
             onRescanRequested()
@@ -346,10 +546,11 @@ class InlineTextOverlayController(
 
         if (root is InlineOverlayRootLayout) {
             root.onBackKeyPressed = {
-                if (langDropdown.visibility == View.VISIBLE) {
-                    langDropdown.visibility = View.GONE
-                } else {
-                    dismissWithCallback()
+                when {
+                    langDropdown.visibility == View.VISIBLE -> langDropdown.visibility = View.GONE
+                    wordTranslateBubble.visibility == View.VISIBLE -> wordTranslateBubble.visibility = View.GONE
+                    selView.getActiveCutoutRect() != null -> selView.clearCutout()
+                    else -> dismissWithCallback()
                 }
             }
         }
@@ -357,10 +558,11 @@ class InlineTextOverlayController(
         root.requestFocus()
         root.setOnKeyListener { _, keyCode, event ->
             if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
-                if (langDropdown.visibility == View.VISIBLE) {
-                    langDropdown.visibility = View.GONE
-                } else {
-                    dismissWithCallback()
+                when {
+                    langDropdown.visibility == View.VISIBLE -> langDropdown.visibility = View.GONE
+                    wordTranslateBubble.visibility == View.VISIBLE -> wordTranslateBubble.visibility = View.GONE
+                    selView.getActiveCutoutRect() != null -> selView.clearCutout()
+                    else -> dismissWithCallback()
                 }
                 true
             } else {
@@ -404,7 +606,7 @@ class InlineTextOverlayController(
             windowManager.addView(root, overlayParams)
             ViewCompat.requestApplyInsets(root)
             registerRotationAndScreenOffWatchers()
-            BaseOverlayRefs(root, selView, controlsPill, copyPill, tvCopyLabel)
+            BaseOverlayRefs(root, selView, controlsPill, wordActionBar, copyPill, tvCopyLabel)
         } catch (e: Exception) {
             Log.e(TAG, "Failed showing transparent overlay", e)
             dismissInternal()
@@ -450,11 +652,12 @@ class InlineTextOverlayController(
         }
     }
 
-    private fun positionCopyPill(
+    private fun positionFloatingBar(
         root: View,
         controlsPill: View,
-        copyPill: LinearLayout,
+        floatingBar: View,
         anchorRect: RectF,
+        preferBelow: Boolean,
         density: Float
     ) {
         val margin = (10 * density).toInt()
@@ -463,12 +666,12 @@ class InlineTextOverlayController(
         val rootW = root.width.takeIf { it > 0 } ?: context.resources.displayMetrics.widthPixels
         val rootH = root.height.takeIf { it > 0 } ?: context.resources.displayMetrics.heightPixels
 
-        copyPill.measure(
-            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+        floatingBar.measure(
+            View.MeasureSpec.makeMeasureSpec((rootW - margin * 2).coerceAtLeast(100), View.MeasureSpec.AT_MOST),
             View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
         )
-        val pillW = copyPill.measuredWidth.coerceAtLeast((88 * density).toInt())
-        val pillH = copyPill.measuredHeight.coerceAtLeast((48 * density).toInt())
+        val pillW = floatingBar.measuredWidth.coerceAtLeast((88 * density).toInt())
+        val pillH = floatingBar.measuredHeight.coerceAtLeast((48 * density).toInt())
 
         val minX = safeInsets.left + margin
         val maxX = (rootW - safeInsets.right - pillW - margin).coerceAtLeast(minX)
@@ -479,10 +682,18 @@ class InlineTextOverlayController(
 
         val aboveY = (anchorRect.top - pillH - gap).toInt()
         val belowY = (anchorRect.bottom + gap).toInt()
-        var targetY = when {
-            aboveY >= minY -> aboveY
-            belowY <= maxY -> belowY
-            else -> aboveY.coerceIn(minY, maxY)
+        var targetY = if (preferBelow) {
+            when {
+                belowY <= maxY -> belowY
+                aboveY >= minY -> aboveY
+                else -> belowY.coerceIn(minY, maxY)
+            }
+        } else {
+            when {
+                aboveY >= minY -> aboveY
+                belowY <= maxY -> belowY
+                else -> aboveY.coerceIn(minY, maxY)
+            }
         }
 
         if (controlsPill.width > 0 && controlsPill.height > 0) {
@@ -493,7 +704,7 @@ class InlineTextOverlayController(
             }
         }
 
-        val lp = (copyPill.layoutParams as? FrameLayout.LayoutParams)
+        val lp = (floatingBar.layoutParams as? FrameLayout.LayoutParams)
             ?: FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -502,7 +713,7 @@ class InlineTextOverlayController(
         lp.gravity = Gravity.TOP or Gravity.START
         lp.leftMargin = targetX
         lp.topMargin = targetY
-        copyPill.layoutParams = lp
+        floatingBar.layoutParams = lp
     }
 
     private fun readCurrentDisplayRotation(): Int {
@@ -592,11 +803,17 @@ class InlineTextOverlayController(
         overlayView = null
         selectionView = null
         controlsPillView = null
+        translateModeChipView = null
         targetLangChipView = null
         langDropdownView = null
         statusPillView = null
+        wordActionBarView = null
         copyPillView = null
+        wordTranslateBubbleView = null
+        wordTranslatedTextView = null
+        cutoutActionBarView = null
         currentAnchorRect = null
+        currentCutoutRect = null
         activeCopyableText = ""
     }
 
