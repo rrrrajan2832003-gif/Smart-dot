@@ -267,8 +267,8 @@ class ScreenTextCopyController(
             onTranslateWordRequested = { textToTranslate, onTranslated ->
                 translateHighlightedText(textToTranslate, onTranslated)
             },
-            onSearchClicked = { query ->
-                launchGoogleSearch(query)
+            onSearchClicked = { query, question ->
+                launchGoogleSearch(query, question)
             },
             onSaveFullImageClicked = {
                 saveFullScreenToGallery()
@@ -304,8 +304,8 @@ class ScreenTextCopyController(
             onCutoutTranslateRequested = { boxRect, overlappingNodes, viewW, viewH, onTranslated ->
                 translateTextInCutoutBox(boxRect, overlappingNodes, viewW, viewH, onTranslated)
             },
-            onCutoutSearchWithFallback = { boxRect, overlappingNodes, viewW, viewH ->
-                searchCutoutBox(boxRect, overlappingNodes, viewW, viewH)
+            onCutoutSearchWithFallback = { boxRect, overlappingNodes, viewW, viewH, question ->
+                searchCutoutBox(boxRect, overlappingNodes, viewW, viewH, question)
             },
             onCutoutGoogleAiModeClicked = { boxRect, overlappingNodes, viewW, viewH, question ->
                 launchGoogleAiModeCutout(boxRect, overlappingNodes, viewW, viewH, question)
@@ -401,8 +401,9 @@ class ScreenTextCopyController(
         }
     }
 
-    private fun launchGoogleSearch(query: String) {
-        SelectionToolbarHelper.launchGoogleSearch(context, query)
+    private fun launchGoogleSearch(query: String, question: String = "") {
+        val finalQuery = SelectionToolbarHelper.combineQuestionForAiSearch(question, query)
+        SelectionToolbarHelper.launchGoogleSearch(context, finalQuery)
     }
 
     private fun shareSelectedText(text: String) {
@@ -466,8 +467,21 @@ class ScreenTextCopyController(
         boxRect: RectF,
         overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>,
         viewW: Int,
-        viewH: Int
+        viewH: Int,
+        question: String = ""
     ) {
+        if (question.isNotBlank()) {
+            val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
+            if (fallbackText.isNotEmpty() || retainedScreenBitmap == null) {
+                launchGoogleSearch(fallbackText, question)
+                return
+            }
+            extractCutoutText(boxRect, overlappingNodes, viewW, viewH) { extractedText ->
+                launchGoogleSearch(extractedText, question)
+            }
+            return
+        }
+
         val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
         if (cropped != null) {
             try {
@@ -491,14 +505,14 @@ class ScreenTextCopyController(
 
         val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
         if (fallbackText.isNotEmpty()) {
-            launchGoogleSearch(fallbackText)
+            launchGoogleSearch(fallbackText, question)
         } else {
             Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun launchVisualSearchCutout(boxRect: RectF, viewW: Int, viewH: Int) {
-        searchCutoutBox(boxRect, emptyList(), viewW, viewH)
+        searchCutoutBox(boxRect, emptyList(), viewW, viewH, "")
     }
 
     private fun launchGoogleAiModeCutout(

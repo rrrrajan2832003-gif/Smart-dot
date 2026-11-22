@@ -35,6 +35,7 @@ class ScreenRecorderManager(
     private val onRecordingError: (String) -> Unit = {}
 ) {
     private var mediaProjection: MediaProjection? = null
+    private var projectionCallback: MediaProjection.Callback? = null
     private var mediaRecorder: MediaRecorder? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var tempOutputFile: File? = null
@@ -43,6 +44,8 @@ class ScreenRecorderManager(
     var isRecording: Boolean = false
         private set
 
+    fun hasActiveProjection(): Boolean = mediaProjection != null
+
     fun startRecording(resultCode: Int, data: Intent, recordMicAudio: Boolean): Boolean {
         if (isRecording) return true
         if (resultCode != Activity.RESULT_OK) {
@@ -50,20 +53,45 @@ class ScreenRecorderManager(
             return false
         }
 
-        return try {
+        val projection = try {
             val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            val projection = projectionManager.getMediaProjection(resultCode, data)
+            val obtained = projectionManager.getMediaProjection(resultCode, data)
                 ?: throw IllegalStateException("MediaProjection session unavailable")
-            mediaProjection = projection
-
-            projection.registerCallback(object : MediaProjection.Callback() {
+            releaseProjection()
+            mediaProjection = obtained
+            val cb = object : MediaProjection.Callback() {
                 override fun onStop() {
                     if (isRecording) {
                         stopRecording()
                     }
+                    mediaProjection = null
+                    projectionCallback = null
                 }
-            }, Handler(Looper.getMainLooper()))
+            }
+            projectionCallback = cb
+            obtained.registerCallback(cb, Handler(Looper.getMainLooper()))
+            obtained
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed obtaining MediaProjection", e)
+            onRecordingError(e.localizedMessage ?: "Failed starting screen recording")
+            return false
+        }
 
+        return startWithProjection(projection, recordMicAudio, releaseProjectionOnFailure = true)
+    }
+
+    fun startRecordingWithExistingProjection(recordMicAudio: Boolean): Boolean {
+        if (isRecording) return true
+        val projection = mediaProjection ?: return false
+        return startWithProjection(projection, recordMicAudio, releaseProjectionOnFailure = true)
+    }
+
+    private fun startWithProjection(
+        projection: MediaProjection,
+        recordMicAudio: Boolean,
+        releaseProjectionOnFailure: Boolean
+    ): Boolean {
+        return try {
             val metrics = DisplayMetrics()
             val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
             @Suppress("DEPRECATION")
@@ -119,7 +147,7 @@ class ScreenRecorderManager(
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed starting screen recording", e)
-            cleanupRecorderObjects()
+            cleanupRecorderObjects(releaseProjection = releaseProjectionOnFailure)
             tempOutputFile?.delete()
             tempOutputFile = null
             isRecording = false
@@ -138,7 +166,8 @@ class ScreenRecorderManager(
         } catch (e: Exception) {
             Log.w(TAG, "MediaRecorder stop warning", e)
         }
-        cleanupRecorderObjects()
+        // Keep active MediaProjection alive for fast zero-prompt subsequent recordings
+        cleanupRecorderObjects(releaseProjection = false)
 
         val savedUri = tempOutputFile?.let { file ->
             if (file.exists() && file.length() > 0L) {
@@ -155,14 +184,24 @@ class ScreenRecorderManager(
         return savedUri
     }
 
-    private fun cleanupRecorderObjects() {
+    fun releaseProjection() {
+        cleanupRecorderObjects(releaseProjection = true)
+    }
+
+    private fun cleanupRecorderObjects(releaseProjection: Boolean) {
         runCatching { virtualDisplay?.release() }
         virtualDisplay = null
         runCatching { mediaRecorder?.reset() }
         runCatching { mediaRecorder?.release() }
         mediaRecorder = null
-        runCatching { mediaProjection?.stop() }
-        mediaProjection = null
+        if (releaseProjection) {
+            projectionCallback?.let { cb ->
+                runCatching { mediaProjection?.unregisterCallback(cb) }
+            }
+            projectionCallback = null
+            runCatching { mediaProjection?.stop() }
+            mediaProjection = null
+        }
     }
 
     companion object {

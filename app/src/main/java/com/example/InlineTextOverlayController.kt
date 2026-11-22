@@ -92,7 +92,7 @@ class InlineTextOverlayController(
         onDismiss: () -> Unit,
         onSpeakClicked: ((textToSpeak: String) -> Unit)? = null,
         onTranslateWordRequested: ((text: String, onTranslated: (String) -> Unit) -> Unit)? = null,
-        onSearchClicked: ((query: String) -> Unit)? = null,
+        onSearchClicked: ((query: String, question: String) -> Unit)? = null,
         onSaveFullImageClicked: (() -> Unit)? = null,
         onCutoutSaveClicked: ((cutoutRect: RectF, viewW: Int, viewH: Int) -> Unit)? = null,
         onCutoutVisualSearchClicked: ((cutoutRect: RectF, viewW: Int, viewH: Int) -> Unit)? = null,
@@ -105,7 +105,7 @@ class InlineTextOverlayController(
         onFullScreenTranslateClicked: (() -> Unit)? = null,
         onCutoutSpeakClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int) -> Unit)? = null,
         onCutoutTranslateRequested: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int, onTranslated: (String?) -> Unit) -> Unit)? = null,
-        onCutoutSearchWithFallback: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int) -> Unit)? = null,
+        onCutoutSearchWithFallback: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int, question: String) -> Unit)? = null,
         onCutoutGoogleAiModeClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int, question: String) -> Unit)? = null,
         onCutoutGeminiClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int, question: String) -> Unit)? = null,
         onCutoutChatGptClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int, question: String) -> Unit)? = null,
@@ -279,7 +279,7 @@ class InlineTextOverlayController(
         onDismiss: () -> Unit,
         onSpeakClicked: ((String) -> Unit)? = null,
         onTranslateWordRequested: ((String, (String) -> Unit) -> Unit)? = null,
-        onSearchClicked: ((String) -> Unit)? = null,
+        onSearchClicked: ((String, String) -> Unit)? = null,
         onSaveFullImageClicked: (() -> Unit)? = null,
         onCutoutSaveClicked: ((RectF, Int, Int) -> Unit)? = null,
         onCutoutVisualSearchClicked: ((RectF, Int, Int) -> Unit)? = null,
@@ -292,7 +292,7 @@ class InlineTextOverlayController(
         onFullScreenTranslateClicked: (() -> Unit)? = null,
         onCutoutSpeakClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)? = null,
         onCutoutTranslateRequested: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, (String?) -> Unit) -> Unit)? = null,
-        onCutoutSearchWithFallback: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)? = null,
+        onCutoutSearchWithFallback: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)? = null,
         onCutoutGoogleAiModeClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)? = null,
         onCutoutGeminiClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)? = null,
         onCutoutChatGptClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)? = null,
@@ -756,7 +756,7 @@ class InlineTextOverlayController(
         onCopyClicked: (String) -> Unit,
         onSpeakClicked: ((String) -> Unit)?,
         onTranslateWordRequested: ((String, (String) -> Unit) -> Unit)?,
-        onSearchClicked: ((String) -> Unit)?,
+        onSearchClicked: ((String, String) -> Unit)?,
         onSaveFullImageClicked: (() -> Unit)?,
         onGoogleAiModeTextClicked: ((String, String) -> Unit)?,
         onGeminiTextClicked: ((String, String) -> Unit)?,
@@ -797,10 +797,10 @@ class InlineTextOverlayController(
                 }
             }
             SelectionToolbarHelper.ToolbarAction.SEARCH -> {
-                if (chosen.isNotEmpty()) {
+                if (chosen.isNotEmpty() || question.isNotEmpty()) {
                     val dismissCb = activeDismissCallback
                     dismissInternal()
-                    onSearchClicked?.invoke(chosen)
+                    onSearchClicked?.invoke(chosen, question)
                     dismissCb?.invoke()
                 }
             }
@@ -861,7 +861,7 @@ class InlineTextOverlayController(
         onCutoutCopyTextClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)?,
         onCutoutSpeakClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)?,
         onCutoutTranslateRequested: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, (String?) -> Unit) -> Unit)?,
-        onCutoutSearchWithFallback: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)?,
+        onCutoutSearchWithFallback: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)?,
         onCutoutVisualSearchClicked: ((RectF, Int, Int) -> Unit)?,
         onCutoutSaveClicked: ((RectF, Int, Int) -> Unit)?,
         onCutoutGoogleAiModeClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)?,
@@ -897,7 +897,7 @@ class InlineTextOverlayController(
             SelectionToolbarHelper.ToolbarAction.SEARCH -> {
                 dismissInternal()
                 if (onCutoutSearchWithFallback != null) {
-                    onCutoutSearchWithFallback.invoke(box, overlapping, viewW, viewH)
+                    onCutoutSearchWithFallback.invoke(box, overlapping, viewW, viewH, question)
                 } else {
                     onCutoutVisualSearchClicked?.invoke(box, viewW, viewH)
                 }

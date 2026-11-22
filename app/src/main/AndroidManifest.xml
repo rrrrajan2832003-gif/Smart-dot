@@ -19,6 +19,10 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <uses-permission
+        android:name="android.permission.WRITE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
 
     <queries>
         <!-- Intent queries for opening web links in browser -->
@@ -68,6 +72,8 @@
             <data android:mimeType="text/plain" />
         </intent>
         <package android:name="com.google.android.googlequicksearchbox" />
+        <package android:name="com.google.android.apps.searchlite" />
+        <package android:name="com.google.android.apps.googleassistant" />
         <package android:name="com.coloros.smartsidebar" />
         <package android:name="com.oplus.smartsidebar" />
         <package android:name="com.google.android.apps.bard" />
@@ -75,6 +81,11 @@
         <package android:name="com.android.chrome" />
         <package android:name="com.google.android.youtube" />
         <package android:name="com.whatsapp" />
+        <package android:name="com.coloros.alarmclock" />
+        <package android:name="com.oplus.alarmclock" />
+        <package android:name="com.google.android.deskclock" />
+        <package android:name="com.android.deskclock" />
+        <package android:name="com.sec.android.app.clockpackage" />
     </queries>
 
     <application
@@ -101,6 +112,13 @@
 
         <activity
             android:name=".ScreenRecordPermissionActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.TransparentConsent" />
+
+        <activity
+            android:name=".ViewerPickerActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:launchMode="singleTop"

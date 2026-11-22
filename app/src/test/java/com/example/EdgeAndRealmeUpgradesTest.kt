@@ -412,7 +412,7 @@ class EdgeAndRealmeUpgradesTest {
     }
 
     @Test
-    fun `SmartDotAccessibilityService performSplitScreen auto-clicks Split screen after 250ms when OEM shows Recents`() {
+    fun `SmartDotAccessibilityService performSplitScreen auto-clicks Split screen at 150ms and retries at 350ms`() {
         val service = Robolectric.setupService(SmartDotAccessibilityService::class.java)
         val dispatched = mutableListOf<Int>()
         service.performGlobalActionTestHook = { action ->
@@ -431,23 +431,51 @@ class EdgeAndRealmeUpgradesTest {
             isEnabled = true
         }
         Shadows.shadowOf(recentsRoot).addChild(splitBtn)
-        service.accessibleRootsTestHook = { listOf(recentsRoot) }
+
+        // Initially empty at 150ms (Recents animating), populates before 350ms retry
+        var rootsReady = false
+        service.accessibleRootsTestHook = {
+            if (rootsReady) listOf(recentsRoot) else emptyList()
+        }
 
         var callbackResult: Boolean? = null
         val handler = Handler(Looper.getMainLooper())
         assertTrue(service.performSplitScreen(handler) { ok -> callbackResult = ok })
         assertTrue(dispatched.contains(AccessibilityService.GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN))
 
-        // Before 250ms check fires
-        Shadows.shadowOf(Looper.getMainLooper()).idleFor(150, TimeUnit.MILLISECONDS)
+        // 150ms check fires when Recents isn't ready yet -> waits for 350ms check
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(160, TimeUnit.MILLISECONDS)
         assertNull(callbackResult)
 
-        // After 250ms check fires -> automatically clicks "Split screen" node
-        Shadows.shadowOf(Looper.getMainLooper()).idleFor(150, TimeUnit.MILLISECONDS)
+        // Now Recents renders "Split screen" node before 350ms check
+        rootsReady = true
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(210, TimeUnit.MILLISECONDS)
         assertEquals(true, callbackResult)
         assertTrue(
-            "Split screen button must be clicked via ACTION_CLICK",
+            "Split screen button must be clicked via ACTION_CLICK at 350ms retry",
             Shadows.shadowOf(splitBtn).performedActions.contains(AccessibilityNodeInfo.ACTION_CLICK)
+        )
+
+        // Also verify 150ms fast click when Recents is ready immediately
+        val fastBtn = AccessibilityNodeInfo.obtain().apply {
+            packageName = "com.android.systemui"
+            text = "Split screen"
+            isClickable = true
+            isEnabled = true
+        }
+        val fastRoot = AccessibilityNodeInfo.obtain().apply {
+            packageName = "com.android.systemui"
+        }
+        Shadows.shadowOf(fastRoot).addChild(fastBtn)
+        service.accessibleRootsTestHook = { listOf(fastRoot) }
+
+        var fastResult: Boolean? = null
+        assertTrue(service.performSplitScreen(handler) { ok -> fastResult = ok })
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(155, TimeUnit.MILLISECONDS)
+        assertEquals(true, fastResult)
+        assertTrue(
+            "Split screen button must be clicked at 150ms when already visible",
+            Shadows.shadowOf(fastBtn).performedActions.contains(AccessibilityNodeInfo.ACTION_CLICK)
         )
     }
 

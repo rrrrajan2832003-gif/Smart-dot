@@ -218,12 +218,16 @@ class SmartDotAccessibilityService : AccessibilityService() {
         return appWindowCount >= 2
     }
 
+    internal fun dispatchPowerDialogAction(): Boolean {
+        return dispatchGlobalAction(GLOBAL_ACTION_POWER_DIALOG)
+    }
+
     /**
      * Direct 1-Tap Split Screen (with Realme UI / ColorOS Recents auto-clicker):
-     * 1) Dispatches GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN.
-     * 2) After 250ms, inspects active windows / rootInActiveWindow: if the screen is not already
-     *    split and Recents is showing, locates "Split screen" / "विभाजित स्क्रीन" (or opens the
-     *    Recents card options menu if nested) and clicks it programmatically via ACTION_CLICK.
+     * 1) Dispatches GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN immediately (opening Recents if needed).
+     * 2) Inspects rootInActiveWindow + active windows at 150ms and 350ms: if not already split,
+     *    locates "Split screen" / "विभाजित स्क्रीन" / "Split" (or expands the 3-dot card menu)
+     *    and performs ACTION_CLICK automatically with zero manual toast/prompt.
      */
     @JvmOverloads
     fun performSplitScreen(
@@ -240,10 +244,19 @@ class SmartDotAccessibilityService : AccessibilityService() {
             dispatchGlobalAction(GLOBAL_ACTION_RECENTS)
         }
 
-        handler.postDelayed({
+        var finished = false
+        fun finish(result: Boolean) {
+            if (!finished) {
+                finished = true
+                onCompleted?.invoke(result)
+            }
+        }
+
+        fun tryInspectAndClickSplit(isFinalAttempt: Boolean) {
+            if (finished) return
             if (isScreenAlreadyInSplitMode()) {
-                onCompleted?.invoke(true)
-                return@postDelayed
+                finish(true)
+                return
             }
 
             val roots = collectAccessibleRoots()
@@ -252,14 +265,16 @@ class SmartDotAccessibilityService : AccessibilityService() {
                 val clicked = runCatching {
                     directMatch.clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 }.getOrDefault(false)
-                onCompleted?.invoke(clicked)
-                return@postDelayed
+                if (clicked || isFinalAttempt) {
+                    finish(clicked || isScreenAlreadyInSplitMode())
+                    return
+                }
             }
 
             // Some Realme UI / ColorOS Recents layouts tuck "Split screen" inside the card's 3-dot menu
             val recentsMenuMatch = QuickTileAutomation.findMatchingTileInRoots(
                 roots = filterSystemOrLauncherRoots(roots),
-                keywords = listOf("more options", "options", "menu", "अधिक")
+                keywords = listOf("more options", "options", "menu", "more", "अधिक")
             )
             if (recentsMenuMatch != null) {
                 val menuOpened = runCatching {
@@ -267,6 +282,7 @@ class SmartDotAccessibilityService : AccessibilityService() {
                 }.getOrDefault(false)
                 if (menuOpened) {
                     handler.postDelayed({
+                        if (finished) return@postDelayed
                         val subRoots = collectAccessibleRoots()
                         val nestedSplitMatch = findSplitScreenOptionInRoots(subRoots)
                         val clicked = if (nestedSplitMatch != null) {
@@ -276,14 +292,21 @@ class SmartDotAccessibilityService : AccessibilityService() {
                         } else {
                             false
                         }
-                        onCompleted?.invoke(clicked || isScreenAlreadyInSplitMode())
-                    }, 200L)
-                    return@postDelayed
+                        if (clicked || isScreenAlreadyInSplitMode() || isFinalAttempt) {
+                            finish(clicked || isScreenAlreadyInSplitMode())
+                        }
+                    }, 120L)
+                    return
                 }
             }
 
-            onCompleted?.invoke(toggled && isScreenAlreadyInSplitMode())
-        }, 250L)
+            if (isFinalAttempt) {
+                finish(toggled && isScreenAlreadyInSplitMode())
+            }
+        }
+
+        handler.postDelayed({ tryInspectAndClickSplit(isFinalAttempt = false) }, 150L)
+        handler.postDelayed({ tryInspectAndClickSplit(isFinalAttempt = true) }, 350L)
 
         return toggled
     }

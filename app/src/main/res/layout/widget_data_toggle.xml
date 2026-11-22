@@ -1,32 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_data_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@drawable/bg_widget_data_tile"
     android:clickable="true"
     android:focusable="true"
-    android:gravity="center"
-    android:orientation="vertical"
-    android:padding="6dp">
+    android:padding="4dp">
 
     <ImageView
         android:id="@+id/widget_data_icon"
-        android:layout_width="24dp"
-        android:layout_height="24dp"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:layout_gravity="center"
         android:contentDescription="@string/widget_data_label"
         android:src="@drawable/ic_widget_mobile_data" />
 
-    <TextView
-        android:id="@+id/widget_data_label"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="2dp"
-        android:ellipsize="end"
-        android:maxLines="1"
-        android:text="@string/widget_data_label"
-        android:textColor="#F8FAFC"
-        android:textSize="11sp"
-        android:textStyle="bold" />
-
-</LinearLayout>
+</FrameLayout>

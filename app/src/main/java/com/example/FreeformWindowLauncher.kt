@@ -123,6 +123,22 @@ object FreeformWindowLauncher {
     }
 
     /**
+     * Resolves a web URL fallback for popular apps so Floating Browser can open them
+     * seamlessly if the device restricts external freeform multi-window launches.
+     */
+    fun webFallbackUrlForPackage(packageName: String): String? {
+        return when (packageName) {
+            "com.google.android.youtube" -> "https://m.youtube.com"
+            "com.android.chrome", "com.google.android.googlequicksearchbox" -> "https://www.google.com"
+            "com.google.android.apps.bard" -> "https://gemini.google.com/app"
+            "com.openai.chatgpt" -> "https://chatgpt.com/"
+            "com.whatsapp" -> "https://web.whatsapp.com/"
+            "com.google.android.gm" -> "https://mail.google.com/"
+            else -> null
+        }
+    }
+
+    /**
      * Attempts to invoke Realme UI / ColorOS Smart Sidebar (`com.oplus.smartsidebar` or
      * `com.coloros.smartsidebar`) if installed and enabled on the device.
      */

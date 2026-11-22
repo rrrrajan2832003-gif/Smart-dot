@@ -70,7 +70,10 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import android.content.ActivityNotFoundException
+import android.media.AudioManager
+import android.provider.AlarmClock
 import android.speech.RecognizerIntent
+import android.view.KeyEvent
 import android.view.VelocityTracker
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -136,6 +139,10 @@ class FloatingService : Service() {
     // Screen Recorder & Stop Recording Edge Pill
     private var screenRecorderManager: ScreenRecorderManager? = null
     private var stopRecordingPillView: View? = null
+    private var lastRecordWithAudio: Boolean = false
+
+    // Multi-window floating mini-apps manager
+    private var floatingWindowManager: FloatingWindowManager? = null
 
     // Accelerometer Shake-to-Torch detector (zero vibration)
     private var sensorManager: SensorManager? = null
@@ -1156,6 +1163,21 @@ class FloatingService : Service() {
             "contacts" -> android.R.drawable.ic_menu_my_calendar
             "messages" -> android.R.drawable.ic_menu_send
             "custom_app" -> android.R.drawable.ic_menu_add
+            "floating_browser" -> R.drawable.ic_radial_chrome
+            "floating_youtube" -> android.R.drawable.ic_menu_slideshow
+            "floating_notes" -> R.drawable.ic_tab_notes
+            "floating_calculator" -> R.drawable.ic_tab_calc
+            "floating_translator" -> R.drawable.ic_tab_translate
+            "floating_viewer" -> android.R.drawable.ic_menu_gallery
+            "google_ai_mode" -> R.drawable.ic_toolbar_ai_mode
+            "gemini" -> R.drawable.ic_toolbar_gemini
+            "chatgpt" -> R.drawable.ic_toolbar_chatgpt
+            "power_menu" -> android.R.drawable.ic_lock_power_off
+            "volume_panel" -> android.R.drawable.ic_lock_silent_mode_off
+            "media_play_pause" -> android.R.drawable.ic_media_play
+            "media_next" -> android.R.drawable.ic_media_next
+            "brightness_up", "brightness_down" -> android.R.drawable.ic_menu_day
+            "qr_scanner" -> android.R.drawable.ic_menu_camera
             "chrome_incognito", "chrome_search" -> R.drawable.ic_radial_chrome
             "youtube_subscriptions", "youtube_search" -> android.R.drawable.ic_menu_slideshow
             "whatsapp_chat", "whatsapp_camera" -> R.drawable.ic_radial_whatsapp
@@ -1165,68 +1187,7 @@ class FloatingService : Service() {
         }
     }
 
-    private fun getActionName(actionId: String): String {
-        return when (actionId) {
-            "home" -> "Home"
-            "back" -> "Back"
-            "recent_apps" -> "Recents"
-            "screenshot" -> "Screenshot"
-            "screen_copy" -> "Text Copy"
-            "screen_translate" -> "Translate"
-            "screen_record" -> "Screen Rec"
-            "ask_ai" -> "Ask AI"
-            "notifications" -> "Notif"
-            "quick_settings" -> "Quick Set"
-            "lock_screen" -> "Lock"
-            "settings" -> "Dash"
-            "whatsapp" -> "WhatsApp"
-            "calculator" -> "Calc"
-            "translate" -> "Translate"
-            "clipboard" -> "Clipboard"
-            "notes" -> "Notes"
-            "chrome" -> "Chrome"
-            "flashlight" -> "Torch"
-            "camera" -> "Camera"
-            "gallery" -> "Gallery"
-            "youtube" -> "YouTube"
-            "gmail" -> "Gmail"
-            "files" -> "Files"
-            "wifi" -> "WiFi"
-            "mobile_data" -> "Mobile Data"
-            "bluetooth" -> "Bluetooth"
-            "brightness" -> "Brightness"
-            "volume" -> "Volume"
-            "mute" -> "Mute"
-            "dnd_mode" -> "DND"
-            "auto_rotate" -> "Rotation"
-            "dark_mode" -> "Theme"
-            "airplane_mode" -> "Airplane"
-            "hotspot" -> "Hotspot"
-            "split_screen" -> "Split"
-            "floating_window" -> "Float App"
-            "open_menu" -> "Open Menu"
-            "realme_smart_sidebar" -> "Smart Sidebar"
-            "open_app_drawer" -> "Drawer"
-            "voice_assistant" -> "Assistant"
-            "about_app" -> "About"
-            "clock" -> "Clock"
-            "contacts" -> "Contacts"
-            "messages" -> "Messages"
-            "custom_app" -> "Custom"
-            "chrome_incognito" -> "Incognito"
-            "chrome_search" -> "Web Search"
-            "youtube_subscriptions" -> "YT Subs"
-            "youtube_search" -> "YT Search"
-            "whatsapp_chat" -> "WA Chat"
-            "whatsapp_camera" -> "WA Cam"
-            "settings_wifi" -> "Wi-Fi Pref"
-            "settings_bluetooth" -> "BT Pref"
-            "settings_battery" -> "Battery"
-            "settings_app_info" -> "App Info"
-            "custom_url_intent" -> "Custom URL"
-            else -> "Shortcut"
-        }
-    }
+    private fun getActionName(actionId: String): String = resolveShortcutShortLabel(actionId)
 
     private fun toggleFlashlight() {
         val cameraManager = getSystemService(Context.CAMERA_SERVICE) as? android.hardware.camera2.CameraManager ?: return
@@ -1271,9 +1232,95 @@ class FloatingService : Service() {
         }
     }
 
+    private fun getOrCreateFloatingWindowManager(): FloatingWindowManager {
+        if (!::windowManager.isInitialized) {
+            windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        }
+        return floatingWindowManager ?: FloatingWindowManager(this, windowManager).also {
+            floatingWindowManager = it
+        }
+    }
+
+    private fun getConfiguredAccentColor(): Int {
+        val hex = prefs.getString("dot_color", "#00E5FF") ?: "#00E5FF"
+        return try {
+            Color.parseColor(hex)
+        } catch (_: Exception) {
+            Color.parseColor("#00E5FF")
+        }
+    }
+
+    private fun dispatchMediaKey(keyCode: Int) {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        val downEvent = KeyEvent(KeyEvent.ACTION_DOWN, keyCode)
+        val upEvent = KeyEvent(KeyEvent.ACTION_UP, keyCode)
+        audioManager.dispatchMediaKeyEvent(downEvent)
+        audioManager.dispatchMediaKeyEvent(upEvent)
+    }
+
+    private fun launchClockAlarm() {
+        activePopupWindow?.dismiss()
+        val pm = packageManager
+        val candidates = ArrayList<Intent>()
+        candidates.add(Intent(AlarmClock.ACTION_SHOW_ALARMS).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+        candidates.add(Intent(AlarmClock.ACTION_SET_TIMER).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+        val clockPackages = listOf(
+            "com.coloros.alarmclock",
+            "com.oplus.alarmclock",
+            "com.google.android.deskclock",
+            "com.android.deskclock",
+            "com.sec.android.app.clockpackage"
+        )
+        clockPackages.forEach { pkg ->
+            pm.getLaunchIntentForPackage(pkg)?.let { intent ->
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                candidates.add(intent)
+            }
+        }
+        for (candidate in candidates) {
+            val started = runCatching {
+                startActivity(candidate)
+                true
+            }.getOrDefault(false)
+            if (started) return
+        }
+        Toast.makeText(this, "Clock App not found.", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun triggerQrScanner() {
+        activePopupWindow?.dismiss()
+        val pm = packageManager
+        val candidates = listOfNotNull(
+            Intent(Intent.ACTION_VIEW, Uri.parse("google://lens")).apply {
+                setPackage("com.google.android.googlequicksearchbox")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            pm.getLaunchIntentForPackage("com.google.ar.lens")?.apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            Intent("android.intent.action.CAMERA_BUTTON").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        )
+        for (candidate in candidates) {
+            if (candidate.resolveActivity(pm) != null) {
+                val ok = runCatching { startActivity(candidate); true }.getOrDefault(false)
+                if (ok) return
+            }
+        }
+        Toast.makeText(this, "QR Scanner unavailable on this device.", Toast.LENGTH_SHORT).show()
+    }
+
     private fun triggerVoiceAssistant() {
         activePopupWindow?.dismiss()
-        val assistantIntents = listOf(
+        val pm = packageManager
+        val assistantIntents = listOfNotNull(
+            pm.getLaunchIntentForPackage("com.google.android.apps.googleassistant")?.apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
             Intent(Intent.ACTION_VOICE_COMMAND).apply {
                 setPackage("com.google.android.googlequicksearchbox")
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -1306,29 +1353,20 @@ class FloatingService : Service() {
 
     private fun triggerOneTapQuickTileToggle(target: QuickTileAutomation.QuickTileTarget) {
         activePopupWindow?.dismiss()
-        val directResult = QuickTileAutomation.tryDirectApiToggle(this, target)
-        if (directResult != null) {
+        // Silent background execution first (Settings.System / direct APIs / Shizuku / root svc)
+        // NEVER pulls down the Quick Settings shade UI.
+        val silentResult = PrivilegedToggleHelper.toggleSilently(this, target)
+        if (silentResult != null) {
             Toast.makeText(
                 this,
-                "${target.displayName} ${if (directResult) "ON" else "OFF"}",
+                "${target.displayName} ${if (silentResult) "ON" else "OFF"}",
                 Toast.LENGTH_SHORT
             ).show()
             return
         }
 
-        val sInstance = SmartDotAccessibilityService.instance
-        if (sInstance != null) {
-            sInstance.performQuickTileToggle(target) { toggled ->
-                if (!toggled) {
-                    runCatching {
-                        startActivity(QuickTileAutomation.buildFallbackSettingsIntent(target))
-                    }
-                }
-            }
-        } else {
-            runCatching {
-                startActivity(QuickTileAutomation.buildFallbackSettingsIntent(target))
-            }
+        runCatching {
+            startActivity(QuickTileAutomation.buildFallbackSettingsIntent(target))
         }
     }
 
@@ -1347,14 +1385,29 @@ class FloatingService : Service() {
         val pm = packageManager
         val launchIntent = pm.getLaunchIntentForPackage(activePkg)
         if (launchIntent == null) {
-            Toast.makeText(this, getString(R.string.floating_window_no_active_app), Toast.LENGTH_SHORT).show()
+            val webUrl = FreeformWindowLauncher.webFallbackUrlForPackage(activePkg)
+            if (webUrl != null) {
+                FloatingMiniApps.openFloatingBrowser(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor(), webUrl)
+                return
+            }
+            if (!FreeformWindowLauncher.launchRealmeSmartSidebar(this)) {
+                Toast.makeText(this, getString(R.string.floating_window_no_active_app), Toast.LENGTH_SHORT).show()
+            }
             return
         }
         val appLabel = runCatching {
             val appInfo = pm.getApplicationInfo(activePkg, 0)
             pm.getApplicationLabel(appInfo).toString()
         }.getOrNull() ?: activePkg
-        FreeformWindowLauncher.launchInFreeformWindow(this, launchIntent, appLabel)
+        val launched = FreeformWindowLauncher.launchInFreeformWindow(this, launchIntent, appLabel)
+        if (!launched) {
+            val webUrl = FreeformWindowLauncher.webFallbackUrlForPackage(activePkg)
+            if (webUrl != null) {
+                FloatingMiniApps.openFloatingBrowser(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor(), webUrl)
+            } else {
+                FreeformWindowLauncher.launchRealmeSmartSidebar(this)
+            }
+        }
     }
 
     private fun executeAction(actionId: String) {
@@ -1363,6 +1416,54 @@ class FloatingService : Service() {
         try {
             when (actionId) {
                 "none" -> return
+                "floating_browser" -> {
+                    activePopupWindow?.dismiss()
+                    FloatingMiniApps.openFloatingBrowser(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor())
+                }
+                "floating_youtube" -> {
+                    activePopupWindow?.dismiss()
+                    FloatingMiniApps.openFloatingYouTube(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor())
+                }
+                "floating_notes" -> {
+                    activePopupWindow?.dismiss()
+                    FloatingMiniApps.openFloatingNotes(this, getOrCreateFloatingWindowManager(), serviceScope, getConfiguredAccentColor())
+                }
+                "floating_calculator" -> {
+                    activePopupWindow?.dismiss()
+                    FloatingMiniApps.openFloatingCalculator(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor())
+                }
+                "floating_translator" -> {
+                    activePopupWindow?.dismiss()
+                    FloatingMiniApps.openFloatingTranslator(this, getOrCreateFloatingWindowManager(), serviceScope, getConfiguredAccentColor())
+                }
+                "floating_viewer" -> {
+                    activePopupWindow?.dismiss()
+                    FloatingMiniApps.openFloatingViewer(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor())
+                }
+                "google_ai_mode" -> {
+                    activePopupWindow?.dismiss()
+                    val aiIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?udm=50")).apply {
+                        setPackage(SelectionToolbarHelper.GOOGLE_APP_PACKAGE)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    val ok = runCatching { startActivity(aiIntent); true }.getOrDefault(false)
+                    if (!ok) {
+                        FloatingMiniApps.openFloatingBrowser(
+                            this,
+                            getOrCreateFloatingWindowManager(),
+                            getConfiguredAccentColor(),
+                            "https://www.google.com/search?udm=50"
+                        )
+                    }
+                }
+                "gemini" -> {
+                    activePopupWindow?.dismiss()
+                    SelectionToolbarHelper.launchGeminiText(this, "Hello Gemini")
+                }
+                "chatgpt" -> {
+                    activePopupWindow?.dismiss()
+                    SelectionToolbarHelper.launchChatGptText(this, "Hello ChatGPT")
+                }
                 "home" -> performGlobalActionSafety(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
                 "back" -> performGlobalActionSafety(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
                 "recent_apps" -> performGlobalActionSafety(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS)
@@ -1377,6 +1478,15 @@ class FloatingService : Service() {
                         }
                     } else {
                         Toast.makeText(this, "Lock Screen requires Android 9 or above.", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                "power_menu" -> {
+                    activePopupWindow?.dismiss()
+                    val sInstance = SmartDotAccessibilityService.instance
+                    if (sInstance != null) {
+                        sInstance.dispatchPowerDialogAction()
+                    } else {
+                        showAccessibilityDialog()
                     }
                 }
                 "screenshot" -> triggerScreenshot()
@@ -1396,15 +1506,7 @@ class FloatingService : Service() {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                         val sInstance = SmartDotAccessibilityService.instance
                         if (sInstance != null) {
-                            sInstance.performSplitScreen { succeeded ->
-                                if (!succeeded) {
-                                    Toast.makeText(
-                                        this,
-                                        getString(R.string.split_screen_oem_fallback),
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                }
-                            }
+                            sInstance.performSplitScreen()
                         } else {
                             showAccessibilityDialog()
                         }
@@ -1437,17 +1539,36 @@ class FloatingService : Service() {
                 "mobile_data" -> triggerOneTapQuickTileToggle(QuickTileAutomation.QuickTileTarget.MOBILE_DATA)
                 "bluetooth" -> triggerOneTapQuickTileToggle(QuickTileAutomation.QuickTileTarget.BLUETOOTH)
                 "brightness" -> {
-                    val intent = Intent(android.provider.Settings.ACTION_DISPLAY_SETTINGS).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    val stepped = PrivilegedToggleHelper.adjustBrightnessByStep(this, +35)
+                    if (stepped != null) {
+                        Toast.makeText(this, "Brightness: ${(stepped * 100 / 255)}%", Toast.LENGTH_SHORT).show()
                     }
-                    startActivity(intent)
+                }
+                "brightness_up" -> {
+                    val stepped = PrivilegedToggleHelper.adjustBrightnessByStep(this, +35)
+                    if (stepped != null) {
+                        Toast.makeText(this, "Brightness: ${(stepped * 100 / 255)}%", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                "brightness_down" -> {
+                    val stepped = PrivilegedToggleHelper.adjustBrightnessByStep(this, -35)
+                    if (stepped != null) {
+                        Toast.makeText(this, "Brightness: ${(stepped * 100 / 255)}%", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                "volume_panel" -> {
+                    activePopupWindow?.dismiss()
+                    val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_SAME, AudioManager.FLAG_SHOW_UI)
                 }
                 "volume" -> {
-                    val intent = Intent(android.provider.Settings.ACTION_SOUND_SETTINGS).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    startActivity(intent)
+                    activePopupWindow?.dismiss()
+                    val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_SAME, AudioManager.FLAG_SHOW_UI)
                 }
+                "media_play_pause" -> dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
+                "media_next" -> dispatchMediaKey(KeyEvent.KEYCODE_MEDIA_NEXT)
+                "qr_scanner" -> triggerQrScanner()
                 "mute" -> {
                     val audioManager = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -1563,9 +1684,12 @@ class FloatingService : Service() {
                 }
                 "youtube" -> {
                     val targetIntent = pm.getLaunchIntentForPackage("com.google.android.youtube")
-                        ?: Intent(Intent.ACTION_VIEW, Uri.parse("https://youtube.com"))
                     activePopupWindow?.dismiss()
-                    FreeformWindowLauncher.launchInFreeformWindow(this, targetIntent, "YouTube")
+                    if (targetIntent != null) {
+                        FreeformWindowLauncher.launchInFreeformWindow(this, targetIntent, "YouTube")
+                    } else {
+                        FloatingMiniApps.openFloatingYouTube(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor())
+                    }
                 }
                 "gmail" -> {
                     val intent = pm.getLaunchIntentForPackage("com.google.android.gm")
@@ -1587,10 +1711,7 @@ class FloatingService : Service() {
                         activePopupWindow?.dismiss()
                         FreeformWindowLauncher.launchInFreeformWindow(this, targetIntent, "Files")
                     } else {
-                        val fallback = Intent(android.provider.Settings.ACTION_INTERNAL_STORAGE_SETTINGS).apply {
-                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                        }
-                        startActivity(fallback)
+                        FloatingMiniApps.openFloatingViewer(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor())
                     }
                 }
                 "settings" -> launchSettings()
@@ -1601,21 +1722,7 @@ class FloatingService : Service() {
                     }
                     startActivity(homeIntent)
                 }
-                "clock" -> {
-                    val intent = Intent(android.provider.AlarmClock.ACTION_SHOW_ALARMS)
-                    val targetIntent = if (intent.resolveActivity(pm) != null) {
-                        intent
-                    } else {
-                        pm.getLaunchIntentForPackage("com.android.deskclock")
-                            ?: pm.getLaunchIntentForPackage("com.sec.android.app.clockpackage")
-                    }
-                    if (targetIntent != null) {
-                        activePopupWindow?.dismiss()
-                        FreeformWindowLauncher.launchInFreeformWindow(this, targetIntent, "Clock")
-                    } else {
-                        Toast.makeText(context, "Clock App not found.", Toast.LENGTH_SHORT).show()
-                    }
-                }
+                "clock" -> launchClockAlarm()
                 "contacts" -> {
                     val intent = Intent(Intent.ACTION_VIEW, android.provider.ContactsContract.Contacts.CONTENT_URI)
                     activePopupWindow?.dismiss()
@@ -2551,8 +2658,36 @@ class FloatingService : Service() {
     // -------------------------------------------------------------
     private fun triggerScreenRecording() {
         activePopupWindow?.dismiss()
-        if (screenRecorderManager?.isRecording == true) {
+        val existingManager = screenRecorderManager
+        if (existingManager?.isRecording == true) {
             stopScreenRecordingSession()
+            return
+        }
+        if (existingManager?.hasActiveProjection() == true) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                runCatching {
+                    ServiceCompat.startForeground(
+                        this,
+                        1001,
+                        getForegroundNotification(),
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                    )
+                }
+            }
+            setOverlayViewsVisible(false)
+            Handler(Looper.getMainLooper()).postDelayed({
+                setOverlayViewsVisible(true)
+                val reused = existingManager.startRecordingWithExistingProjection(lastRecordWithAudio)
+                if (reused) {
+                    Toast.makeText(this, getString(R.string.screen_record_started), Toast.LENGTH_SHORT).show()
+                } else {
+                    val permIntent = Intent(this, ScreenRecordPermissionActivity::class.java).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    startActivity(permIntent)
+                }
+            }, 120L)
             return
         }
         val permIntent = Intent(this, ScreenRecordPermissionActivity::class.java).apply {
@@ -2562,6 +2697,7 @@ class FloatingService : Service() {
     }
 
     private fun startScreenRecordingSession(resultCode: Int, data: Intent, withAudio: Boolean) {
+        lastRecordWithAudio = withAudio
         val manager = screenRecorderManager ?: ScreenRecorderManager(
             context = this,
             onRecordingStateChanged = { recording ->
@@ -3346,7 +3482,10 @@ class FloatingService : Service() {
         if (screenRecorderManager?.isRecording == true) {
             screenRecorderManager?.stopRecording()
         }
+        screenRecorderManager?.releaseProjection()
         screenRecorderManager = null
+        floatingWindowManager?.closeAllWindows()
+        floatingWindowManager = null
 
         try {
             clipboardManager.removePrimaryClipChangedListener(clipListener)

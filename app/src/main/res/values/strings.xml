@@ -48,4 +48,11 @@
     <string name="ai_summarize_screen">Summarize Screen with AI</string>
     <string name="ai_open_external">Open Gemini / ChatGPT</string>
     <string name="ai_no_screen_text">No visible screen text found to summarize.</string>
+    <string name="floating_window_title_browser">Floating Browser</string>
+    <string name="floating_window_title_youtube">Floating YouTube</string>
+    <string name="floating_window_title_notes">Floating Notes</string>
+    <string name="floating_window_title_calculator">Floating Calculator</string>
+    <string name="floating_window_title_translator">Floating Translator</string>
+    <string name="floating_window_title_viewer">Floating File Viewer</string>
+    <string name="write_settings_required">Grant Modify System Settings permission to adjust Auto-Rotate and Brightness silently.</string>
 </resources>

@@ -26,6 +26,7 @@ object SelectionToolbarHelper {
     const val PREF_SELECTION_TOOLBAR_HIDDEN = "selection_toolbar_hidden"
 
     const val GOOGLE_APP_PACKAGE = "com.google.android.googlequicksearchbox"
+    const val SEARCH_LITE_PACKAGE = "com.google.android.apps.searchlite"
     const val GEMINI_PACKAGE = "com.google.android.apps.bard"
     const val CHATGPT_PACKAGE = "com.openai.chatgpt"
 
@@ -255,8 +256,18 @@ object SelectionToolbarHelper {
             setPackage(GOOGLE_APP_PACKAGE)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        if (googleAppAi.resolveActivity(pm) != null) {
+        val googleInstalled = runCatching { pm.getLaunchIntentForPackage(GOOGLE_APP_PACKAGE) }.getOrNull() != null
+        if (googleAppAi.resolveActivity(pm) != null || googleInstalled) {
             return googleAppAi
+        }
+
+        val searchLiteAi = Intent(Intent.ACTION_VIEW, Uri.parse(aiModeUrl)).apply {
+            setPackage(SEARCH_LITE_PACKAGE)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val liteInstalled = runCatching { pm.getLaunchIntentForPackage(SEARCH_LITE_PACKAGE) }.getOrNull() != null
+        if (searchLiteAi.resolveActivity(pm) != null || liteInstalled) {
+            return searchLiteAi
         }
 
         return Intent(Intent.ACTION_VIEW, Uri.parse(aiModeUrl)).apply {
@@ -265,15 +276,37 @@ object SelectionToolbarHelper {
     }
 
     fun launchGoogleAiModeText(context: Context, query: String, question: String = ""): Boolean {
-        val intent = createGoogleAiModeTextIntent(context, query, question) ?: return false
-        return runCatching {
-            context.startActivity(intent)
-            true
-        }.getOrElse { e ->
-            Log.e(TAG, "Failed opening Google AI Mode", e)
-            Toast.makeText(context, "Unable to open Google AI Mode.", Toast.LENGTH_SHORT).show()
-            false
+        val clean = combineQuestionForAiSearch(question, query)
+        if (clean.isEmpty()) return false
+        val encoded = runCatching { URLEncoder.encode(clean, "UTF-8") }.getOrDefault(clean)
+        val aiModeUrl = "https://www.google.com/search?udm=50&q=$encoded"
+        val primary = createGoogleAiModeTextIntent(context, query, question)
+        val candidates = listOfNotNull(
+            primary,
+            Intent(Intent.ACTION_VIEW, Uri.parse(aiModeUrl)).apply {
+                setPackage(SEARCH_LITE_PACKAGE)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            Intent(Intent.ACTION_WEB_SEARCH).apply {
+                setPackage(GOOGLE_APP_PACKAGE)
+                putExtra(SearchManager.QUERY, clean)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            Intent(Intent.ACTION_VIEW, Uri.parse(aiModeUrl)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        ).distinctBy { "${it.action}|${it.`package`}|${it.dataString}" }
+
+        for (candidate in candidates) {
+            val ok = runCatching {
+                context.startActivity(candidate)
+                true
+            }.getOrDefault(false)
+            if (ok) return true
         }
+        Log.e(TAG, "Failed opening Google AI Mode for '$clean'")
+        Toast.makeText(context, "Unable to open Google AI Mode.", Toast.LENGTH_SHORT).show()
+        return false
     }
 
     /**

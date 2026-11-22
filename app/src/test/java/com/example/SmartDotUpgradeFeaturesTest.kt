@@ -306,7 +306,7 @@ class SmartDotUpgradeFeaturesTest {
     // -------------------------------------------------------------
 
     @Test
-    fun `performSplitScreen returns true on success and falls back to Recents plus guidance toast when OEM blocks it`() {
+    fun `performSplitScreen returns true on success and triggers direct Recents fallback with zero guidance toast`() {
         val a11yService = Robolectric.buildService(SmartDotAccessibilityService::class.java).create().get()
         SmartDotAccessibilityService.setInstanceForTest(a11yService)
 
@@ -334,8 +334,9 @@ class SmartDotUpgradeFeaturesTest {
             .getDeclaredMethod("executeAction", String::class.java)
             .apply { isAccessible = true }
 
+        ShadowToast.reset()
         executeAction.invoke(floatingService, "split_screen")
-        Shadows.shadowOf(Looper.getMainLooper()).idleFor(300, TimeUnit.MILLISECONDS)
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(400, TimeUnit.MILLISECONDS)
 
         assertEquals(
             listOf(
@@ -344,8 +345,8 @@ class SmartDotUpgradeFeaturesTest {
             ),
             actions
         )
-        assertEquals(
-            appContext.getString(R.string.split_screen_oem_fallback),
+        assertNull(
+            "Direct 1-tap Split Screen must not show any manual guidance toast",
             ShadowToast.getTextOfLatestToast()
         )
     }

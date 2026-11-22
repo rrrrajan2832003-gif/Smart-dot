@@ -55,31 +55,29 @@ class DataToggleWidget : AppWidgetProvider() {
         }
 
         fun handleWidgetTap(context: Context) {
-            val service = SmartDotAccessibilityService.instance
-            if (service != null) {
-                service.performQuickTileToggle(QuickTileAutomation.QuickTileTarget.MOBILE_DATA) { toggled ->
-                    if (!toggled) {
-                        runCatching {
-                            context.startActivity(
-                                QuickTileAutomation.buildFallbackSettingsIntent(
-                                    QuickTileAutomation.QuickTileTarget.MOBILE_DATA
-                                )
-                            )
-                        }
-                    }
-                }
-            } else {
-                val launched = runCatching {
-                    context.startActivity(
-                        QuickTileAutomation.buildFallbackSettingsIntent(
-                            QuickTileAutomation.QuickTileTarget.MOBILE_DATA
-                        )
+            val toggledState = PrivilegedToggleHelper.toggleSilently(
+                context,
+                QuickTileAutomation.QuickTileTarget.MOBILE_DATA
+            )
+            if (toggledState != null) {
+                Toast.makeText(
+                    context,
+                    "Mobile Data ${if (toggledState) "ON" else "OFF"}",
+                    Toast.LENGTH_SHORT
+                ).show()
+                return
+            }
+
+            val launched = runCatching {
+                context.startActivity(
+                    QuickTileAutomation.buildFallbackSettingsIntent(
+                        QuickTileAutomation.QuickTileTarget.MOBILE_DATA
                     )
-                    true
-                }.getOrDefault(false)
-                if (!launched) {
-                    Toast.makeText(context, "Enable Accessibility Service for 1-tap Data toggle.", Toast.LENGTH_SHORT).show()
-                }
+                )
+                true
+            }.getOrDefault(false)
+            if (!launched) {
+                Toast.makeText(context, "Unable to open Mobile Data settings.", Toast.LENGTH_SHORT).show()
             }
         }
     }
