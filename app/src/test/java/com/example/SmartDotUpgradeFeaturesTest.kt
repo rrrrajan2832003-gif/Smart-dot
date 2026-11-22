@@ -2,6 +2,7 @@ package com.example
 
 import android.accessibilityservice.AccessibilityService
 import android.app.Application
+import android.app.SearchManager
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -458,11 +459,11 @@ class SmartDotUpgradeFeaturesTest {
         tapAt(selView, quantumRect.centerX(), quantumRect.centerY())
 
         val actionBar = root.findViewById<LinearLayout>(R.id.inline_word_action_bar)
-        val btnCopy = root.findViewById<LinearLayout>(R.id.btn_inline_ocr_copy)
-        val btnSpeak = root.findViewById<TextView>(R.id.btn_inline_word_speak)
-        val btnTranslate = root.findViewById<TextView>(R.id.btn_inline_word_translate)
-        val btnSearch = root.findViewById<TextView>(R.id.btn_inline_word_search)
-        val btnSaveFull = root.findViewById<TextView>(R.id.btn_inline_word_save_full)
+        val btnCopy = root.findViewById<ImageButton>(R.id.btn_inline_ocr_copy)
+        val btnSpeak = root.findViewById<ImageButton>(R.id.btn_inline_word_speak)
+        val btnTranslate = root.findViewById<ImageButton>(R.id.btn_inline_word_translate)
+        val btnSearch = root.findViewById<ImageButton>(R.id.btn_inline_word_search)
+        val btnSaveFull = root.findViewById<ImageButton>(R.id.btn_inline_word_save_full)
 
         assertEquals(View.VISIBLE, actionBar.visibility)
         assertEquals(View.VISIBLE, btnCopy.visibility)
@@ -498,13 +499,28 @@ class SmartDotUpgradeFeaturesTest {
         assertEquals("SmartDot_Screen", savedPrefix)
         assertEquals(1080, savedWidth)
 
-        // 4) Search opens Google Search via FreeformWindowLauncher
+        // 4) Search opens Google App directly via ACTION_WEB_SEARCH (or Google Search URL fallback when absent)
+        val shadowPm = Shadows.shadowOf(appContext.packageManager)
+        val googleResolveInfo = ResolveInfo().apply {
+            activityInfo = ActivityInfo().apply {
+                packageName = SelectionToolbarHelper.GOOGLE_APP_PACKAGE
+                name = "com.google.android.googlequicksearchbox.SearchActivity"
+                applicationInfo = ApplicationInfo().apply {
+                    packageName = SelectionToolbarHelper.GOOGLE_APP_PACKAGE
+                }
+            }
+        }
+        shadowPm.addResolveInfoForIntent(
+            Intent(Intent.ACTION_WEB_SEARCH).setPackage(SelectionToolbarHelper.GOOGLE_APP_PACKAGE),
+            googleResolveInfo
+        )
         btnSearch.performClick()
         ShadowLooper.idleMainLooper()
         val searchIntent = Shadows.shadowOf(appContext).nextStartedActivity
-        assertNotNull("Search button should launch browser intent", searchIntent)
-        assertEquals(Intent.ACTION_VIEW, searchIntent.action)
-        assertEquals("https://www.google.com/search?q=Quantum", searchIntent.dataString)
+        assertNotNull("Search button should launch Google App search intent", searchIntent)
+        assertEquals(Intent.ACTION_WEB_SEARCH, searchIntent.action)
+        assertEquals(SelectionToolbarHelper.GOOGLE_APP_PACKAGE, searchIntent.`package`)
+        assertEquals("Quantum", searchIntent.getStringExtra(SearchManager.QUERY))
         assertFalse(controller.isOverlayShowing())
 
         controller.release()
@@ -593,7 +609,7 @@ class SmartDotUpgradeFeaturesTest {
         assertEquals(resizedBox.width(), movedBox.width(), 2f)
 
         // 1) Save Cutout crops strictly the box area
-        root.findViewById<TextView>(R.id.btn_cutout_save).performClick()
+        root.findViewById<ImageButton>(R.id.btn_cutout_save).performClick()
         val saveDeadline = System.currentTimeMillis() + 3000L
         while (cutoutSavedPrefix == null && System.currentTimeMillis() < saveDeadline) {
             ShadowLooper.idleMainLooper(20, TimeUnit.MILLISECONDS)
@@ -604,7 +620,7 @@ class SmartDotUpgradeFeaturesTest {
         assertEquals(movedBox.height().toInt(), cutoutSavedBitmapSize!!.second)
 
         // 2) Copy Text in Box runs OCR on cropped box and copies to clipboard
-        root.findViewById<TextView>(R.id.btn_cutout_copy_text).performClick()
+        root.findViewById<ImageButton>(R.id.btn_cutout_copy_text).performClick()
         val copyDeadline = System.currentTimeMillis() + 3000L
         while (clipboard.primaryClip == null && System.currentTimeMillis() < copyDeadline) {
             ShadowLooper.idleMainLooper(20, TimeUnit.MILLISECONDS)
@@ -630,7 +646,7 @@ class SmartDotUpgradeFeaturesTest {
         // Draw loop again and test Visual Search (Lens)
         dispatchCircleGesture(selView2, cx = 400f, cy = 700f, rx = 180f, ry = 180f)
         val lensBox = selView2.getActiveCutoutRect()!!
-        root2.findViewById<TextView>(R.id.btn_cutout_visual_search).performClick()
+        root2.findViewById<ImageButton>(R.id.btn_cutout_visual_search).performClick()
         assertNotNull(visualSearchBitmapSize)
         assertEquals(lensBox.width().toInt(), visualSearchBitmapSize!!.first)
         assertFalse(controller.isOverlayShowing())

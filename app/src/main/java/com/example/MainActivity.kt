@@ -46,6 +46,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.foundation.Canvas
@@ -63,6 +65,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
@@ -418,77 +421,6 @@ fun SmartDotScreen(
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // App Header with cosmic gradient brush
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 12.dp)
-                .background(
-                    Brush.horizontalGradient(
-                        colors = listOf(Color(0xFF1E293B), Color(0xFF0F172A))
-                    ),
-                    shape = RoundedCornerShape(16.dp)
-                )
-                .border(1.dp, Color(0xFF334155), RoundedCornerShape(16.dp))
-                .padding(20.dp)
-        ) {
-            Column {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column {
-                        Text(
-                            text = "Floating Shortcuts",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFFF8FAFC)
-                        )
-                        Text(
-                            text = "Core Utility Widget",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Color(0xFF94A3B8)
-                        )
-                    }
-
-                    // Pulse running status indicator
-                    Surface(
-                        color = if (isServiceRunning) Color(0xFF059669).copy(alpha = 0.2f) else Color(0xFF475569).copy(alpha = 0.2f),
-                        shape = CircleShape,
-                        border = BorderStroke(
-                            1.dp,
-                            if (isServiceRunning) Color(0xFF34D399) else Color(0xFF94A3B8)
-                        ),
-                        modifier = Modifier.padding(horizontal = 4.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .background(
-                                        if (isServiceRunning) Color(0xFF10B981) else Color(0xFF64748B),
-                                        shape = CircleShape
-                                    )
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = if (isServiceRunning) "RUNNING" else "INACTIVE",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isServiceRunning) Color(0xFF34D399) else Color(0xFFE2E8F0)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
         // System Permissions Requirements Card
         Card(
             modifier = Modifier
@@ -942,7 +874,7 @@ fun SmartDotScreen(
         // 2. Sidebar Settings Card
         var sidebarEdge by remember { mutableStateOf(prefs.getString("sidebar_edge", "Right") ?: "Right") }
         var sidebarHeight by remember { mutableStateOf(prefs.getInt("sidebar_height", 130)) }
-        var sidebarWidth by remember { mutableStateOf(prefs.getInt("sidebar_width", 14)) }
+        var sidebarWidth by remember { mutableStateOf(prefs.getInt("sidebar_width", 14).coerceIn(3, 16)) }
         var sidebarOpacity by remember { mutableStateOf(prefs.getInt("sidebar_opacity", 70)) }
         var touchSensitivity by remember { mutableStateOf(prefs.getInt("sidebar_touch_sensitivity", 85)) }
         var menuAnimSpeedMs by remember { mutableStateOf(prefs.getInt("menu_anim_speed_ms", 160)) }
@@ -1112,12 +1044,20 @@ fun SmartDotScreen(
                     }
                     Slider(
                         value = sidebarWidth.toFloat(),
-                        onValueChange = { sidebarWidth = it.roundToInt() },
+                        onValueChange = { newVal ->
+                            val newWidth = newVal.roundToInt().coerceIn(3, 16)
+                            if (newWidth != sidebarWidth) {
+                                sidebarWidth = newWidth
+                                prefs.edit().putInt("sidebar_width", newWidth).apply()
+                                updateServiceStyle()
+                            }
+                        },
                         onValueChangeFinished = {
-                            prefs.edit().putInt("sidebar_width", sidebarWidth).apply()
+                            prefs.edit().putInt("sidebar_width", sidebarWidth.coerceIn(3, 16)).apply()
                             updateServiceStyle()
                         },
-                        valueRange = 4f..30f,
+                        valueRange = 3f..16f,
+                        modifier = Modifier.testTag("slider_sidebar_width"),
                         colors = SliderDefaults.colors(
                             thumbColor = Color(android.graphics.Color.parseColor(dotColor)),
                             activeTrackColor = Color(android.graphics.Color.parseColor(dotColor)),
@@ -1266,6 +1206,7 @@ fun SmartDotScreen(
         // 3. Simplified Popup Sizing Card
         val sizePresets = listOf("Small", "Medium", "Large", "Extra Large")
         var shortcutIconPreset by remember { mutableStateOf(prefs.getString("shortcut_icon_size_preset", "Medium") ?: "Medium") }
+        var hideShortcutLabels by remember { mutableStateOf(prefs.getBoolean(FloatingService.PREF_HIDE_SHORTCUT_LABELS, false)) }
 
         Card(
             modifier = Modifier
@@ -1422,6 +1363,45 @@ fun SmartDotScreen(
                         }
                     }
                 }
+
+                HorizontalDivider(color = Color(0xFF334155), thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text(
+                            text = "Hide Shortcut Labels",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFF8FAFC)
+                        )
+                        Text(
+                            text = "Display clean icons only inside the floating shortcut grid",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+                    Switch(
+                        checked = hideShortcutLabels,
+                        onCheckedChange = { checked ->
+                            hideShortcutLabels = checked
+                            prefs.edit().putBoolean(FloatingService.PREF_HIDE_SHORTCUT_LABELS, checked).apply()
+                            updateServiceStyle()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Black,
+                            checkedTrackColor = Color(android.graphics.Color.parseColor(dotColor))
+                        ),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("switch_hide_shortcut_labels")
+                    )
+                }
             }
         }
 
@@ -1429,6 +1409,7 @@ fun SmartDotScreen(
 
         // 4. Smart Hardware, AI Assistant Key & Persistence Card
         var shakeTorchEnabled by remember { mutableStateOf(prefs.getBoolean(FloatingService.PREF_SHAKE_TORCH_ENABLED, false)) }
+        var shakeSensitivity by remember { mutableStateOf(prefs.getFloat(FloatingService.PREF_SHAKE_SENSITIVITY, 16f).coerceIn(12f, 26f)) }
         var geminiApiKeyInput by remember { mutableStateOf(prefs.getString(AiAssistantHelper.PREF_GEMINI_API_KEY, "") ?: "") }
         val accentParseColor = Color(android.graphics.Color.parseColor(dotColor))
 
@@ -1490,6 +1471,52 @@ fun SmartDotScreen(
                             .minimumInteractiveComponentSize()
                             .testTag("switch_shake_torch")
                     )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                val shakeSensitivityLabel = when {
+                    shakeSensitivity <= 14.5f -> "Gentle (${shakeSensitivity.roundToInt()})"
+                    shakeSensitivity >= 21.5f -> "Hard (${shakeSensitivity.roundToInt()})"
+                    else -> "Balanced (${shakeSensitivity.roundToInt()})"
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Shake Sensitivity",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF94A3B8)
+                    )
+                    Text(
+                        text = shakeSensitivityLabel,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = accentParseColor,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Slider(
+                    value = shakeSensitivity,
+                    onValueChange = { shakeSensitivity = it.coerceIn(12f, 26f) },
+                    onValueChangeFinished = {
+                        prefs.edit().putFloat(FloatingService.PREF_SHAKE_SENSITIVITY, shakeSensitivity).apply()
+                        updateServiceStyle()
+                    },
+                    valueRange = 12f..26f,
+                    modifier = Modifier.testTag("slider_shake_sensitivity"),
+                    colors = SliderDefaults.colors(
+                        thumbColor = accentParseColor,
+                        activeTrackColor = accentParseColor,
+                        inactiveTrackColor = Color(0xFF475569)
+                    )
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(text = "Gentle (12)", style = MaterialTheme.typography.labelSmall, color = Color(0xFF64748B))
+                    Text(text = "Hard (26)", style = MaterialTheme.typography.labelSmall, color = Color(0xFF64748B))
                 }
 
                 HorizontalDivider(color = Color(0xFF334155), thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
@@ -1861,6 +1888,183 @@ fun SmartDotScreen(
                         fontWeight = FontWeight.Bold,
                         color = Color.White
                     )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // SELECTION TOOLBAR ORDER & VISIBILITY CUSTOMIZER (10 Unified Actions for Text Copy & Cutout Box)
+        val toolbarOrderList = remember {
+            mutableStateListOf<SelectionToolbarHelper.ToolbarAction>().apply {
+                addAll(SelectionToolbarHelper.getToolbarOrder(prefs))
+            }
+        }
+        val hiddenToolbarActions = remember {
+            mutableStateListOf<SelectionToolbarHelper.ToolbarAction>().apply {
+                addAll(SelectionToolbarHelper.getHiddenToolbarActions(prefs))
+            }
+        }
+        val toggleToolbarVisibility: (SelectionToolbarHelper.ToolbarAction) -> Unit = { action ->
+            if (action in hiddenToolbarActions) {
+                hiddenToolbarActions.remove(action)
+            } else {
+                hiddenToolbarActions.add(action)
+            }
+            SelectionToolbarHelper.saveHiddenToolbarActions(prefs, hiddenToolbarActions.toSet())
+        }
+        val moveToolbarAction: (Int, Int) -> Unit = { fromIdx, toIdx ->
+            if (fromIdx in toolbarOrderList.indices && toIdx in toolbarOrderList.indices) {
+                val moved = toolbarOrderList.removeAt(fromIdx)
+                toolbarOrderList.add(toIdx, moved)
+                SelectionToolbarHelper.saveToolbarOrder(prefs, toolbarOrderList)
+            }
+        }
+        val parsedAccentColor = remember(dotColor) {
+            runCatching { Color(android.graphics.Color.parseColor(dotColor)) }
+                .getOrDefault(Color(0xFF00E5FF))
+        }
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, Color(0xFF334155), RoundedCornerShape(16.dp))
+                .testTag("selection_toolbar_order_card"),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Selection Toolbar Order",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFF8FAFC)
+                        )
+                        Text(
+                            text = "Reorder or hide the 10 icon buttons for Text Selection & Circle Cutout bars.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = {
+                            toolbarOrderList.clear()
+                            toolbarOrderList.addAll(SelectionToolbarHelper.DEFAULT_ORDER)
+                            hiddenToolbarActions.clear()
+                            SelectionToolbarHelper.saveToolbarOrder(prefs, toolbarOrderList)
+                            SelectionToolbarHelper.saveHiddenToolbarActions(prefs, emptySet())
+                            Toast.makeText(context, "Selection toolbar order reset", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("btn_reset_toolbar_order")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Reset Selection Toolbar Order",
+                            tint = parsedAccentColor
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    toolbarOrderList.forEachIndexed { idx, action ->
+                        val isHidden = action in hiddenToolbarActions
+                        Surface(
+                            color = Color(0xFF0F172A),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color(0xFF334155)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("toolbar_order_row_${action.id}")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .alpha(if (isHidden) 0.48f else 1f)
+                                ) {
+                                    Text(
+                                        text = "${idx + 1}.",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = parsedAccentColor,
+                                        modifier = Modifier.width(26.dp)
+                                    )
+                                    Icon(
+                                        painter = painterResource(id = action.iconRes),
+                                        contentDescription = null,
+                                        tint = Color(0xFFF8FAFC),
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        text = action.label,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFFF8FAFC),
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { toggleToolbarVisibility(action) },
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("btn_toolbar_visibility_${action.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = if (isHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                        contentDescription = if (isHidden) "Show ${action.label}" else "Hide ${action.label}",
+                                        tint = if (isHidden) Color(0xFF64748B) else parsedAccentColor
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { moveToolbarAction(idx, idx - 1) },
+                                    enabled = idx > 0,
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("btn_toolbar_up_${action.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.KeyboardArrowUp,
+                                        contentDescription = "Move ${action.label} Up",
+                                        tint = if (idx > 0) Color(0xFFF8FAFC) else Color(0xFF475569)
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { moveToolbarAction(idx, idx + 1) },
+                                    enabled = idx < toolbarOrderList.lastIndex,
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("btn_toolbar_down_${action.id}")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.KeyboardArrowDown,
+                                        contentDescription = "Move ${action.label} Down",
+                                        tint = if (idx < toolbarOrderList.lastIndex) Color(0xFFF8FAFC) else Color(0xFF475569)
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

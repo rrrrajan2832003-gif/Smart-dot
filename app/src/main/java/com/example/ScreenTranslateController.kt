@@ -34,7 +34,7 @@ class ScreenTranslateController(
     private val dismissActivePopup: () -> Unit,
     private val setHostOverlaysVisible: (Boolean) -> Unit,
     private val onAccessibilityRequired: () -> Unit,
-    private val getSavedOnlineMode: () -> Boolean = { true },
+    private val getSavedOnlineMode: () -> Boolean = { false },
     private val saveOnlineMode: (Boolean) -> Unit = {},
     private val nodeExtractor: () -> List<SmartDotAccessibilityService.ScreenTextNode>? = DEFAULT_EXTRACTOR,
     private val translateHelperFactory: () -> ScreenTranslateHelper = { ScreenTranslateHelper() },
@@ -49,7 +49,7 @@ class ScreenTranslateController(
 
     private var isActive = false
     private var activeTargetLanguage: String = "Hindi"
-    private var activeOnlineMode: Boolean = true
+    private var activeOnlineMode: Boolean = false
     private var translationRequestToken: Long = 0L
     private var ocrRequestToken: Long = 0L
     private var lastScannedNodes: List<SmartDotAccessibilityService.ScreenTextNode> = emptyList()

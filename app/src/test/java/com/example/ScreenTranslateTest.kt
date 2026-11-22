@@ -205,7 +205,7 @@ class ScreenTranslateTest {
         assertEquals("सिस्टम सेटिंग्स", hindiLabels[0].item.result.translatedText)
         assertEquals("सूचनाएं", hindiLabels[1].item.result.translatedText)
         assertEquals(View.GONE, root.findViewById<TextView>(R.id.tv_inline_status_pill).visibility)
-        assertEquals(View.GONE, root.findViewById<LinearLayout>(R.id.btn_inline_ocr_copy).visibility)
+        assertEquals(View.GONE, root.findViewById<View>(R.id.btn_inline_ocr_copy).visibility)
 
         // Switch target language to Spanish -> clears any prior selection and bulk re-translates in place
         val langChip = root.findViewById<TextView>(R.id.btn_inline_target_lang)
@@ -232,7 +232,7 @@ class ScreenTranslateTest {
         // Highlight specific translated words ("Ajustes" + "del") with the thin 6dp highlighter drag
         val w0Rect = selView.getMappedRectForCopyNode(0)!!
         val w1Rect = selView.getMappedRectForCopyNode(1)!!
-        val copyBtn = root.findViewById<LinearLayout>(R.id.btn_inline_ocr_copy)
+        val copyBtn = root.findViewById<View>(R.id.btn_inline_ocr_copy)
 
         val down = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, w0Rect.centerX(), w0Rect.centerY(), 0)
         val move = MotionEvent.obtain(100L, 130L, MotionEvent.ACTION_MOVE, w1Rect.centerX(), w1Rect.centerY(), 0)
@@ -334,7 +334,7 @@ class ScreenTranslateTest {
         up.recycle()
         ShadowLooper.idleMainLooper()
 
-        val copyBtn = root.findViewById<LinearLayout>(R.id.btn_inline_ocr_copy)
+        val copyBtn = root.findViewById<View>(R.id.btn_inline_ocr_copy)
         assertEquals(View.VISIBLE, copyBtn.visibility)
         assertEquals("सेटिंग्स", selView.getCombinedSelectedCopyText())
 

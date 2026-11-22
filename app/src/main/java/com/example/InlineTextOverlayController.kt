@@ -23,12 +23,16 @@ import android.view.LayoutInflater
 import android.view.Surface
 import android.view.View
 import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.widget.TooltipCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -36,9 +40,10 @@ import androidx.core.view.WindowInsetsCompat
 /**
  * Manages the 100% transparent WindowManager overlay directly over the live screen:
  * - Zero unselected outlines/boxes/borders in both modes.
- * - COPY mode: invisible hit-areas; tapping text highlights only that item and shows a floating "Copy" pill.
- * - TRANSLATE mode: immediately translates all visible screen text in bulk via offline ML Kit and draws
- *   borderless background-matched translated labels in place (plus language switcher and tap-to-copy).
+ * - COPY mode: invisible hit-areas; highlighting words or drawing a closed circle cutout opens the
+ *   unified icon-only 10-action horizontally scrollable pill toolbar in the user's saved custom order.
+ * - TRANSLATE mode: immediately translates all visible screen text in bulk via on-device/online translation
+ *   and draws borderless background-matched translated labels in place.
  */
 class InlineTextOverlayController(
     private val context: Context,
@@ -58,7 +63,7 @@ class InlineTextOverlayController(
     private var langDropdownView: LinearLayout? = null
     private var statusPillView: TextView? = null
     private var wordActionBarView: LinearLayout? = null
-    private var copyPillView: LinearLayout? = null
+    private var wordCopyButtonView: ImageButton? = null
     private var wordTranslateBubbleView: LinearLayout? = null
     private var wordTranslatedTextView: TextView? = null
     private var cutoutActionBarView: LinearLayout? = null
@@ -70,7 +75,7 @@ class InlineTextOverlayController(
 
     private var currentMode: OverlayMode = OverlayMode.COPY
     private var currentTargetLanguage: String = "Hindi"
-    private var currentOnlineMode: Boolean = true
+    private var currentOnlineMode: Boolean = false
     private var currentAnchorRect: RectF? = null
     private var currentCutoutRect: RectF? = null
     private var activeCopyableText: String = ""
@@ -91,7 +96,20 @@ class InlineTextOverlayController(
         onSaveFullImageClicked: (() -> Unit)? = null,
         onCutoutSaveClicked: ((cutoutRect: RectF, viewW: Int, viewH: Int) -> Unit)? = null,
         onCutoutVisualSearchClicked: ((cutoutRect: RectF, viewW: Int, viewH: Int) -> Unit)? = null,
-        onCutoutCopyTextClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int) -> Unit)? = null
+        onCutoutCopyTextClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int) -> Unit)? = null,
+        toolbarOrder: List<SelectionToolbarHelper.ToolbarAction> = SelectionToolbarHelper.getVisibleToolbarOrder(context),
+        onGoogleAiModeTextClicked: ((query: String, question: String) -> Unit)? = null,
+        onGeminiTextClicked: ((text: String, question: String) -> Unit)? = null,
+        onChatGptTextClicked: ((text: String, question: String) -> Unit)? = null,
+        onShareTextClicked: ((text: String) -> Unit)? = null,
+        onFullScreenTranslateClicked: (() -> Unit)? = null,
+        onCutoutSpeakClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int) -> Unit)? = null,
+        onCutoutTranslateRequested: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int, onTranslated: (String?) -> Unit) -> Unit)? = null,
+        onCutoutSearchWithFallback: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int) -> Unit)? = null,
+        onCutoutGoogleAiModeClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int, question: String) -> Unit)? = null,
+        onCutoutGeminiClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int, question: String) -> Unit)? = null,
+        onCutoutChatGptClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int, question: String) -> Unit)? = null,
+        onCutoutShareClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int) -> Unit)? = null
     ) {
         val refs = setupBaseOverlay(
             mode = OverlayMode.COPY,
@@ -107,10 +125,23 @@ class InlineTextOverlayController(
             onSaveFullImageClicked = onSaveFullImageClicked,
             onCutoutSaveClicked = onCutoutSaveClicked,
             onCutoutVisualSearchClicked = onCutoutVisualSearchClicked,
-            onCutoutCopyTextClicked = onCutoutCopyTextClicked
+            onCutoutCopyTextClicked = onCutoutCopyTextClicked,
+            toolbarOrder = toolbarOrder,
+            onGoogleAiModeTextClicked = onGoogleAiModeTextClicked,
+            onGeminiTextClicked = onGeminiTextClicked,
+            onChatGptTextClicked = onChatGptTextClicked,
+            onShareTextClicked = onShareTextClicked,
+            onFullScreenTranslateClicked = onFullScreenTranslateClicked,
+            onCutoutSpeakClicked = onCutoutSpeakClicked,
+            onCutoutTranslateRequested = onCutoutTranslateRequested,
+            onCutoutSearchWithFallback = onCutoutSearchWithFallback,
+            onCutoutGoogleAiModeClicked = onCutoutGoogleAiModeClicked,
+            onCutoutGeminiClicked = onCutoutGeminiClicked,
+            onCutoutChatGptClicked = onCutoutChatGptClicked,
+            onCutoutShareClicked = onCutoutShareClicked
         ) ?: return
 
-        val (root, selView, controlsPill, wordActionBar, copyPill, tvCopyLabel) = refs
+        val (root, selView, controlsPill, wordActionBar, copyBtn) = refs
 
         selView.configureCopyMode(
             nodes = nodes,
@@ -121,14 +152,13 @@ class InlineTextOverlayController(
                 if (clean.isEmpty() || anchorRect == null) {
                     currentAnchorRect = null
                     activeCopyableText = ""
-                    copyPill.visibility = View.GONE
+                    copyBtn.visibility = View.GONE
                     wordActionBar.visibility = View.GONE
                     return@configureCopyMode
                 }
                 currentAnchorRect = RectF(anchorRect)
                 activeCopyableText = clean
-                tvCopyLabel.text = context.getString(R.string.screen_copy_action)
-                copyPill.visibility = View.VISIBLE
+                copyBtn.visibility = View.VISIBLE
                 wordActionBar.visibility = View.VISIBLE
                 positionFloatingBar(root, controlsPill, wordActionBar, anchorRect, preferBelow = false, density = context.resources.displayMetrics.density)
             },
@@ -150,7 +180,7 @@ class InlineTextOverlayController(
                 }
                 currentCutoutRect = RectF(cutoutRect)
                 wordActionBar.visibility = View.GONE
-                copyPill.visibility = View.GONE
+                copyBtn.visibility = View.GONE
                 cutoutBar.visibility = View.VISIBLE
                 positionFloatingBar(root, controlsPill, cutoutBar, cutoutRect, preferBelow = true, density = context.resources.displayMetrics.density)
             }
@@ -160,7 +190,7 @@ class InlineTextOverlayController(
     fun showTranslateOverlay(
         accentColor: Int,
         initialTargetLanguage: String,
-        initialOnlineMode: Boolean = true,
+        initialOnlineMode: Boolean = false,
         onTranslationModeToggled: ((useOnlineMode: Boolean) -> Unit)? = null,
         onTargetLanguageChanged: (newTargetLang: String) -> Unit,
         onCopyClicked: (translatedTextToCopy: String) -> Unit,
@@ -179,7 +209,7 @@ class InlineTextOverlayController(
             onDismiss = onDismiss
         ) ?: return
 
-        val (root, selView, controlsPill, wordActionBar, copyPill, tvCopyLabel) = refs
+        val (root, selView, controlsPill, wordActionBar, copyBtn) = refs
 
         statusPillView?.apply {
             text = context.getString(R.string.screen_translate_translating)
@@ -194,14 +224,13 @@ class InlineTextOverlayController(
                 if (clean.isEmpty() || anchorRect == null) {
                     currentAnchorRect = null
                     activeCopyableText = ""
-                    copyPill.visibility = View.GONE
+                    copyBtn.visibility = View.GONE
                     wordActionBar.visibility = View.GONE
                     return@configureTranslateMode
                 }
                 currentAnchorRect = RectF(anchorRect)
                 activeCopyableText = clean
-                tvCopyLabel.text = context.getString(R.string.screen_copy_action)
-                copyPill.visibility = View.VISIBLE
+                copyBtn.visibility = View.VISIBLE
                 wordActionBar.visibility = View.VISIBLE
                 positionFloatingBar(root, controlsPill, wordActionBar, anchorRect, preferBelow = false, density = context.resources.displayMetrics.density)
             },
@@ -235,15 +264,14 @@ class InlineTextOverlayController(
         val selectionView: InlineTextSelectionView,
         val controlsPill: LinearLayout,
         val wordActionBar: LinearLayout,
-        val copyPill: LinearLayout,
-        val copyLabel: TextView
+        val copyButton: ImageButton
     )
 
     private fun setupBaseOverlay(
         mode: OverlayMode,
         accentColor: Int,
         initialTargetLanguage: String,
-        initialOnlineMode: Boolean = true,
+        initialOnlineMode: Boolean = false,
         onTranslationModeToggled: ((Boolean) -> Unit)? = null,
         onTargetLanguageChanged: ((String) -> Unit)?,
         onCopyClicked: (String) -> Unit,
@@ -255,7 +283,20 @@ class InlineTextOverlayController(
         onSaveFullImageClicked: (() -> Unit)? = null,
         onCutoutSaveClicked: ((RectF, Int, Int) -> Unit)? = null,
         onCutoutVisualSearchClicked: ((RectF, Int, Int) -> Unit)? = null,
-        onCutoutCopyTextClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)? = null
+        onCutoutCopyTextClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)? = null,
+        toolbarOrder: List<SelectionToolbarHelper.ToolbarAction> = SelectionToolbarHelper.getVisibleToolbarOrder(context),
+        onGoogleAiModeTextClicked: ((String, String) -> Unit)? = null,
+        onGeminiTextClicked: ((String, String) -> Unit)? = null,
+        onChatGptTextClicked: ((String, String) -> Unit)? = null,
+        onShareTextClicked: ((String) -> Unit)? = null,
+        onFullScreenTranslateClicked: (() -> Unit)? = null,
+        onCutoutSpeakClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)? = null,
+        onCutoutTranslateRequested: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, (String?) -> Unit) -> Unit)? = null,
+        onCutoutSearchWithFallback: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)? = null,
+        onCutoutGoogleAiModeClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)? = null,
+        onCutoutGeminiClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)? = null,
+        onCutoutChatGptClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)? = null,
+        onCutoutShareClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)? = null
     ): BaseOverlayRefs? {
         dismissInternal()
 
@@ -278,21 +319,23 @@ class InlineTextOverlayController(
         val statusPill = root.findViewById<TextView>(R.id.tv_inline_status_pill)
         val btnRescan = root.findViewById<ImageButton>(R.id.btn_inline_ocr_rescan)
         val btnClose = root.findViewById<LinearLayout>(R.id.btn_inline_ocr_close)
+
         val wordActionBar = root.findViewById<LinearLayout>(R.id.inline_word_action_bar)
-        val copyPill = root.findViewById<LinearLayout>(R.id.btn_inline_ocr_copy)
-        val ivCopyIcon = root.findViewById<ImageView>(R.id.iv_inline_ocr_copy_icon)
-        val tvCopyLabel = root.findViewById<TextView>(R.id.tv_inline_ocr_copy_label)
-        val btnSpeak = root.findViewById<TextView>(R.id.btn_inline_word_speak)
-        val btnWordTranslate = root.findViewById<TextView>(R.id.btn_inline_word_translate)
-        val btnWordSearch = root.findViewById<TextView>(R.id.btn_inline_word_search)
-        val btnSaveFull = root.findViewById<TextView>(R.id.btn_inline_word_save_full)
+        val wordRow1 = root.findViewById<LinearLayout>(R.id.inline_word_row1)
+        val wordRow2 = root.findViewById<LinearLayout>(R.id.inline_word_row2)
+        val wordQuestionRow = root.findViewById<LinearLayout>(R.id.inline_word_question_row)
+        val etWordQuestion = root.findViewById<EditText>(R.id.et_word_ai_question)
+        val btnWordSend = root.findViewById<ImageButton>(R.id.btn_word_ai_send)
         val wordTranslateBubble = root.findViewById<LinearLayout>(R.id.inline_word_translate_bubble)
         val tvWordTranslated = root.findViewById<TextView>(R.id.tv_inline_word_translated_text)
         val btnCopyTranslated = root.findViewById<TextView>(R.id.btn_inline_word_translate_copy)
+
         val cutoutBar = root.findViewById<LinearLayout>(R.id.inline_cutout_action_bar)
-        val btnCutoutSave = root.findViewById<TextView>(R.id.btn_cutout_save)
-        val btnCutoutVisualSearch = root.findViewById<TextView>(R.id.btn_cutout_visual_search)
-        val btnCutoutCopyText = root.findViewById<TextView>(R.id.btn_cutout_copy_text)
+        val cutoutRow1 = root.findViewById<LinearLayout>(R.id.inline_cutout_row1)
+        val cutoutRow2 = root.findViewById<LinearLayout>(R.id.inline_cutout_row2)
+        val cutoutQuestionRow = root.findViewById<LinearLayout>(R.id.inline_cutout_question_row)
+        val etCutoutQuestion = root.findViewById<EditText>(R.id.et_cutout_ai_question)
+        val btnCutoutSend = root.findViewById<ImageButton>(R.id.btn_cutout_ai_send)
         val btnCutoutClose = root.findViewById<ImageButton>(R.id.btn_cutout_close)
 
         selectionView = selView
@@ -302,7 +345,6 @@ class InlineTextOverlayController(
         langDropdownView = langDropdown
         statusPillView = statusPill
         wordActionBarView = wordActionBar
-        copyPillView = copyPill
         wordTranslateBubbleView = wordTranslateBubble
         wordTranslatedTextView = tvWordTranslated
         cutoutActionBarView = cutoutBar
@@ -377,19 +419,11 @@ class InlineTextOverlayController(
             statusPill.visibility = View.GONE
         }
 
-        val copyTextColor = if (isColorLight(accentColor)) Color.parseColor("#0F172A") else Color.WHITE
-        ivCopyIcon.setColorFilter(copyTextColor, PorterDuff.Mode.SRC_IN)
-        tvCopyLabel.setTextColor(copyTextColor)
-        copyPill.background = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = 20f * density
-            setColor(accentColor)
-        }
         wordActionBar.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = 24f * density
-            setColor(Color.argb(236, 15, 23, 42))
-            setStroke((1 * density).toInt(), Color.argb(90, 148, 163, 184))
+            cornerRadius = 18f * density
+            setColor(Color.argb(240, 15, 23, 42))
+            setStroke((1.2f * density).toInt(), Color.argb(110, 148, 163, 184))
         }
         wordTranslateBubble.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
@@ -399,17 +433,177 @@ class InlineTextOverlayController(
         }
         cutoutBar.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = 24f * density
-            setColor(Color.argb(238, 15, 23, 42))
+            cornerRadius = 18f * density
+            setColor(Color.argb(242, 15, 23, 42))
             setStroke((1.5f * density).toInt(), accentColor)
         }
 
-        // In Translate mode keep Copy focused; in Copy mode show the full 5-action pill
-        val wordExtrasVis = if (mode == OverlayMode.COPY) View.VISIBLE else View.GONE
-        btnSpeak.visibility = wordExtrasVis
-        btnWordTranslate.visibility = wordExtrasVis
-        btnWordSearch.visibility = wordExtrasVis
-        btnSaveFull.visibility = wordExtrasVis
+        val questionInputBg = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 10f * density
+            setColor(Color.argb(235, 30, 41, 59))
+            setStroke((1f * density).toInt(), Color.argb(120, 100, 116, 139))
+        }
+        wordQuestionRow.background = questionInputBg
+        cutoutQuestionRow.background = questionInputBg.constantState?.newDrawable()?.mutate() ?: questionInputBg
+        btnWordSend.setColorFilter(accentColor, PorterDuff.Mode.SRC_IN)
+        btnCutoutSend.setColorFilter(accentColor, PorterDuff.Mode.SRC_IN)
+        btnCutoutClose.setColorFilter(Color.parseColor("#CBD5E1"), PorterDuff.Mode.SRC_IN)
+
+        val normalizedOrder = normalizeToolbarOrder(toolbarOrder)
+
+        // Populate Text Selection Icon-Only Grid (only visible icons, up to 5 per row)
+        var wordCopyBtnRef: ImageButton? = null
+        wordRow1.removeAllViews()
+        wordRow2.removeAllViews()
+        wordQuestionRow.visibility = if (mode == OverlayMode.COPY) View.VISIBLE else View.GONE
+
+        val wordActionsToRender = if (mode == OverlayMode.COPY) {
+            normalizedOrder
+        } else {
+            listOf(SelectionToolbarHelper.ToolbarAction.COPY)
+        }
+
+        wordActionsToRender.forEachIndexed { index, action ->
+            val btn = createToolbarIconButton(
+                action = action,
+                viewId = wordActionButtonId(action),
+                accentColor = accentColor,
+                density = density
+            )
+            if (action == SelectionToolbarHelper.ToolbarAction.COPY) {
+                btn.visibility = View.GONE
+                wordCopyBtnRef = btn
+            } else {
+                btn.visibility = if (mode == OverlayMode.COPY) View.VISIBLE else View.GONE
+            }
+            btn.setOnClickListener {
+                val question = etWordQuestion.text?.toString()?.trim().orEmpty()
+                handleWordToolbarAction(
+                    action = action,
+                    question = question,
+                    root = root,
+                    controlsPill = controlsPill,
+                    wordTranslateBubble = wordTranslateBubble,
+                    tvWordTranslated = tvWordTranslated,
+                    density = density,
+                    onCopyClicked = onCopyClicked,
+                    onSpeakClicked = onSpeakClicked,
+                    onTranslateWordRequested = onTranslateWordRequested,
+                    onSearchClicked = onSearchClicked,
+                    onSaveFullImageClicked = onSaveFullImageClicked,
+                    onGoogleAiModeTextClicked = onGoogleAiModeTextClicked,
+                    onGeminiTextClicked = onGeminiTextClicked,
+                    onChatGptTextClicked = onChatGptTextClicked,
+                    onShareTextClicked = onShareTextClicked,
+                    onFullScreenTranslateClicked = onFullScreenTranslateClicked
+                )
+            }
+            if (index < 5) wordRow1.addView(btn) else wordRow2.addView(btn)
+        }
+        wordRow1.visibility = if (wordRow1.childCount > 0) View.VISIBLE else View.GONE
+        wordRow2.visibility = if (mode == OverlayMode.COPY && wordRow2.childCount > 0) View.VISIBLE else View.GONE
+
+        val copyBtn = wordCopyBtnRef ?: createToolbarIconButton(
+            action = SelectionToolbarHelper.ToolbarAction.COPY,
+            viewId = R.id.btn_inline_ocr_copy,
+            accentColor = accentColor,
+            density = density
+        )
+        wordCopyButtonView = copyBtn
+
+        fun submitWordQuestion() {
+            val question = etWordQuestion.text?.toString()?.trim().orEmpty()
+            val selected = activeCopyableText.trim()
+            if (question.isEmpty()) {
+                Toast.makeText(context, "Type a question to ask AI", Toast.LENGTH_SHORT).show()
+                etWordQuestion.requestFocus()
+                return
+            }
+            val dismissCb = activeDismissCallback
+            dismissInternal()
+            onGoogleAiModeTextClicked?.invoke(selected, question)
+            dismissCb?.invoke()
+        }
+        btnWordSend.setOnClickListener { submitWordQuestion() }
+        etWordQuestion.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEND || actionId == EditorInfo.IME_ACTION_DONE) {
+                submitWordQuestion()
+                true
+            } else {
+                false
+            }
+        }
+
+        // Populate Circle-to-Search Cutout Icon-Only Grid (only visible icons, up to 5 per row)
+        cutoutRow1.removeAllViews()
+        cutoutRow2.removeAllViews()
+        normalizedOrder.forEachIndexed { index, action ->
+            val btn = createToolbarIconButton(
+                action = action,
+                viewId = cutoutActionButtonId(action),
+                accentColor = accentColor,
+                density = density
+            )
+            btn.setOnClickListener {
+                val box = currentCutoutRect ?: selView.getActiveCutoutRect() ?: return@setOnClickListener
+                val overlapping = selView.getWordsInsideCutout()
+                val question = etCutoutQuestion.text?.toString()?.trim().orEmpty()
+                handleCutoutToolbarAction(
+                    action = action,
+                    question = question,
+                    box = box,
+                    overlapping = overlapping,
+                    viewW = selView.width,
+                    viewH = selView.height,
+                    root = root,
+                    controlsPill = controlsPill,
+                    wordTranslateBubble = wordTranslateBubble,
+                    tvWordTranslated = tvWordTranslated,
+                    density = density,
+                    onCutoutCopyTextClicked = onCutoutCopyTextClicked,
+                    onCutoutSpeakClicked = onCutoutSpeakClicked,
+                    onCutoutTranslateRequested = onCutoutTranslateRequested,
+                    onCutoutSearchWithFallback = onCutoutSearchWithFallback,
+                    onCutoutVisualSearchClicked = onCutoutVisualSearchClicked,
+                    onCutoutSaveClicked = onCutoutSaveClicked,
+                    onCutoutGoogleAiModeClicked = onCutoutGoogleAiModeClicked,
+                    onCutoutGeminiClicked = onCutoutGeminiClicked,
+                    onCutoutChatGptClicked = onCutoutChatGptClicked,
+                    onCutoutShareClicked = onCutoutShareClicked,
+                    onFullScreenTranslateClicked = onFullScreenTranslateClicked,
+                    onDismiss = onDismiss
+                )
+            }
+            if (index < 5) cutoutRow1.addView(btn) else cutoutRow2.addView(btn)
+        }
+        cutoutRow1.visibility = if (cutoutRow1.childCount > 0) View.VISIBLE else View.GONE
+        cutoutRow2.visibility = if (cutoutRow2.childCount > 0) View.VISIBLE else View.GONE
+
+        fun submitCutoutQuestion() {
+            val question = etCutoutQuestion.text?.toString()?.trim().orEmpty()
+            val box = currentCutoutRect ?: selView.getActiveCutoutRect() ?: return
+            val overlapping = selView.getWordsInsideCutout()
+            if (question.isEmpty()) {
+                Toast.makeText(context, "Type a question to ask AI", Toast.LENGTH_SHORT).show()
+                etCutoutQuestion.requestFocus()
+                return
+            }
+            val w = selView.width
+            val h = selView.height
+            dismissInternal()
+            onCutoutGoogleAiModeClicked?.invoke(box, overlapping, w, h, question)
+            onDismiss()
+        }
+        btnCutoutSend.setOnClickListener { submitCutoutQuestion() }
+        etCutoutQuestion.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEND || actionId == EditorInfo.IME_ACTION_DONE) {
+                submitCutoutQuestion()
+                true
+            } else {
+                false
+            }
+        }
 
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val sysBars = insets.getInsets(
@@ -454,41 +648,6 @@ class InlineTextOverlayController(
             }
         }
 
-        copyPill.setOnClickListener {
-            val chosen = activeCopyableText.trim()
-            if (chosen.isNotEmpty()) {
-                dismissInternal()
-                onCopyClicked(chosen)
-                onDismiss()
-            }
-        }
-
-        btnSpeak.setOnClickListener {
-            val chosen = activeCopyableText.trim()
-            if (chosen.isNotEmpty()) {
-                onSpeakClicked?.invoke(chosen)
-            }
-        }
-
-        btnWordTranslate.setOnClickListener {
-            val chosen = activeCopyableText.trim()
-            if (chosen.isEmpty()) return@setOnClickListener
-            tvWordTranslated.text = context.getString(R.string.screen_translate_translating)
-            wordTranslateBubble.visibility = View.VISIBLE
-            currentAnchorRect?.let { anchor ->
-                positionFloatingBar(root, controlsPill, wordTranslateBubble, anchor, preferBelow = true, density = density)
-            }
-            onTranslateWordRequested?.invoke(chosen) { translated ->
-                if (overlayView != null) {
-                    tvWordTranslated.text = translated
-                    wordTranslateBubble.visibility = View.VISIBLE
-                    currentAnchorRect?.let { anchor ->
-                        positionFloatingBar(root, controlsPill, wordTranslateBubble, anchor, preferBelow = true, density = density)
-                    }
-                }
-            }
-        }
-
         btnCopyTranslated.setOnClickListener {
             val txt = tvWordTranslated.text?.toString()?.trim().orEmpty()
             if (txt.isNotEmpty()) {
@@ -498,39 +657,9 @@ class InlineTextOverlayController(
             }
         }
 
-        btnWordSearch.setOnClickListener {
-            val chosen = activeCopyableText.trim()
-            if (chosen.isNotEmpty()) {
-                dismissInternal()
-                onSearchClicked?.invoke(chosen)
-                onDismiss()
-            }
-        }
-
-        btnSaveFull.setOnClickListener {
-            onSaveFullImageClicked?.invoke()
-        }
-
-        btnCutoutSave.setOnClickListener {
-            val box = currentCutoutRect ?: selView.getActiveCutoutRect() ?: return@setOnClickListener
-            onCutoutSaveClicked?.invoke(box, selView.width, selView.height)
-        }
-
-        btnCutoutVisualSearch.setOnClickListener {
-            val box = currentCutoutRect ?: selView.getActiveCutoutRect() ?: return@setOnClickListener
-            dismissInternal()
-            onCutoutVisualSearchClicked?.invoke(box, selView.width, selView.height)
-            onDismiss()
-        }
-
-        btnCutoutCopyText.setOnClickListener {
-            val box = currentCutoutRect ?: selView.getActiveCutoutRect() ?: return@setOnClickListener
-            val overlapping = selView.getWordsInsideCutout()
-            onCutoutCopyTextClicked?.invoke(box, overlapping, selView.width, selView.height)
-        }
-
         btnCutoutClose.setOnClickListener {
             currentCutoutRect = null
+            wordTranslateBubble.visibility = View.GONE
             cutoutBar.visibility = View.GONE
             selView.clearCutout()
         }
@@ -589,6 +718,7 @@ class InlineTextOverlayController(
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
@@ -606,12 +736,284 @@ class InlineTextOverlayController(
             windowManager.addView(root, overlayParams)
             ViewCompat.requestApplyInsets(root)
             registerRotationAndScreenOffWatchers()
-            BaseOverlayRefs(root, selView, controlsPill, wordActionBar, copyPill, tvCopyLabel)
+            BaseOverlayRefs(root, selView, controlsPill, wordActionBar, copyBtn)
         } catch (e: Exception) {
             Log.e(TAG, "Failed showing transparent overlay", e)
             dismissInternal()
             onDismiss()
             null
+        }
+    }
+
+    private fun handleWordToolbarAction(
+        action: SelectionToolbarHelper.ToolbarAction,
+        question: String,
+        root: View,
+        controlsPill: View,
+        wordTranslateBubble: LinearLayout,
+        tvWordTranslated: TextView,
+        density: Float,
+        onCopyClicked: (String) -> Unit,
+        onSpeakClicked: ((String) -> Unit)?,
+        onTranslateWordRequested: ((String, (String) -> Unit) -> Unit)?,
+        onSearchClicked: ((String) -> Unit)?,
+        onSaveFullImageClicked: (() -> Unit)?,
+        onGoogleAiModeTextClicked: ((String, String) -> Unit)?,
+        onGeminiTextClicked: ((String, String) -> Unit)?,
+        onChatGptTextClicked: ((String, String) -> Unit)?,
+        onShareTextClicked: ((String) -> Unit)?,
+        onFullScreenTranslateClicked: (() -> Unit)?
+    ) {
+        val chosen = activeCopyableText.trim()
+        when (action) {
+            SelectionToolbarHelper.ToolbarAction.COPY -> {
+                if (chosen.isNotEmpty()) {
+                    val dismissCb = activeDismissCallback
+                    dismissInternal()
+                    onCopyClicked(chosen)
+                    dismissCb?.invoke()
+                }
+            }
+            SelectionToolbarHelper.ToolbarAction.SPEAK -> {
+                if (chosen.isNotEmpty()) {
+                    onSpeakClicked?.invoke(chosen)
+                }
+            }
+            SelectionToolbarHelper.ToolbarAction.TRANSLATE -> {
+                if (chosen.isEmpty()) return
+                tvWordTranslated.text = context.getString(R.string.screen_translate_translating)
+                wordTranslateBubble.visibility = View.VISIBLE
+                currentAnchorRect?.let { anchor ->
+                    positionFloatingBar(root, controlsPill, wordTranslateBubble, anchor, preferBelow = true, density = density)
+                }
+                onTranslateWordRequested?.invoke(chosen) { translated ->
+                    if (overlayView != null) {
+                        tvWordTranslated.text = translated
+                        wordTranslateBubble.visibility = View.VISIBLE
+                        currentAnchorRect?.let { anchor ->
+                            positionFloatingBar(root, controlsPill, wordTranslateBubble, anchor, preferBelow = true, density = density)
+                        }
+                    }
+                }
+            }
+            SelectionToolbarHelper.ToolbarAction.SEARCH -> {
+                if (chosen.isNotEmpty()) {
+                    val dismissCb = activeDismissCallback
+                    dismissInternal()
+                    onSearchClicked?.invoke(chosen)
+                    dismissCb?.invoke()
+                }
+            }
+            SelectionToolbarHelper.ToolbarAction.SAVE_IMAGE -> {
+                onSaveFullImageClicked?.invoke()
+            }
+            SelectionToolbarHelper.ToolbarAction.GOOGLE_AI_MODE -> {
+                if (chosen.isNotEmpty() || question.isNotEmpty()) {
+                    val dismissCb = activeDismissCallback
+                    dismissInternal()
+                    onGoogleAiModeTextClicked?.invoke(chosen, question)
+                    dismissCb?.invoke()
+                }
+            }
+            SelectionToolbarHelper.ToolbarAction.GEMINI -> {
+                if (chosen.isNotEmpty() || question.isNotEmpty()) {
+                    val dismissCb = activeDismissCallback
+                    dismissInternal()
+                    onGeminiTextClicked?.invoke(chosen, question)
+                    dismissCb?.invoke()
+                }
+            }
+            SelectionToolbarHelper.ToolbarAction.CHATGPT -> {
+                if (chosen.isNotEmpty() || question.isNotEmpty()) {
+                    val dismissCb = activeDismissCallback
+                    dismissInternal()
+                    onChatGptTextClicked?.invoke(chosen, question)
+                    dismissCb?.invoke()
+                }
+            }
+            SelectionToolbarHelper.ToolbarAction.SHARE -> {
+                if (chosen.isNotEmpty()) {
+                    val dismissCb = activeDismissCallback
+                    dismissInternal()
+                    onShareTextClicked?.invoke(chosen)
+                    dismissCb?.invoke()
+                }
+            }
+            SelectionToolbarHelper.ToolbarAction.FULL_SCREEN_TRANSLATE -> {
+                dismissInternal()
+                onFullScreenTranslateClicked?.invoke()
+            }
+        }
+    }
+
+    private fun handleCutoutToolbarAction(
+        action: SelectionToolbarHelper.ToolbarAction,
+        question: String,
+        box: RectF,
+        overlapping: List<SmartDotAccessibilityService.ScreenTextNode>,
+        viewW: Int,
+        viewH: Int,
+        root: View,
+        controlsPill: View,
+        wordTranslateBubble: LinearLayout,
+        tvWordTranslated: TextView,
+        density: Float,
+        onCutoutCopyTextClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)?,
+        onCutoutSpeakClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)?,
+        onCutoutTranslateRequested: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, (String?) -> Unit) -> Unit)?,
+        onCutoutSearchWithFallback: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)?,
+        onCutoutVisualSearchClicked: ((RectF, Int, Int) -> Unit)?,
+        onCutoutSaveClicked: ((RectF, Int, Int) -> Unit)?,
+        onCutoutGoogleAiModeClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)?,
+        onCutoutGeminiClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)?,
+        onCutoutChatGptClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)?,
+        onCutoutShareClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)?,
+        onFullScreenTranslateClicked: (() -> Unit)?,
+        onDismiss: () -> Unit
+    ) {
+        when (action) {
+            SelectionToolbarHelper.ToolbarAction.COPY -> {
+                onCutoutCopyTextClicked?.invoke(box, overlapping, viewW, viewH)
+            }
+            SelectionToolbarHelper.ToolbarAction.SPEAK -> {
+                onCutoutSpeakClicked?.invoke(box, overlapping, viewW, viewH)
+            }
+            SelectionToolbarHelper.ToolbarAction.TRANSLATE -> {
+                tvWordTranslated.text = context.getString(R.string.screen_translate_translating)
+                wordTranslateBubble.visibility = View.VISIBLE
+                positionFloatingBar(root, controlsPill, wordTranslateBubble, box, preferBelow = false, density = density)
+                onCutoutTranslateRequested?.invoke(box, overlapping, viewW, viewH) { translated ->
+                    if (overlayView != null) {
+                        if (translated.isNullOrBlank()) {
+                            wordTranslateBubble.visibility = View.GONE
+                        } else {
+                            tvWordTranslated.text = translated
+                            wordTranslateBubble.visibility = View.VISIBLE
+                            positionFloatingBar(root, controlsPill, wordTranslateBubble, box, preferBelow = false, density = density)
+                        }
+                    }
+                }
+            }
+            SelectionToolbarHelper.ToolbarAction.SEARCH -> {
+                dismissInternal()
+                if (onCutoutSearchWithFallback != null) {
+                    onCutoutSearchWithFallback.invoke(box, overlapping, viewW, viewH)
+                } else {
+                    onCutoutVisualSearchClicked?.invoke(box, viewW, viewH)
+                }
+                onDismiss()
+            }
+            SelectionToolbarHelper.ToolbarAction.SAVE_IMAGE -> {
+                onCutoutSaveClicked?.invoke(box, viewW, viewH)
+            }
+            SelectionToolbarHelper.ToolbarAction.GOOGLE_AI_MODE -> {
+                dismissInternal()
+                onCutoutGoogleAiModeClicked?.invoke(box, overlapping, viewW, viewH, question)
+                onDismiss()
+            }
+            SelectionToolbarHelper.ToolbarAction.GEMINI -> {
+                dismissInternal()
+                onCutoutGeminiClicked?.invoke(box, overlapping, viewW, viewH, question)
+                onDismiss()
+            }
+            SelectionToolbarHelper.ToolbarAction.CHATGPT -> {
+                dismissInternal()
+                onCutoutChatGptClicked?.invoke(box, overlapping, viewW, viewH, question)
+                onDismiss()
+            }
+            SelectionToolbarHelper.ToolbarAction.SHARE -> {
+                dismissInternal()
+                onCutoutShareClicked?.invoke(box, overlapping, viewW, viewH)
+                onDismiss()
+            }
+            SelectionToolbarHelper.ToolbarAction.FULL_SCREEN_TRANSLATE -> {
+                dismissInternal()
+                onFullScreenTranslateClicked?.invoke()
+            }
+        }
+    }
+
+    private fun createToolbarIconButton(
+        action: SelectionToolbarHelper.ToolbarAction,
+        viewId: Int,
+        accentColor: Int,
+        density: Float
+    ): ImageButton {
+        val btnSizePx = (42 * density).toInt()
+        val btnHeightPx = (40 * density).toInt()
+        val padPx = (10 * density).toInt()
+        val marginPx = (2 * density).toInt()
+
+        return ImageButton(context).apply {
+            id = viewId
+            tag = "toolbar_action_${action.id}"
+            setImageResource(action.iconRes)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            contentDescription = action.contentDesc
+            TooltipCompat.setTooltipText(this, action.label)
+            isClickable = true
+            isFocusable = true
+            setPadding(padPx, (8 * density).toInt(), padPx, (8 * density).toInt())
+
+            layoutParams = LinearLayout.LayoutParams(btnSizePx, btnHeightPx).apply {
+                setMargins(marginPx, 0, marginPx, 0)
+                gravity = Gravity.CENTER_VERTICAL
+            }
+
+            if (action == SelectionToolbarHelper.ToolbarAction.COPY) {
+                val iconTint = if (isColorLight(accentColor)) Color.parseColor("#0F172A") else Color.WHITE
+                setColorFilter(iconTint, PorterDuff.Mode.SRC_IN)
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 20f * density
+                    setColor(accentColor)
+                }
+            } else {
+                val iconTint = when (action) {
+                    SelectionToolbarHelper.ToolbarAction.SAVE_IMAGE -> Color.parseColor("#34D399")
+                    SelectionToolbarHelper.ToolbarAction.GOOGLE_AI_MODE -> accentColor
+                    SelectionToolbarHelper.ToolbarAction.GEMINI -> Color.parseColor("#60A5FA")
+                    SelectionToolbarHelper.ToolbarAction.CHATGPT -> Color.parseColor("#10B981")
+                    SelectionToolbarHelper.ToolbarAction.FULL_SCREEN_TRANSLATE -> Color.parseColor("#FBBF24")
+                    else -> Color.parseColor("#F8FAFC")
+                }
+                setColorFilter(iconTint, PorterDuff.Mode.SRC_IN)
+                setBackgroundColor(Color.TRANSPARENT)
+            }
+        }
+    }
+
+    private fun normalizeToolbarOrder(order: List<SelectionToolbarHelper.ToolbarAction>): List<SelectionToolbarHelper.ToolbarAction> {
+        return order.distinct()
+    }
+
+    private fun wordActionButtonId(action: SelectionToolbarHelper.ToolbarAction): Int {
+        return when (action) {
+            SelectionToolbarHelper.ToolbarAction.COPY -> R.id.btn_inline_ocr_copy
+            SelectionToolbarHelper.ToolbarAction.SPEAK -> R.id.btn_inline_word_speak
+            SelectionToolbarHelper.ToolbarAction.TRANSLATE -> R.id.btn_inline_word_translate
+            SelectionToolbarHelper.ToolbarAction.SEARCH -> R.id.btn_inline_word_search
+            SelectionToolbarHelper.ToolbarAction.SAVE_IMAGE -> R.id.btn_inline_word_save_full
+            SelectionToolbarHelper.ToolbarAction.GOOGLE_AI_MODE -> R.id.btn_inline_word_ai_mode
+            SelectionToolbarHelper.ToolbarAction.GEMINI -> R.id.btn_inline_word_gemini
+            SelectionToolbarHelper.ToolbarAction.CHATGPT -> R.id.btn_inline_word_chatgpt
+            SelectionToolbarHelper.ToolbarAction.SHARE -> R.id.btn_inline_word_share
+            SelectionToolbarHelper.ToolbarAction.FULL_SCREEN_TRANSLATE -> R.id.btn_inline_word_full_translate
+        }
+    }
+
+    private fun cutoutActionButtonId(action: SelectionToolbarHelper.ToolbarAction): Int {
+        return when (action) {
+            SelectionToolbarHelper.ToolbarAction.COPY -> R.id.btn_cutout_copy_text
+            SelectionToolbarHelper.ToolbarAction.SPEAK -> R.id.btn_cutout_speak
+            SelectionToolbarHelper.ToolbarAction.TRANSLATE -> R.id.btn_cutout_translate
+            SelectionToolbarHelper.ToolbarAction.SEARCH -> R.id.btn_cutout_visual_search
+            SelectionToolbarHelper.ToolbarAction.SAVE_IMAGE -> R.id.btn_cutout_save
+            SelectionToolbarHelper.ToolbarAction.GOOGLE_AI_MODE -> R.id.btn_cutout_ai_mode
+            SelectionToolbarHelper.ToolbarAction.GEMINI -> R.id.btn_cutout_gemini
+            SelectionToolbarHelper.ToolbarAction.CHATGPT -> R.id.btn_cutout_chatgpt
+            SelectionToolbarHelper.ToolbarAction.SHARE -> R.id.btn_cutout_share
+            SelectionToolbarHelper.ToolbarAction.FULL_SCREEN_TRANSLATE -> R.id.btn_cutout_full_translate
         }
     }
 
@@ -666,11 +1068,13 @@ class InlineTextOverlayController(
         val rootW = root.width.takeIf { it > 0 } ?: context.resources.displayMetrics.widthPixels
         val rootH = root.height.takeIf { it > 0 } ?: context.resources.displayMetrics.heightPixels
 
+        val maxBarW = (rootW - safeInsets.left - safeInsets.right - margin * 2).coerceAtLeast(100)
+
         floatingBar.measure(
-            View.MeasureSpec.makeMeasureSpec((rootW - margin * 2).coerceAtLeast(100), View.MeasureSpec.AT_MOST),
+            View.MeasureSpec.makeMeasureSpec(maxBarW, View.MeasureSpec.AT_MOST),
             View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
         )
-        val pillW = floatingBar.measuredWidth.coerceAtLeast((88 * density).toInt())
+        val pillW = floatingBar.measuredWidth.coerceAtLeast((56 * density).toInt())
         val pillH = floatingBar.measuredHeight.coerceAtLeast((48 * density).toInt())
 
         val minX = safeInsets.left + margin
@@ -794,6 +1198,10 @@ class InlineTextOverlayController(
         unregisterWatchers()
         activeDismissCallback = null
         overlayView?.let { view ->
+            runCatching {
+                val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+                imm?.hideSoftInputFromWindow(view.windowToken, 0)
+            }
             try {
                 windowManager.removeView(view)
             } catch (e: Exception) {
@@ -808,7 +1216,7 @@ class InlineTextOverlayController(
         langDropdownView = null
         statusPillView = null
         wordActionBarView = null
-        copyPillView = null
+        wordCopyButtonView = null
         wordTranslateBubbleView = null
         wordTranslatedTextView = null
         cutoutActionBarView = null

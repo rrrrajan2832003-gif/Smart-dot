@@ -521,7 +521,7 @@ class EdgeGestureDetector(
     companion object {
         // 6 Strict Rules Constants
         const val MIN_TRIGGER_WIDTH_PX = 25
-        const val MAX_TRIGGER_WIDTH_PX = 35
+        const val MAX_TRIGGER_WIDTH_PX = 45
         const val MIN_STEP1_DISTANCE_PX = 80f
         const val MIN_STEP2_DISTANCE_PX = 60f
         const val MIN_TURN_ANGLE_DEG = 70f
@@ -535,10 +535,21 @@ class EdgeGestureDetector(
         private const val STATIONARY_JITTER_PX = 20f
 
         /**
-         * Rule 1: Trigger Zone Rule — enforce strictly 25px..35px width along screen edge.
+         * Rule 1: Trigger Zone Rule — enforce 25px..45px width along screen edge.
          */
         fun clampTriggerWidthPx(requestedPx: Int): Int {
             return requestedPx.coerceIn(MIN_TRIGGER_WIDTH_PX, MAX_TRIGGER_WIDTH_PX)
+        }
+
+        /**
+         * Maps user's visual bar thickness (3dp..16dp) linearly to a comfortable 25px..45px touch zone.
+         */
+        fun mapSidebarWidthDpToTouchPx(widthDp: Int): Int {
+            val clampedDp = widthDp.coerceIn(3, 16)
+            val ratio = (clampedDp - 3) / 13f
+            return (MIN_TRIGGER_WIDTH_PX + ratio * (MAX_TRIGGER_WIDTH_PX - MIN_TRIGGER_WIDTH_PX))
+                .toInt()
+                .coerceIn(MIN_TRIGGER_WIDTH_PX, MAX_TRIGGER_WIDTH_PX)
         }
 
         /**

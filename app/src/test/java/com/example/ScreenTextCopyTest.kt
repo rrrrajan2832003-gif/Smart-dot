@@ -12,6 +12,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.test.core.app.ApplicationProvider
@@ -262,7 +263,7 @@ class ScreenTextCopyTest {
         assertEquals(View.GONE, root.findViewById<TextView>(R.id.btn_inline_target_lang).visibility)
         assertEquals(View.GONE, root.findViewById<TextView>(R.id.tv_inline_status_pill).visibility)
 
-        val copyBtn = root.findViewById<LinearLayout>(R.id.btn_inline_ocr_copy)
+        val copyBtn = root.findViewById<ImageButton>(R.id.btn_inline_ocr_copy)
         assertEquals(View.GONE, copyBtn.visibility)
         assertTrue(selView.getSelectedCopyNodes().isEmpty())
 
@@ -317,7 +318,7 @@ class ScreenTextCopyTest {
         root.layout(0, 0, 1080, 2400)
 
         val selView = root.findViewById<InlineTextSelectionView>(R.id.inline_ocr_selection_view)
-        val copyBtn = root.findViewById<LinearLayout>(R.id.btn_inline_ocr_copy)
+        val copyBtn = root.findViewById<ImageButton>(R.id.btn_inline_ocr_copy)
 
         val importantRect = selView.getMappedRectForCopyNode(1)!!
         val wordsRect = selView.getMappedRectForCopyNode(2)!!
@@ -451,7 +452,7 @@ class ScreenTextCopyTest {
 
         val targetRect = selView.getMappedRectForCopyNode(1)!!
         tapAt(selView, targetRect.centerX(), targetRect.centerY())
-        root.findViewById<LinearLayout>(R.id.btn_inline_ocr_copy).performClick()
+        root.findViewById<ImageButton>(R.id.btn_inline_ocr_copy).performClick()
         ShadowLooper.idleMainLooper()
 
         assertEquals("50%", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
@@ -522,7 +523,7 @@ class ScreenTextCopyTest {
 
         assertEquals("Too नमस्ते", selView.getCombinedSelectedCopyText())
 
-        root.findViewById<LinearLayout>(R.id.btn_inline_ocr_copy).performClick()
+        root.findViewById<ImageButton>(R.id.btn_inline_ocr_copy).performClick()
         ShadowLooper.idleMainLooper()
 
         assertEquals("Too नमस्ते", clipboard.primaryClip?.getItemAt(0)?.text?.toString())

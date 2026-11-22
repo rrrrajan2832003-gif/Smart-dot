@@ -3,7 +3,6 @@ package com.example
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.RectF
@@ -20,16 +19,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.net.URLEncoder
 import java.util.Locale
 
 /**
  * In-memory Screen Text Copy & Circle-to-Search controller powered by:
  * 1) API 30+ AccessibilityService.takeScreenshot() in memory (retained only while overlay is open)
  * 2) Free on-device ML Kit Text Recognition (Latin + Devanagari) for exact `Text.Element` word boxes
- * 3) Multi-action Word Pill (Copy, Read Aloud TTS, Inline Translate, Floating Google Search, Save Full Screen)
- * 4) Circle-to-Search Cutout Box (Save Cutout, Visual Search / Lens, Copy Text in Box, Close)
- * 5) Graceful fallback to AccessibilityNodeInfo text scanning if in-memory capture is unavailable.
+ * 3) Unified 10-icon customizable Selection & Cutout Toolbar (Copy, Speak, Translate, Google App Search,
+ *    Save Image, Google AI Mode, Gemini, ChatGPT, Share, Full Screen Translate)
+ * 4) Graceful fallback to AccessibilityNodeInfo text scanning if in-memory capture is unavailable.
  */
 class ScreenTextCopyController(
     private val context: Context,
@@ -45,7 +43,13 @@ class ScreenTextCopyController(
     private val translateHelperFactory: () -> ScreenTranslateHelper = { ScreenTranslateHelper() },
     private val customSpeakHandler: ((String) -> Unit)? = null,
     private val customGallerySaver: ((Bitmap, String) -> Uri?)? = null,
-    private val customVisualSearchLauncher: ((Bitmap) -> Boolean)? = null
+    private val customVisualSearchLauncher: ((Bitmap) -> Boolean)? = null,
+    private val onFullScreenTranslateRequested: (() -> Unit)? = null,
+    private val getToolbarOrder: () -> List<SelectionToolbarHelper.ToolbarAction> = {
+        SelectionToolbarHelper.getVisibleToolbarOrder(context)
+    },
+    private val customShareTextHandler: ((String) -> Unit)? = null,
+    private val customShareImageHandler: ((Bitmap) -> Unit)? = null
 ) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -143,7 +147,7 @@ class ScreenTextCopyController(
                 return@screenBitmapCapturer
             }
 
-            // Retain a clean software copy for Save Image / Save Cutout / Visual Search while freeing caller buffer
+            // Retain a clean software copy for Save Image / Cutouts / Visual Search while freeing caller buffer
             val backupCopy = runCatching {
                 capturedBitmap.copy(Bitmap.Config.ARGB_8888, false)
             }.getOrNull()
@@ -277,8 +281,59 @@ class ScreenTextCopyController(
             },
             onCutoutCopyTextClicked = { boxRect, overlappingNodes, viewW, viewH ->
                 copyTextInCutoutBox(boxRect, overlappingNodes, viewW, viewH)
+            },
+            toolbarOrder = getToolbarOrder(),
+            onGoogleAiModeTextClicked = { query, question ->
+                SelectionToolbarHelper.launchGoogleAiModeText(context, query, question)
+            },
+            onGeminiTextClicked = { text, question ->
+                SelectionToolbarHelper.launchGeminiText(context, text, question)
+            },
+            onChatGptTextClicked = { text, question ->
+                SelectionToolbarHelper.launchChatGptText(context, text, question)
+            },
+            onShareTextClicked = { text ->
+                shareSelectedText(text)
+            },
+            onFullScreenTranslateClicked = {
+                switchToFullScreenTranslate()
+            },
+            onCutoutSpeakClicked = { boxRect, overlappingNodes, viewW, viewH ->
+                speakTextInCutoutBox(boxRect, overlappingNodes, viewW, viewH)
+            },
+            onCutoutTranslateRequested = { boxRect, overlappingNodes, viewW, viewH, onTranslated ->
+                translateTextInCutoutBox(boxRect, overlappingNodes, viewW, viewH, onTranslated)
+            },
+            onCutoutSearchWithFallback = { boxRect, overlappingNodes, viewW, viewH ->
+                searchCutoutBox(boxRect, overlappingNodes, viewW, viewH)
+            },
+            onCutoutGoogleAiModeClicked = { boxRect, overlappingNodes, viewW, viewH, question ->
+                launchGoogleAiModeCutout(boxRect, overlappingNodes, viewW, viewH, question)
+            },
+            onCutoutGeminiClicked = { boxRect, overlappingNodes, viewW, viewH, question ->
+                launchGeminiCutout(boxRect, overlappingNodes, viewW, viewH, question)
+            },
+            onCutoutChatGptClicked = { boxRect, overlappingNodes, viewW, viewH, question ->
+                launchChatGptCutout(boxRect, overlappingNodes, viewW, viewH, question)
+            },
+            onCutoutShareClicked = { boxRect, overlappingNodes, viewW, viewH ->
+                shareCutout(boxRect, overlappingNodes, viewW, viewH)
             }
         )
+    }
+
+    private fun switchToFullScreenTranslate() {
+        ocrRequestToken++
+        isActive = false
+        releaseRetainedBitmap()
+        stopSpeaking()
+        overlayController?.dismiss()
+        val handler = onFullScreenTranslateRequested
+        if (handler != null) {
+            handler()
+        } else {
+            setHostOverlaysVisible(true)
+        }
     }
 
     private fun speakText(text: String) {
@@ -322,9 +377,9 @@ class ScreenTextCopyController(
     }
 
     private fun translateHighlightedText(text: String, onTranslated: (String) -> Unit) {
-        val prefs = context.getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE)
+        val prefs = context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
         val targetLang = prefs.getString("translate_target_language", "Hindi") ?: "Hindi"
-        val preferOnline = prefs.getBoolean("translate_online_mode", true)
+        val preferOnline = prefs.getBoolean("translate_online_mode", false)
 
         serviceScope.launch {
             val resultText = try {
@@ -347,17 +402,17 @@ class ScreenTextCopyController(
     }
 
     private fun launchGoogleSearch(query: String) {
-        val clean = query.trim()
+        SelectionToolbarHelper.launchGoogleSearch(context, query)
+    }
+
+    private fun shareSelectedText(text: String) {
+        val clean = text.trim()
         if (clean.isEmpty()) return
-        val encoded = runCatching { URLEncoder.encode(clean, "UTF-8") }.getOrDefault(clean)
-        val url = "https://www.google.com/search?q=$encoded"
-        val searchIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        customShareTextHandler?.let {
+            it(clean)
+            return
         }
-        val launched = FreeformWindowLauncher.launchInFreeformWindow(context, searchIntent, "Google Search")
-        if (!launched) {
-            Toast.makeText(context, "No browser installed to open Search.", Toast.LENGTH_SHORT).show()
-        }
+        SelectionToolbarHelper.launchShareText(context, clean)
     }
 
     private fun saveFullScreenToGallery() {
@@ -378,13 +433,13 @@ class ScreenTextCopyController(
         }
     }
 
+    private fun cropCutoutBitmap(boxRect: RectF, viewW: Int, viewH: Int): Bitmap? {
+        val source = retainedScreenBitmap?.takeIf { !it.isRecycled } ?: return null
+        return CircleCutoutAndMediaHelper.cropBitmapToScreenRect(source, boxRect, viewW, viewH)
+    }
+
     private fun saveCutoutToGallery(boxRect: RectF, viewW: Int, viewH: Int) {
-        val source = retainedScreenBitmap?.takeIf { !it.isRecycled }
-        if (source == null) {
-            Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
-            return
-        }
-        val cropped = CircleCutoutAndMediaHelper.cropBitmapToScreenRect(source, boxRect, viewW, viewH)
+        val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
         if (cropped == null) {
             Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
             return
@@ -407,57 +462,159 @@ class ScreenTextCopyController(
         }
     }
 
-    private fun launchVisualSearchCutout(boxRect: RectF, viewW: Int, viewH: Int) {
-        val source = retainedScreenBitmap?.takeIf { !it.isRecycled }
-        if (source == null) {
-            Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
-            return
-        }
-        val cropped = CircleCutoutAndMediaHelper.cropBitmapToScreenRect(source, boxRect, viewW, viewH)
-        if (cropped == null) {
-            Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
-            return
-        }
-        try {
-            val handledByCustom = customVisualSearchLauncher?.invoke(cropped) == true
-            if (!handledByCustom) {
-                val intent = CircleCutoutAndMediaHelper.createVisualSearchIntent(context, cropped)
-                if (intent != null) {
-                    context.startActivity(intent)
-                } else {
-                    Toast.makeText(context, "Visual Search is unavailable on this device.", Toast.LENGTH_SHORT).show()
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Visual search launch failed", e)
-            Toast.makeText(context, "Could not open Google Lens / Visual Search.", Toast.LENGTH_SHORT).show()
-        } finally {
-            runCatching {
-                if (!cropped.isRecycled) cropped.recycle()
-            }
-        }
-    }
-
-    private fun copyTextInCutoutBox(
+    private fun searchCutoutBox(
         boxRect: RectF,
         overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>,
         viewW: Int,
         viewH: Int
     ) {
+        val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
+        if (cropped != null) {
+            try {
+                val handledByCustom = customVisualSearchLauncher?.invoke(cropped) == true
+                if (!handledByCustom) {
+                    val intent = CircleCutoutAndMediaHelper.createVisualSearchIntent(context, cropped)
+                    if (intent != null) {
+                        context.startActivity(intent)
+                    } else {
+                        Toast.makeText(context, "Visual Search is unavailable on this device.", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Cutout search launch failed", e)
+                Toast.makeText(context, "Could not open Google Search / Lens.", Toast.LENGTH_SHORT).show()
+            } finally {
+                runCatching { if (!cropped.isRecycled) cropped.recycle() }
+            }
+            return
+        }
+
+        val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
+        if (fallbackText.isNotEmpty()) {
+            launchGoogleSearch(fallbackText)
+        } else {
+            Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun launchVisualSearchCutout(boxRect: RectF, viewW: Int, viewH: Int) {
+        searchCutoutBox(boxRect, emptyList(), viewW, viewH)
+    }
+
+    private fun launchGoogleAiModeCutout(
+        boxRect: RectF,
+        overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>,
+        viewW: Int,
+        viewH: Int,
+        question: String = ""
+    ) {
+        val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
+        val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
+        if (cropped != null) {
+            try {
+                if (question.isBlank() && customVisualSearchLauncher?.invoke(cropped) == true) {
+                    return
+                }
+                SelectionToolbarHelper.launchGoogleAiModeImage(context, cropped, question, fallbackText)
+            } finally {
+                runCatching { if (!cropped.isRecycled) cropped.recycle() }
+            }
+            return
+        }
+        val combined = SelectionToolbarHelper.combineQuestionForAiSearch(question, fallbackText)
+        if (combined.isNotEmpty()) {
+            SelectionToolbarHelper.launchGoogleAiModeText(context, fallbackText, question)
+        } else {
+            Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun launchGeminiCutout(
+        boxRect: RectF,
+        overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>,
+        viewW: Int,
+        viewH: Int,
+        question: String = ""
+    ) {
+        val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
+        if (cropped != null) {
+            try {
+                SelectionToolbarHelper.launchGeminiImage(context, cropped, question)
+            } finally {
+                runCatching { if (!cropped.isRecycled) cropped.recycle() }
+            }
+            return
+        }
+        val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
+        if (fallbackText.isNotEmpty() || question.isNotBlank()) {
+            SelectionToolbarHelper.launchGeminiText(context, fallbackText, question)
+        } else {
+            Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun launchChatGptCutout(
+        boxRect: RectF,
+        overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>,
+        viewW: Int,
+        viewH: Int,
+        question: String = ""
+    ) {
+        val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
+        if (cropped != null) {
+            try {
+                SelectionToolbarHelper.launchChatGptImage(context, cropped, question)
+            } finally {
+                runCatching { if (!cropped.isRecycled) cropped.recycle() }
+            }
+            return
+        }
+        val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
+        if (fallbackText.isNotEmpty() || question.isNotBlank()) {
+            SelectionToolbarHelper.launchChatGptText(context, fallbackText, question)
+        } else {
+            Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun shareCutout(
+        boxRect: RectF,
+        overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>,
+        viewW: Int,
+        viewH: Int
+    ) {
+        val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
+        if (cropped != null) {
+            try {
+                val handler = customShareImageHandler
+                if (handler != null) {
+                    handler(cropped)
+                } else {
+                    SelectionToolbarHelper.launchShareImage(context, cropped)
+                }
+            } finally {
+                runCatching { if (!cropped.isRecycled) cropped.recycle() }
+            }
+            return
+        }
+        val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
+        if (fallbackText.isNotEmpty()) {
+            shareSelectedText(fallbackText)
+        } else {
+            Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun extractCutoutText(
+        boxRect: RectF,
+        overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>,
+        viewW: Int,
+        viewH: Int,
+        onResult: (String) -> Unit
+    ) {
         val source = retainedScreenBitmap?.takeIf { !it.isRecycled }
         if (source == null) {
-            val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
-            if (fallbackText.isNotEmpty()) {
-                copyAndSaveText(fallbackText)
-                overlayController?.dismiss()
-                ocrRequestToken++
-                isActive = false
-                releaseRetainedBitmap()
-                setHostOverlaysVisible(true)
-                Toast.makeText(context, context.getString(R.string.screen_copy_copied), Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(context, context.getString(R.string.cutout_no_text), Toast.LENGTH_SHORT).show()
-            }
+            onResult(overlappingNodes.joinToString(" ") { it.text }.trim())
             return
         }
 
@@ -486,18 +643,63 @@ class ScreenTextCopyController(
             }.trim()
 
             withContext(Dispatchers.Main.immediate) {
-                if (finalText.isNotEmpty()) {
-                    copyAndSaveText(finalText)
-                    overlayController?.dismiss()
-                    ocrRequestToken++
-                    isActive = false
-                    releaseRetainedBitmap()
-                    stopSpeaking()
-                    setHostOverlaysVisible(true)
-                    Toast.makeText(context, context.getString(R.string.screen_copy_copied), Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, context.getString(R.string.cutout_no_text), Toast.LENGTH_SHORT).show()
+                onResult(finalText)
+            }
+        }
+    }
+
+    private fun speakTextInCutoutBox(
+        boxRect: RectF,
+        overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>,
+        viewW: Int,
+        viewH: Int
+    ) {
+        extractCutoutText(boxRect, overlappingNodes, viewW, viewH) { finalText ->
+            if (finalText.isNotEmpty()) {
+                speakText(finalText)
+            } else {
+                Toast.makeText(context, context.getString(R.string.cutout_no_text), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun translateTextInCutoutBox(
+        boxRect: RectF,
+        overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>,
+        viewW: Int,
+        viewH: Int,
+        onTranslated: (String?) -> Unit
+    ) {
+        extractCutoutText(boxRect, overlappingNodes, viewW, viewH) { finalText ->
+            if (finalText.isEmpty()) {
+                Toast.makeText(context, context.getString(R.string.cutout_no_text), Toast.LENGTH_SHORT).show()
+                onTranslated(null)
+            } else {
+                translateHighlightedText(finalText) { translated ->
+                    onTranslated(translated)
                 }
+            }
+        }
+    }
+
+    private fun copyTextInCutoutBox(
+        boxRect: RectF,
+        overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>,
+        viewW: Int,
+        viewH: Int
+    ) {
+        extractCutoutText(boxRect, overlappingNodes, viewW, viewH) { finalText ->
+            if (finalText.isNotEmpty()) {
+                copyAndSaveText(finalText)
+                overlayController?.dismiss()
+                ocrRequestToken++
+                isActive = false
+                releaseRetainedBitmap()
+                stopSpeaking()
+                setHostOverlaysVisible(true)
+                Toast.makeText(context, context.getString(R.string.screen_copy_copied), Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, context.getString(R.string.cutout_no_text), Toast.LENGTH_SHORT).show()
             }
         }
     }

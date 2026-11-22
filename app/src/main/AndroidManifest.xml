@@ -55,10 +55,17 @@
         <intent>
             <action android:name="android.speech.action.WEB_SEARCH" />
         </intent>
-        <!-- Intent queries for Visual Search / Google Lens -->
+        <intent>
+            <action android:name="android.intent.action.WEB_SEARCH" />
+        </intent>
+        <!-- Intent queries for Visual Search / Google Lens & Sharing -->
         <intent>
             <action android:name="android.intent.action.SEND" />
             <data android:mimeType="image/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="text/plain" />
         </intent>
         <package android:name="com.google.android.googlequicksearchbox" />
         <package android:name="com.coloros.smartsidebar" />
@@ -146,7 +153,7 @@
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
-                android:resource="@xml/appwidget_info" />
+                android:resource="@xml/data_widget_info" />
         </receiver>
 
         <provider

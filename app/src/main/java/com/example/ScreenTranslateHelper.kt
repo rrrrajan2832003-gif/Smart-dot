@@ -246,16 +246,11 @@ class ScreenTranslateHelper(
         }
     }
 
-    private suspend fun detectSourceLanguageCode(text: String, fallbackTargetCode: String): String {
+    internal suspend fun detectSourceLanguageCode(text: String, fallbackTargetCode: String): String {
         identifyLanguageFn?.let { fn ->
             val custom = fn(text)
             TranslateLanguage.fromLanguageTag(custom)?.let { return it }
         }
-
-        if (text.any { it in '\u0900'..'\u097F' }) return TranslateLanguage.HINDI
-        if (text.any { it in '\u3040'..'\u30FF' }) return TranslateLanguage.JAPANESE
-        if (text.any { it in '\u4E00'..'\u9FFF' }) return TranslateLanguage.CHINESE
-        if (text.any { it in '\u0400'..'\u04FF' }) return TranslateLanguage.RUSSIAN
 
         val detectedTag = runCatching {
             languageIdentifier.identifyLanguage(text).await()
@@ -267,6 +262,18 @@ class ScreenTranslateHelper(
                 return mlKitCode
             }
         }
+
+        // Script fallbacks if short text returns "und" on device
+        if (text.any { it in '\u0900'..'\u097F' }) return TranslateLanguage.HINDI
+        if (text.any { it in '\u0980'..'\u09FF' }) return TranslateLanguage.BENGALI
+        if (text.any { it in '\u0600'..'\u06FF' }) return TranslateLanguage.URDU
+        if (text.any { it in '\u0B80'..'\u0BFF' }) return TranslateLanguage.TAMIL
+        if (text.any { it in '\u0C00'..'\u0C7F' }) return TranslateLanguage.TELUGU
+        if (text.any { it in '\u0A80'..'\u0AFF' }) return TranslateLanguage.GUJARATI
+        if (text.any { it in '\uAC00'..'\uD7AF' }) return TranslateLanguage.KOREAN
+        if (text.any { it in '\u3040'..'\u30FF' }) return TranslateLanguage.JAPANESE
+        if (text.any { it in '\u4E00'..'\u9FFF' }) return TranslateLanguage.CHINESE
+        if (text.any { it in '\u0400'..'\u04FF' }) return TranslateLanguage.RUSSIAN
 
         return if (fallbackTargetCode == TranslateLanguage.ENGLISH) {
             TranslateLanguage.HINDI
@@ -314,10 +321,19 @@ class ScreenTranslateHelper(
             "Hindi",
             "English",
             "Spanish",
+            "Urdu",
+            "Bengali",
+            "Marathi",
+            "Tamil",
+            "Telugu",
+            "Gujarati",
+            "Arabic",
             "French",
             "German",
+            "Portuguese",
             "Japanese",
             "Chinese",
+            "Korean",
             "Italian",
             "Russian"
         )
@@ -342,10 +358,19 @@ class ScreenTranslateHelper(
                 "english", "en" -> TranslateLanguage.ENGLISH
                 "hindi", "hi" -> TranslateLanguage.HINDI
                 "spanish", "es" -> TranslateLanguage.SPANISH
+                "urdu", "ur" -> TranslateLanguage.URDU
+                "bengali", "bn" -> TranslateLanguage.BENGALI
+                "marathi", "mr" -> TranslateLanguage.MARATHI
+                "tamil", "ta" -> TranslateLanguage.TAMIL
+                "telugu", "te" -> TranslateLanguage.TELUGU
+                "gujarati", "gu" -> TranslateLanguage.GUJARATI
+                "arabic", "ar" -> TranslateLanguage.ARABIC
                 "french", "fr" -> TranslateLanguage.FRENCH
                 "german", "de" -> TranslateLanguage.GERMAN
+                "portuguese", "pt" -> TranslateLanguage.PORTUGUESE
                 "japanese", "ja" -> TranslateLanguage.JAPANESE
                 "chinese", "zh" -> TranslateLanguage.CHINESE
+                "korean", "ko" -> TranslateLanguage.KOREAN
                 "italian", "it" -> TranslateLanguage.ITALIAN
                 "russian", "ru" -> TranslateLanguage.RUSSIAN
                 else -> TranslateLanguage.fromLanguageTag(languageName.trim()) ?: TranslateLanguage.HINDI

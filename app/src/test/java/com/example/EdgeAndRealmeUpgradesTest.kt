@@ -249,11 +249,11 @@ class EdgeAndRealmeUpgradesTest {
     }
 
     @Test
-    fun `EdgeGestureDetector enforces trigger width 25-35px, minimum 80px swipe, 900ms cap, and bottom nav exclusion`() {
-        // Rule 1: Trigger Zone 25..35px
+    fun `EdgeGestureDetector enforces trigger width 25-45px, minimum 80px swipe, 900ms cap, and bottom nav exclusion`() {
+        // Rule 1: Trigger Zone 25..45px
         assertEquals(25, EdgeGestureDetector.clampTriggerWidthPx(10))
         assertEquals(30, EdgeGestureDetector.clampTriggerWidthPx(30))
-        assertEquals(35, EdgeGestureDetector.clampTriggerWidthPx(75))
+        assertEquals(45, EdgeGestureDetector.clampTriggerWidthPx(75))
 
         // Rule 2: Movement < 80px does NOT trigger Swipe
         val shortOut = mutableListOf<EdgeGesture>()
@@ -282,11 +282,11 @@ class EdgeAndRealmeUpgradesTest {
     }
 
     @Test
-    fun `FloatingService enforces 25-35px edge trigger width and zero haptic feedback`() {
+    fun `FloatingService enforces 25-45px edge trigger width and zero haptic feedback`() {
         val prefs = appContext.getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE)
         prefs.edit()
             .putBoolean("sidebar_enabled", true)
-            .putInt("sidebar_width", 40) // oversized dp should clamp strictly to <= 35px
+            .putInt("sidebar_width", 40) // oversized dp should clamp strictly to <= 45px
             .commit()
 
         val controller = Robolectric.buildService(FloatingService::class.java)
@@ -297,7 +297,7 @@ class EdgeAndRealmeUpgradesTest {
         val sidebarView = sidebarViewField.get(service) as View
         val sparams = sidebarParamsField.get(service) as WindowManager.LayoutParams
 
-        assertTrue("Sidebar handle width (${sparams.width}) must be in 25..35px", sparams.width in 25..35)
+        assertTrue("Sidebar handle width (${sparams.width}) must be in 25..45px", sparams.width in 25..45)
 
         val t = 20_000L
         sidebarView.dispatchTouchEvent(MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, 1060f, 200f, 0))

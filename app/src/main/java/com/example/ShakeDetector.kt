@@ -11,7 +11,7 @@ import kotlin.math.sqrt
  * separated by at least [minPeakGapMs] and debounced by [cooldownMs].
  */
 class ShakeDetector(
-    private val thresholdAccel: Float = 16f,
+    @Volatile private var thresholdAccel: Float = 16f,
     private val windowMs: Long = 500L,
     private val minPeakGapMs: Long = 100L,
     private val cooldownMs: Long = 900L,
@@ -20,6 +20,12 @@ class ShakeDetector(
 
     private var firstShakeTimeMs = 0L
     private var lastTriggerTimeMs = 0L
+
+    fun setThreshold(accelThreshold: Float) {
+        thresholdAccel = accelThreshold.coerceIn(10f, 30f)
+    }
+
+    fun getThreshold(): Float = thresholdAccel
 
     fun onAccelerationSample(x: Float, y: Float, z: Float, timestampMs: Long): Boolean {
         val magnitude = sqrt((x * x + y * y + z * z).toDouble()).toFloat()

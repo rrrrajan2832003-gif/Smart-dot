@@ -45,6 +45,7 @@ import android.view.animation.OvershootInterpolator
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupWindow
@@ -73,6 +74,7 @@ import android.speech.RecognizerIntent
 import android.view.VelocityTracker
 import kotlin.math.abs
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 class FloatingService : Service() {
 
@@ -102,7 +104,12 @@ class FloatingService : Service() {
 
     // Sidebar variables
     private var sidebarView: View? = null
+    private var sidebarPillView: View? = null
     private var sidebarParams: WindowManager.LayoutParams? = null
+    private var activeSidebarEdge: String? = null
+    private var activeSidebarHeightPx: Int = 0
+    private var activeSidebarOpacityPercent: Int = 70
+    private var activeSidebarAutoHide: Boolean = false
     private var edgeGestureDetector: EdgeGestureDetector? = null
 
     // Curated standard languages for Translate
@@ -142,6 +149,8 @@ class FloatingService : Service() {
         const val EXTRA_RECORD_DATA = "extra_record_data"
         const val EXTRA_RECORD_WITH_AUDIO = "extra_record_with_audio"
         const val PREF_SHAKE_TORCH_ENABLED = "shake_torch_enabled"
+        const val PREF_SHAKE_SENSITIVITY = "shake_sensitivity_threshold"
+        const val PREF_HIDE_SHORTCUT_LABELS = "hide_shortcut_labels"
         var isRunning = false
             private set
     }
@@ -321,6 +330,10 @@ class FloatingService : Service() {
 
     private fun ensureFloatingDotAttached(): Boolean {
         if (::floatingView.isInitialized && (isFloatingViewAdded || floatingView.isAttachedToWindow)) {
+            floatingView.visibility = View.VISIBLE
+            if (::imgFloatingDot.isInitialized) {
+                imgFloatingDot.visibility = View.VISIBLE
+            }
             applyDotCustomizables()
             return true
         }
@@ -771,6 +784,16 @@ class FloatingService : Service() {
     private fun bindSidebarTabs(popupView: View, accentColor: Int, density: Float) {
         val tabBar = popupView.findViewById<LinearLayout>(R.id.tab_bar) ?: return
         tabBar.removeAllViews()
+        tabBar.clipChildren = false
+        tabBar.clipToPadding = false
+
+        val prefs = getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE)
+        val popupWidthDp = prefs.getInt("menu_width_dp", 280)
+        val popupHeightDp = prefs.getInt("menu_height_dp", 460)
+        val tabBarHeightDp = if (popupHeightDp <= 270) 36 else 42
+        tabBar.layoutParams = tabBar.layoutParams?.apply {
+            height = (tabBarHeightDp * density).toInt()
+        }
 
         val layoutActions = popupView.findViewById<View>(R.id.layout_tab_actions)
         val layoutApps = popupView.findViewById<View>(R.id.layout_tab_apps)
@@ -783,6 +806,8 @@ class FloatingService : Service() {
         val ivAiStripIcon = popupView.findViewById<ImageView>(R.id.iv_ai_strip_icon)
         val tvAiStripBadge = popupView.findViewById<TextView>(R.id.tv_ai_strip_badge)
 
+        // Hide extra AI strip inside popup so it doesn't waste vertical space
+        btnOpenAiPanel?.visibility = View.GONE
         ivAiStripIcon?.setColorFilter(accentColor, PorterDuff.Mode.SRC_IN)
         tvAiStripBadge?.setTextColor(accentColor)
 
@@ -790,7 +815,6 @@ class FloatingService : Service() {
         layouts.forEach { it?.visibility = View.GONE }
         layoutActions?.visibility = View.VISIBLE
 
-        val prefs = getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE)
         val defaultTopShortcuts = "calculator,translate,clipboard,notes,open_app_drawer,settings"
         val topSavedStr = prefs.getString("top_shortcuts_list", defaultTopShortcuts) ?: defaultTopShortcuts
         val topShortcuts = topSavedStr.split(",").filter { it.isNotEmpty() }.toMutableList()
@@ -802,8 +826,8 @@ class FloatingService : Service() {
             for (i in tabButtons.indices) {
                 if (i == activeTabIndex) {
                     tabButtons[i].setColorFilter(accentColor, PorterDuff.Mode.SRC_IN)
-                    tabButtons[i].scaleX = 1.15f
-                    tabButtons[i].scaleY = 1.15f
+                    tabButtons[i].scaleX = 1.12f
+                    tabButtons[i].scaleY = 1.12f
                 } else {
                     tabButtons[i].setColorFilter(Color.parseColor("#64748B"), PorterDuff.Mode.SRC_IN)
                     tabButtons[i].scaleX = 1.0f
@@ -819,15 +843,22 @@ class FloatingService : Service() {
             updateTabStyles()
         }
 
+        val tabPadPx = ((if (popupWidthDp <= 270 || popupHeightDp <= 270) 6 else 7) * density).toInt()
         topShortcuts.forEachIndexed { index, shortcutId ->
             val iconRes = getActionIcon(shortcutId)
             val actionName = getActionName(shortcutId)
 
             val tabButton = ImageView(this).apply {
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                    marginStart = (1 * density).toInt()
+                    marginEnd = (1 * density).toInt()
+                }
+                tag = iconRes
                 setImageResource(iconRes)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                adjustViewBounds = true
                 setColorFilter(Color.parseColor("#64748B"), PorterDuff.Mode.SRC_IN)
-                setPadding((10 * density).toInt(), (10 * density).toInt(), (10 * density).toInt(), (10 * density).toInt())
+                setPadding(tabPadPx, tabPadPx, tabPadPx, tabPadPx)
                 background = getSystemDrawable(android.R.attr.selectableItemBackgroundBorderless)
                 isClickable = true
                 isFocusable = true
@@ -835,6 +866,13 @@ class FloatingService : Service() {
 
                 setOnClickListener {
                     if (isTabTool(shortcutId)) {
+                        if (activeTabIndex == index && shortcutId != "settings") {
+                            activeTabIndex = -1
+                            layouts.forEach { it?.visibility = View.GONE }
+                            layoutActions?.visibility = View.VISIBLE
+                            updateTabStyles()
+                            return@setOnClickListener
+                        }
                         activeTabIndex = index
                         layouts.forEach { it?.visibility = View.GONE }
                         when (shortcutId) {
@@ -844,6 +882,7 @@ class FloatingService : Service() {
                             "notes" -> layoutNotes?.visibility = View.VISIBLE
                             "open_app_drawer" -> layoutApps?.visibility = View.VISIBLE
                             "settings" -> {
+                                activeTabIndex = -1
                                 layoutActions?.visibility = View.VISIBLE
                                 launchSettings()
                             }
@@ -1077,7 +1116,9 @@ class FloatingService : Service() {
             "recent_apps" -> R.drawable.ic_radial_recents
             "screenshot" -> R.drawable.ic_radial_screenshot
             "screen_copy" -> R.drawable.ic_screen_text_copy
-            "screen_translate" -> R.drawable.ic_tab_translate
+            "screen_translate", "translate" -> R.drawable.ic_tab_translate
+            "clipboard" -> R.drawable.ic_tab_clipboard
+            "notes" -> R.drawable.ic_tab_notes
             "screen_record" -> android.R.drawable.presence_video_online
             "ask_ai" -> android.R.drawable.ic_btn_speak_now
             "notifications" -> R.drawable.ic_radial_notifications
@@ -1085,7 +1126,7 @@ class FloatingService : Service() {
             "lock_screen" -> android.R.drawable.ic_lock_lock
             "settings" -> R.drawable.ic_radial_settings
             "whatsapp" -> R.drawable.ic_radial_whatsapp
-            "calculator" -> R.drawable.ic_radial_calculator
+            "calculator" -> R.drawable.ic_tab_calc
             "chrome" -> R.drawable.ic_radial_chrome
             "flashlight" -> R.drawable.ic_app_flashlight
             "camera" -> android.R.drawable.ic_menu_camera
@@ -1106,7 +1147,7 @@ class FloatingService : Service() {
             "hotspot" -> android.R.drawable.ic_menu_share
             "split_screen" -> android.R.drawable.ic_menu_crop
             "floating_window" -> R.drawable.ic_floating_window
-            "open_menu" -> android.R.drawable.ic_menu_more
+            "open_menu" -> R.drawable.ic_tab_actions
             "realme_smart_sidebar" -> R.drawable.ic_floating_window
             "open_app_drawer" -> R.drawable.ic_tab_apps
             "voice_assistant" -> android.R.drawable.ic_btn_speak_now
@@ -1140,6 +1181,9 @@ class FloatingService : Service() {
             "settings" -> "Dash"
             "whatsapp" -> "WhatsApp"
             "calculator" -> "Calc"
+            "translate" -> "Translate"
+            "clipboard" -> "Clipboard"
+            "notes" -> "Notes"
             "chrome" -> "Chrome"
             "flashlight" -> "Torch"
             "camera" -> "Camera"
@@ -1620,7 +1664,14 @@ class FloatingService : Service() {
         }
     }
 
-    private fun createShortcutItemView(actionId: String, accentColor: Int, density: Float, rowHeightDp: Float, gridCols: Int): View {
+    private fun createShortcutItemView(
+        actionId: String,
+        accentColor: Int,
+        density: Float,
+        rowHeightDp: Float,
+        gridCols: Int,
+        hideShortcutLabels: Boolean = prefs.getBoolean(PREF_HIDE_SHORTCUT_LABELS, false)
+    ): View {
         val isEmpty = actionId.isEmpty() || actionId == "add_shortcut" || actionId == "empty"
         val actionLabel = if (isEmpty) "Add" else getActionName(actionId)
         val actionIconRes = if (isEmpty) android.R.drawable.ic_menu_add else getActionIcon(actionId)
@@ -1639,27 +1690,32 @@ class FloatingService : Service() {
             gridCols == 4 -> 0.85f
             else -> 1.0f
         }
-        val iconSizeDp = (baseIconSizeDp * colScale).coerceAtMost((rowHeightDp - 18f).coerceAtLeast(14f))
+        val maxIconRoom = if (hideShortcutLabels) (rowHeightDp - 8f).coerceAtLeast(16f) else (rowHeightDp - 22f).coerceAtLeast(14f)
+        val iconSizeDp = (baseIconSizeDp * colScale).coerceAtMost(maxIconRoom)
         val labelTextSp = when {
             gridCols >= 5 -> (baseLabelTextSp - 1.5f).coerceAtLeast(8f)
             gridCols == 4 -> (baseLabelTextSp - 0.8f).coerceAtLeast(8.5f)
             else -> baseLabelTextSp
         }
 
+        val itemGapPx = (2 * density).toInt()
         val itemLayout = LinearLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 0,
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 1f
-            )
+            ).apply {
+                setMargins(itemGapPx, 0, itemGapPx, 0)
+            }
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            val padHoriz = if (gridCols >= 4) (2 * density).toInt() else (4 * density).toInt()
-            val padVert = (3 * density).toInt()
-            setPadding(padHoriz, padVert, padHoriz, padVert)
+            val hPadPx = (2 * density).toInt()
+            val vPadPx = (1 * density).toInt()
+            setPadding(hPadPx, vPadPx, hPadPx, vPadPx)
             background = getSystemDrawable(android.R.attr.selectableItemBackground)
             isClickable = true
             isFocusable = true
+            contentDescription = actionLabel
         }
 
         val iconImage = ImageView(this).apply {
@@ -1667,7 +1723,11 @@ class FloatingService : Service() {
                 (iconSizeDp * density).toInt(),
                 (iconSizeDp * density).toInt()
             ).apply {
-                bottomMargin = if (gridCols >= 5) (2 * density).toInt() else (4 * density).toInt()
+                bottomMargin = when {
+                    hideShortcutLabels -> 0
+                    rowHeightDp < 60f || gridCols >= 5 -> (1 * density).toInt()
+                    else -> (2 * density).toInt()
+                }
             }
             setImageResource(actionIconRes)
             if (isEmpty) {
@@ -1686,9 +1746,11 @@ class FloatingService : Service() {
             text = actionLabel
             setTextColor(if (isEmpty) Color.parseColor("#64748B") else Color.WHITE)
             textSize = labelTextSp
+            includeFontPadding = false
             setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
+            visibility = if (hideShortcutLabels) View.GONE else View.VISIBLE
         }
 
         itemLayout.addView(iconImage)
@@ -1703,19 +1765,23 @@ class FloatingService : Service() {
         val prefs = getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE)
         val gridRows = prefs.getInt("menu_grid_rows", 3).coerceAtLeast(1)
         val gridCols = prefs.getInt("menu_grid_cols", 3).coerceIn(1, 5)
+        val hideShortcutLabels = prefs.getBoolean(PREF_HIDE_SHORTCUT_LABELS, false)
 
         val pages = getShortcutsPages(prefs)
         val pagesList = ArrayList<View>()
-        
+
         val popupHeightDp = prefs.getInt("menu_height_dp", 460)
-        val rowHeightDp = ((popupHeightDp - 144) / gridRows.toFloat()).coerceAtLeast(38f)
-        val rowHeightPx = (rowHeightDp * density).toInt()
+        val overheadDp = if (hideShortcutLabels) 66f else 78f
+        val rowHeightDp = ((popupHeightDp - overheadDp - gridRows * 2f) / gridRows.toFloat()).coerceAtLeast(36f)
+        val pagePadPx = (2 * density).toInt()
 
         for (p in pages.indices) {
             val pageShortcuts = pages[p]
             Log.i("FloatingService", "Shortcuts loaded per page: pageIndex=$p, count=${pageShortcuts.size}")
             val pageLayout = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
+                weightSum = gridRows.toFloat()
+                setPadding(pagePadPx, pagePadPx, pagePadPx, pagePadPx)
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
@@ -1726,9 +1792,10 @@ class FloatingService : Service() {
                 val rowLayout = LinearLayout(this).apply {
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
-                        rowHeightPx
+                        0,
+                        1f
                     ).apply {
-                        bottomMargin = (2 * density).toInt()
+                        bottomMargin = if (r < gridRows - 1) (2 * density).toInt() else 0
                     }
                     orientation = LinearLayout.HORIZONTAL
                     weightSum = gridCols.toFloat()
@@ -1738,7 +1805,14 @@ class FloatingService : Service() {
                     val indexInPage = r * gridCols + c
                     if (indexInPage < pageShortcuts.size) {
                         val actionId = pageShortcuts[indexInPage]
-                        val itemLayout = createShortcutItemView(actionId, accentColor, density, rowHeightDp, gridCols)
+                        val itemLayout = createShortcutItemView(
+                            actionId = actionId,
+                            accentColor = accentColor,
+                            density = density,
+                            rowHeightDp = rowHeightDp,
+                            gridCols = gridCols,
+                            hideShortcutLabels = hideShortcutLabels
+                        )
                         
                         val isEmpty = actionId.isEmpty() || actionId == "add_shortcut" || actionId == "empty"
                         if (isEmpty) {
@@ -2039,6 +2113,12 @@ class FloatingService : Service() {
             },
             onAccessibilityRequired = {
                 showAccessibilityDialog()
+            },
+            onFullScreenTranslateRequested = {
+                startScreenTranslate()
+            },
+            getToolbarOrder = {
+                SelectionToolbarHelper.getVisibleToolbarOrder(prefs)
             }
         ).also { screenTextCopyController = it }
     }
@@ -2078,7 +2158,7 @@ class FloatingService : Service() {
                 showAccessibilityDialog()
             },
             getSavedOnlineMode = {
-                prefs.getBoolean("translate_online_mode", true)
+                prefs.getBoolean("translate_online_mode", false)
             },
             saveOnlineMode = { useOnline ->
                 prefs.edit().putBoolean("translate_online_mode", useOnline).apply()
@@ -2345,7 +2425,7 @@ class FloatingService : Service() {
             }
 
             val selection = spTarget.selectedItem?.toString() ?: "Hindi"
-            val preferOnline = prefs.getBoolean("translate_online_mode", true)
+            val preferOnline = prefs.getBoolean("translate_online_mode", false)
             tvOutput.text = "Translating..."
             serviceScope.launch {
                 try {
@@ -2594,16 +2674,20 @@ class FloatingService : Service() {
         val manager = sensorManager ?: (getSystemService(Context.SENSOR_SERVICE) as? SensorManager)?.also {
             sensorManager = it
         } ?: return
+        val sensitivity = prefs.getFloat(PREF_SHAKE_SENSITIVITY, 16f).coerceIn(12f, 26f)
         val enabled = prefs.getBoolean(PREF_SHAKE_TORCH_ENABLED, false)
-        if (enabled && !isShakeListenerRegistered) {
-            val accelerometer = manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
-            val detector = shakeDetector ?: ShakeDetector {
+        if (enabled) {
+            val detector = shakeDetector ?: ShakeDetector(thresholdAccel = sensitivity) {
                 Handler(Looper.getMainLooper()).post {
                     toggleFlashlight()
                 }
             }.also { shakeDetector = it }
-            isShakeListenerRegistered = manager.registerListener(detector, accelerometer, SensorManager.SENSOR_DELAY_UI)
-        } else if (!enabled && isShakeListenerRegistered) {
+            detector.setThreshold(sensitivity)
+            if (!isShakeListenerRegistered) {
+                val accelerometer = manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) ?: return
+                isShakeListenerRegistered = manager.registerListener(detector, accelerometer, SensorManager.SENSOR_DELAY_UI)
+            }
+        } else if (isShakeListenerRegistered) {
             shakeDetector?.let { manager.unregisterListener(it) }
             shakeDetector?.reset()
             isShakeListenerRegistered = false
@@ -2840,22 +2924,88 @@ class FloatingService : Service() {
         val sizeDp = prefs.getInt("dot_size", 56)
         val alpha = prefs.getFloat("dot_transparency", 0.9f)
         val colorHex = prefs.getString("dot_color", "#00E5FF") ?: "#00E5FF"
+        val dotStyle = prefs.getString("dot_style", "Normal Circle") ?: "Normal Circle"
 
         val density = resources.displayMetrics.density
         val sizePx = (sizeDp * density).toInt()
+        val parsedColor = try {
+            Color.parseColor(colorHex)
+        } catch (_: Exception) {
+            Color.parseColor("#00E5FF")
+        }
+
+        val targetWidthPx: Int
+        val targetHeightPx: Int
+        when (dotStyle) {
+            "Vertical Line" -> {
+                targetWidthPx = (sizeDp * 0.22f * density).toInt().coerceAtLeast((8 * density).toInt())
+                targetHeightPx = (sizeDp * 1.35f * density).toInt().coerceAtLeast((36 * density).toInt())
+                imgFloatingDot.clearColorFilter()
+                imgFloatingDot.setImageDrawable(GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = targetWidthPx / 2f
+                    setColor(parsedColor)
+                    setStroke((1f * density).toInt().coerceAtLeast(1), Color.argb(140, 255, 255, 255))
+                })
+            }
+            "Three Dots" -> {
+                targetWidthPx = (sizeDp * 0.48f * density).toInt().coerceAtLeast((20 * density).toInt())
+                targetHeightPx = (sizeDp * 1.25f * density).toInt().coerceAtLeast((38 * density).toInt())
+                imgFloatingDot.clearColorFilter()
+                val dotRadius = (targetWidthPx * 0.34f).toInt().coerceAtLeast((4 * density).toInt())
+                val dotDiameter = dotRadius * 2
+                val horizInset = ((targetWidthPx - dotDiameter) / 2).coerceAtLeast(0)
+                val step = (targetHeightPx - dotDiameter) / 2
+                val d1 = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(parsedColor) }
+                val d2 = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(parsedColor) }
+                val d3 = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(parsedColor) }
+                val layer = android.graphics.drawable.LayerDrawable(arrayOf(d1, d2, d3)).apply {
+                    setLayerInset(0, horizInset, 0, horizInset, targetHeightPx - dotDiameter)
+                    setLayerInset(1, horizInset, step, horizInset, targetHeightPx - step - dotDiameter)
+                    setLayerInset(2, horizInset, targetHeightPx - dotDiameter, horizInset, 0)
+                }
+                imgFloatingDot.setImageDrawable(layer)
+            }
+            "Small Pill" -> {
+                targetWidthPx = (sizeDp * 0.42f * density).toInt().coerceAtLeast((16 * density).toInt())
+                targetHeightPx = (sizeDp * 0.90f * density).toInt().coerceAtLeast((30 * density).toInt())
+                imgFloatingDot.clearColorFilter()
+                imgFloatingDot.setImageDrawable(GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = targetWidthPx / 2f
+                    setColor(parsedColor)
+                    setStroke((1.2f * density).toInt().coerceAtLeast(1), Color.argb(150, 255, 255, 255))
+                })
+            }
+            "Rounded Bar" -> {
+                targetWidthPx = (sizeDp * 0.30f * density).toInt().coerceAtLeast((12 * density).toInt())
+                targetHeightPx = (sizeDp * 1.60f * density).toInt().coerceAtLeast((44 * density).toInt())
+                imgFloatingDot.clearColorFilter()
+                imgFloatingDot.setImageDrawable(GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = 10f * density
+                    setColor(parsedColor)
+                    setStroke((1.2f * density).toInt().coerceAtLeast(1), Color.argb(140, 255, 255, 255))
+                })
+            }
+            else -> {
+                // "Normal Circle"
+                targetWidthPx = sizePx
+                targetHeightPx = sizePx
+                imgFloatingDot.setImageResource(R.drawable.ic_smart_dot)
+                imgFloatingDot.setColorFilter(parsedColor, PorterDuff.Mode.SRC_IN)
+            }
+        }
 
         val dotParams = imgFloatingDot.layoutParams
-        dotParams.width = sizePx
-        dotParams.height = sizePx
+        dotParams.width = targetWidthPx
+        dotParams.height = targetHeightPx
         imgFloatingDot.layoutParams = dotParams
-
         imgFloatingDot.alpha = alpha
+        imgFloatingDot.tag = "dot_style_$dotStyle"
 
-        try {
-            val color = Color.parseColor(colorHex)
-            imgFloatingDot.setColorFilter(color, PorterDuff.Mode.SRC_IN)
-        } catch (e: Exception) {
-            imgFloatingDot.clearColorFilter()
+        if (::floatingView.isInitialized && (isFloatingViewAdded || floatingView.isAttachedToWindow)) {
+            runCatching { windowManager.updateViewLayout(floatingView, params) }
         }
     }
 
@@ -2870,7 +3020,9 @@ class FloatingService : Service() {
                     windowManager.removeView(it)
                 } catch (_: Exception) {}
                 sidebarView = null
+                sidebarPillView = null
                 sidebarParams = null
+                activeSidebarEdge = null
             }
             stopSelf()
             return
@@ -2885,6 +3037,45 @@ class FloatingService : Service() {
         syncShakeTorchListener()
     }
 
+    private fun buildSidebarPillBackground(
+        activeColor: Int,
+        visualPillWidthPx: Int,
+        sidebarStyle: String,
+        sidebarEdge: String
+    ): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(activeColor)
+
+            val r = when (sidebarStyle) {
+                "Block" -> 0f
+                "Notch" -> visualPillWidthPx * 0.8f
+                "Capsule" -> visualPillWidthPx / 2f
+                else -> visualPillWidthPx / 2f
+            }
+
+            if (sidebarEdge == "Right") {
+                cornerRadii = floatArrayOf(r, r, 0f, 0f, 0f, 0f, r, r)
+            } else {
+                cornerRadii = floatArrayOf(0f, 0f, r, r, r, r, 0f, 0f)
+            }
+        }
+    }
+
+    private fun removeSidebarViewInternal() {
+        edgeGestureDetector?.cancelAll()
+        edgeGestureDetector = null
+        sidebarView?.let {
+            try {
+                windowManager.removeView(it)
+            } catch (_: Exception) {}
+        }
+        sidebarView = null
+        sidebarPillView = null
+        sidebarParams = null
+        activeSidebarEdge = null
+    }
+
     private fun setupSidebarWidget() {
         val sidebarEnabled = prefs.getBoolean("sidebar_enabled", true)
         val sidebarEdge = prefs.getString("sidebar_edge", "Right") ?: "Right"
@@ -2895,9 +3086,8 @@ class FloatingService : Service() {
             Color.parseColor("#00E5FF")
         }
 
-        // Customizable attributes with defaults
         val sidebarHeight = prefs.getInt("sidebar_height", 130)
-        val sidebarWidth = prefs.getInt("sidebar_width", 14)
+        val sidebarWidthDp = prefs.getInt("sidebar_width", 14).coerceIn(3, 16)
         val sidebarOpacityPercent = prefs.getInt("sidebar_opacity", 70)
         val sidebarTouchSensitivity = if (prefs.contains("sidebar_touch_sensitivity")) {
             prefs.getInt("sidebar_touch_sensitivity", 85)
@@ -2907,51 +3097,79 @@ class FloatingService : Service() {
         val sidebarStyle = prefs.getString("sidebar_style", "Capsule") ?: "Capsule"
         val sidebarAutoHide = prefs.getBoolean("sidebar_autohide", false)
 
-        // Cancel & clear any existing EdgeGestureDetector and sidebar view
-        edgeGestureDetector?.cancelAll()
-        edgeGestureDetector = null
-        sidebarView?.let {
-            try {
-                windowManager.removeView(it)
-            } catch (_: Exception) {}
-            sidebarView = null
+        if (!sidebarEnabled) {
+            removeSidebarViewInternal()
+            return
         }
 
-        if (!sidebarEnabled) return
-
-        // Rule 1 (Trigger Zone Rule): Strictly enforce 25px..35px handle touch width
-        val handleWidth = EdgeGestureDetector.clampTriggerWidthPx((sidebarWidth * density).toInt())
-        val handleHeight = (sidebarHeight * density).toInt()
-
-        val handle = View(this).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                setColor(activeColor)
-
-                val r = when (sidebarStyle) {
-                    "Block" -> 0f
-                    "Notch" -> (sidebarWidth * 0.8f) * density
-                    "Capsule" -> (sidebarWidth / 2f) * density
-                    else -> (sidebarWidth / 2f) * density
-                }
-
-                if (sidebarEdge == "Right") {
-                    cornerRadii = floatArrayOf(r, r, 0f, 0f, 0f, 0f, r, r)
-                } else {
-                    cornerRadii = floatArrayOf(0f, 0f, r, r, r, r, 0f, 0f)
-                }
-            }
-
-            alpha = if (sidebarAutoHide) 0.20f else (sidebarOpacityPercent / 100f)
+        // Touch zone stays ergonomic (25..45px) while the visible bar scales cleanly 3dp..16dp
+        val touchWidthPx = EdgeGestureDetector.mapSidebarWidthDpToTouchPx(sidebarWidthDp)
+        val handleHeight = (sidebarHeight * density).toInt().coerceAtLeast(1)
+        val minVisualPx = (3f * density).roundToInt().coerceAtLeast(3)
+        val visualPillWidthPx = (sidebarWidthDp * density).roundToInt().coerceIn(minVisualPx, touchWidthPx)
+        val pillGravity = if (sidebarEdge == "Right") {
+            Gravity.END or Gravity.CENTER_VERTICAL
+        } else {
+            Gravity.START or Gravity.CENTER_VERTICAL
         }
-
         val screenHeight = resources.displayMetrics.heightPixels
-        // Rule 6 (Conflict Rule): Exclude bottom-edge system navigation gesture zone
         val navExclusionPx = (24f * density.coerceAtLeast(1f)).toInt().coerceAtMost(screenHeight / 8)
         val maxSafeSidebarY = (screenHeight - handleHeight - navExclusionPx).coerceAtLeast(0)
 
+        activeSidebarHeightPx = handleHeight
+        activeSidebarOpacityPercent = sidebarOpacityPercent
+        activeSidebarAutoHide = sidebarAutoHide
+
+        val existingContainer = sidebarView
+        val existingPill = sidebarPillView
+        val existingParams = sidebarParams
+        if (existingContainer != null &&
+            existingPill != null &&
+            existingParams != null &&
+            activeSidebarEdge == sidebarEdge &&
+            (existingContainer.isAttachedToWindow || isRunning)
+        ) {
+            existingParams.width = touchWidthPx
+            existingParams.height = handleHeight
+            existingParams.y = existingParams.y.coerceIn(0, maxSafeSidebarY)
+
+            val pillLp = (existingPill.layoutParams as? FrameLayout.LayoutParams)
+                ?: FrameLayout.LayoutParams(visualPillWidthPx, FrameLayout.LayoutParams.MATCH_PARENT, pillGravity)
+            pillLp.width = visualPillWidthPx
+            pillLp.height = FrameLayout.LayoutParams.MATCH_PARENT
+            pillLp.gravity = pillGravity
+            existingPill.layoutParams = pillLp
+            existingPill.background = buildSidebarPillBackground(activeColor, visualPillWidthPx, sidebarStyle, sidebarEdge)
+            existingContainer.alpha = if (sidebarAutoHide) 0.20f else (sidebarOpacityPercent / 100f)
+
+            edgeGestureDetector?.apply {
+                minStep1DistancePx = EdgeGestureDetector.sensitivityToStep1Px(sidebarTouchSensitivity)
+                inwardIsRight = (sidebarEdge != "Right")
+            }
+
+            runCatching { windowManager.updateViewLayout(existingContainer, existingParams) }
+            return
+        }
+
+        // Rebuild cleanly if edge flipped or view doesn't exist yet
+        removeSidebarViewInternal()
+
+        val pillView = View(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                visualPillWidthPx,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                pillGravity
+            )
+            background = buildSidebarPillBackground(activeColor, visualPillWidthPx, sidebarStyle, sidebarEdge)
+        }
+
+        val handle = FrameLayout(this).apply {
+            alpha = if (sidebarAutoHide) 0.20f else (sidebarOpacityPercent / 100f)
+            addView(pillView)
+        }
+
         val sparams = WindowManager.LayoutParams(
-            handleWidth,
+            touchWidthPx,
             handleHeight,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -3009,7 +3227,8 @@ class FloatingService : Service() {
             private var maxY = maxSafeSidebarY
 
             override fun onTouch(v: View, event: MotionEvent): Boolean {
-                val fullAlpha = sidebarOpacityPercent / 100f
+                val fullAlpha = activeSidebarOpacityPercent / 100f
+                val autoHide = activeSidebarAutoHide
                 val isPositionLocked = prefs.getBoolean("dot_position_locked", false)
 
                 when (event.actionMasked) {
@@ -3021,9 +3240,9 @@ class FloatingService : Service() {
 
                         val curScreenH = resources.displayMetrics.heightPixels
                         val curNavExclusion = (24f * density.coerceAtLeast(1f)).toInt().coerceAtMost(curScreenH / 8)
-                        maxY = (curScreenH - handleHeight - curNavExclusion).coerceAtLeast(0)
+                        maxY = (curScreenH - activeSidebarHeightPx - curNavExclusion).coerceAtLeast(0)
 
-                        if (sidebarAutoHide) {
+                        if (autoHide) {
                             handle.animate().alpha(fullAlpha).setDuration(120).start()
                         }
                         return detector.onTouchEvent(event)
@@ -3047,7 +3266,7 @@ class FloatingService : Service() {
                     }
 
                     MotionEvent.ACTION_UP -> {
-                        if (sidebarAutoHide) {
+                        if (autoHide) {
                             handle.animate().alpha(0.20f).setDuration(250).setStartDelay(1200).start()
                         }
                         if (isRepositionDragging) {
@@ -3060,7 +3279,7 @@ class FloatingService : Service() {
 
                     MotionEvent.ACTION_CANCEL -> {
                         isRepositionDragging = false
-                        if (sidebarAutoHide) {
+                        if (autoHide) {
                             handle.animate().alpha(0.20f).setDuration(250).start()
                         }
                         return detector.onTouchEvent(event)
@@ -3071,14 +3290,18 @@ class FloatingService : Service() {
         })
 
         sidebarView = handle
+        sidebarPillView = pillView
         sidebarParams = sparams
+        activeSidebarEdge = sidebarEdge
 
         try {
             windowManager.addView(handle, sparams)
         } catch (e: Exception) {
             Log.e("FloatingService", "Failed rendering sidebar overlay", e)
             sidebarView = null
+            sidebarPillView = null
             sidebarParams = null
+            activeSidebarEdge = null
         }
     }
 
@@ -3170,5 +3393,9 @@ class FloatingService : Service() {
                 Log.e("FloatingService", "Removing sidebar handle fail", e)
             }
         }
+        sidebarView = null
+        sidebarPillView = null
+        sidebarParams = null
+        activeSidebarEdge = null
     }
 }
