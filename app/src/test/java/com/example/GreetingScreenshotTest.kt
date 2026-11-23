@@ -21,7 +21,20 @@ class GreetingScreenshotTest {
 
   @Test
   fun greeting_screenshot() {
-    composeTestRule.setContent { MyApplicationTheme { Greeting("Robolectric") } }
+    composeTestRule.setContent {
+      MyApplicationTheme {
+        SmartDotScreen(
+          hasOverlayPermission = true,
+          hasNotificationPermission = true,
+          hasAccessibilityPermission = true,
+          isServiceRunning = false,
+          onRequestOverlay = {},
+          onRequestNotification = {},
+          onRequestAccessibility = {},
+          onToggleService = {}
+        )
+      }
+    }
 
     composeTestRule.onRoot().captureRoboImage(filePath = "src/test/screenshots/greeting.png")
   }

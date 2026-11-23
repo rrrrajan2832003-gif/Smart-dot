@@ -56,15 +56,10 @@ class UnifiedFloatingAndFreeformTest {
         appContext = RuntimeEnvironment.getApplication()
         ShadowSettings.setCanDrawOverlays(true)
         appContext.getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE).edit().clear().commit()
-        FreeformWindowLauncher.promptShownCountForTest = 0
-        FreeformWindowLauncher.activeGuideDialogRef?.get()?.dismiss()
-        FreeformWindowLauncher.activeGuideDialogRef = null
     }
 
     @After
     fun tearDown() {
-        FreeformWindowLauncher.activeGuideDialogRef?.get()?.dismiss()
-        FreeformWindowLauncher.activeGuideDialogRef = null
         ShadowSettings.setCanDrawOverlays(false)
     }
 
@@ -175,39 +170,16 @@ class UnifiedFloatingAndFreeformTest {
     }
 
     @Test
-    fun `FreeformWindowLauncher configures WINDOWING_MODE_FREEFORM, bounded rect, flags, and dev options prompt`() {
-        val bounds = FreeformWindowLauncher.computeCenteredFreeformBounds(appContext)
-        val screenW = appContext.resources.displayMetrics.widthPixels
-        val screenH = appContext.resources.displayMetrics.heightPixels
-        assertTrue("Bounds width must fit strictly within screen width", bounds.width() in 100 until screenW)
-        assertTrue("Bounds height must fit strictly within screen height", bounds.height() in 100 until screenH)
-        assertEquals(5, FreeformWindowLauncher.WINDOWING_MODE_FREEFORM)
-
-        val options = FreeformWindowLauncher.buildFreeformActivityOptions(appContext)
-        val bundle = options.toBundle()
-        assertNotNull(bundle)
-        assertEquals(bounds, options.launchBounds)
-
-        // Verify prompt triggers when freeform support is disabled (default 0)
+    fun `FreeformWindowLauncher launches apps directly in full screen with zero Developer Options prompt`() {
         Settings.Global.putInt(appContext.contentResolver, "enable_freeform_support", 0)
-        assertFalse(FreeformWindowLauncher.isFreeformMultiWindowEnabled(appContext))
-
         registerFakeExternalApp("com.example.freeformtarget", "Target App")
         val launchIntent = appContext.packageManager.getLaunchIntentForPackage("com.example.freeformtarget")!!
-        val launched = FreeformWindowLauncher.launchInFreeformWindow(appContext, launchIntent, "Target App")
-        assertTrue(launched)
-        assertEquals(1, FreeformWindowLauncher.promptShownCountForTest)
 
-        // Verify Developer Options dialog action fires Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS
-        val dialog = FreeformWindowLauncher.activeGuideDialogRef?.get()
-        assertNotNull("Expected Developer Options guide AlertDialog", dialog)
-        dialog?.getButton(android.app.AlertDialog.BUTTON_POSITIVE)?.performClick()
+        val launched = FreeformWindowLauncher.launchFullscreen(appContext, launchIntent, "Target App")
+        assertTrue(launched)
         ShadowLooper.idleMainLooper()
 
-        val startedIntent = Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
-        assertNotNull(startedIntent)
-        // First started activity is Target App, drain until dev settings intent
-        val startedIntents = mutableListOf(startedIntent)
+        val startedIntents = mutableListOf<Intent>()
         while (true) {
             val next = Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity ?: break
             startedIntents.add(next)
@@ -216,25 +188,16 @@ class UnifiedFloatingAndFreeformTest {
             it.`package` == "com.example.freeformtarget" ||
                 it.component?.packageName == "com.example.freeformtarget"
         }
-        assertNotNull("Expected target app launch intent in $startedIntents", appLaunch)
+        assertNotNull("Expected target app launch intent", appLaunch)
         assertTrue((appLaunch!!.flags and Intent.FLAG_ACTIVITY_NEW_TASK) != 0)
-        assertTrue((appLaunch.flags and Intent.FLAG_ACTIVITY_MULTIPLE_TASK) != 0)
-        assertTrue(
-            "Clicking Open Developer Options must launch ACTION_APPLICATION_DEVELOPMENT_SETTINGS",
+        assertFalse(
+            "Must never prompt for Developer Options",
             startedIntents.any { it.action == Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS }
         )
-
-        // When enable_freeform_support == 1, no prompt is shown
-        FreeformWindowLauncher.promptShownCountForTest = 0
-        Settings.Global.putInt(appContext.contentResolver, "enable_freeform_support", 1)
-        assertTrue(FreeformWindowLauncher.isFreeformMultiWindowEnabled(appContext))
-        FreeformWindowLauncher.launchInFreeformWindow(appContext, launchIntent, "Target App")
-        assertEquals(0, FreeformWindowLauncher.promptShownCountForTest)
     }
 
     @Test
-    fun `clicking app from either Floating Dot or Edge Sidebar launches it in Freeform flags mode`() {
-        Settings.Global.putInt(appContext.contentResolver, "enable_freeform_support", 1)
+    fun `clicking app from either Floating Dot or Edge Sidebar launches it full screen without freeform dialog`() {
         registerFakeExternalApp("com.google.android.youtube", "YouTube")
 
         val controller = Robolectric.buildService(FloatingService::class.java)
@@ -248,7 +211,10 @@ class UnifiedFloatingAndFreeformTest {
         val started = Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
         assertNotNull("YouTube action must launch activity", started)
         assertTrue((started.flags and Intent.FLAG_ACTIVITY_NEW_TASK) != 0)
-        assertTrue((started.flags and Intent.FLAG_ACTIVITY_MULTIPLE_TASK) != 0)
+        assertNull(
+            "Must not queue Developer Options dialog",
+            Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
+        )
 
         controller.destroy()
     }

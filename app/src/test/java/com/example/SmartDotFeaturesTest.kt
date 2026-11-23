@@ -198,7 +198,7 @@ class SmartDotFeaturesTest {
 
         val voiceIntent = Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
         assertNotNull("Swipe Up -> Voice Assistant should start activity", voiceIntent)
-        assertEquals(Intent.ACTION_VOICE_COMMAND, voiceIntent.action)
+        assertEquals(Intent.ACTION_ASSIST, voiceIntent.action)
 
         // Swipe Down-Left on locked Edge Sidebar -> triggers wifi settings without changing sidebar y
         dispatchRawDragGesture(sidebar, startX = 1060f, startY = 400f, endX = 880f, endY = 580f)
@@ -231,7 +231,7 @@ class SmartDotFeaturesTest {
 
         val started = Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
         assertNotNull(started)
-        assertEquals(Intent.ACTION_VOICE_COMMAND, started.action)
+        assertEquals(Intent.ACTION_ASSIST, started.action)
         assertTrue((started.flags and Intent.FLAG_ACTIVITY_NEW_TASK) != 0)
         // Verify RecognizerIntent action constant is also clean and valid
         assertEquals("android.speech.action.WEB_SEARCH", RecognizerIntent.ACTION_WEB_SEARCH)

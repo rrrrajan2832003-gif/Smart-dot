@@ -318,6 +318,12 @@ class ScreenTextCopyController(
             },
             onCutoutShareClicked = { boxRect, overlappingNodes, viewW, viewH ->
                 shareCutout(boxRect, overlappingNodes, viewW, viewH)
+            },
+            onWordLensClicked = {
+                launchLensOnFullScreen()
+            },
+            onCutoutLensClicked = { boxRect, viewW, viewH ->
+                launchLensOnCutout(boxRect, viewW, viewH)
             }
         )
     }
@@ -463,6 +469,38 @@ class ScreenTextCopyController(
         }
     }
 
+    private fun copyQuestionToClipboardIfPresent(question: String) {
+        val clean = question.trim()
+        if (clean.isEmpty()) return
+        lastSavedText = clean
+        lastSavedTimestampMs = System.currentTimeMillis()
+        runCatching {
+            clipboardManager.setPrimaryClip(ClipData.newPlainText("SmartDot Question", clean))
+        }
+    }
+
+    private fun launchLensOnFullScreen() {
+        val bmp = retainedScreenBitmap?.takeIf { !it.isRecycled }
+        if (bmp != null) {
+            SelectionToolbarHelper.launchGoogleLensImage(context, bmp)
+        } else {
+            Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun launchLensOnCutout(boxRect: RectF, viewW: Int, viewH: Int) {
+        val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
+        if (cropped != null) {
+            try {
+                SelectionToolbarHelper.launchGoogleLensImage(context, cropped)
+            } finally {
+                runCatching { if (!cropped.isRecycled) cropped.recycle() }
+            }
+        } else {
+            launchLensOnFullScreen()
+        }
+    }
+
     private fun searchCutoutBox(
         boxRect: RectF,
         overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>,
@@ -470,28 +508,31 @@ class ScreenTextCopyController(
         viewH: Int,
         question: String = ""
     ) {
-        if (question.isNotBlank()) {
-            val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
-            if (fallbackText.isNotEmpty() || retainedScreenBitmap == null) {
-                launchGoogleSearch(fallbackText, question)
-                return
-            }
-            extractCutoutText(boxRect, overlappingNodes, viewW, viewH) { extractedText ->
-                launchGoogleSearch(extractedText, question)
-            }
-            return
+        val cleanQuestion = question.trim()
+        if (cleanQuestion.isNotEmpty()) {
+            copyQuestionToClipboardIfPresent(cleanQuestion)
         }
 
+        val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
         val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
         if (cropped != null) {
             try {
-                val handledByCustom = customVisualSearchLauncher?.invoke(cropped) == true
-                if (!handledByCustom) {
-                    val intent = CircleCutoutAndMediaHelper.createVisualSearchIntent(context, cropped)
-                    if (intent != null) {
-                        context.startActivity(intent)
-                    } else {
-                        Toast.makeText(context, "Visual Search is unavailable on this device.", Toast.LENGTH_SHORT).show()
+                if (cleanQuestion.isNotEmpty()) {
+                    SelectionToolbarHelper.launchGoogleSearchImageAndText(
+                        context = context,
+                        croppedBitmap = cropped,
+                        question = cleanQuestion,
+                        fallbackText = fallbackText
+                    )
+                } else {
+                    val handledByCustom = customVisualSearchLauncher?.invoke(cropped) == true
+                    if (!handledByCustom) {
+                        val intent = CircleCutoutAndMediaHelper.createVisualSearchIntent(context, cropped)
+                        if (intent != null) {
+                            context.startActivity(intent)
+                        } else {
+                            Toast.makeText(context, "Visual Search is unavailable on this device.", Toast.LENGTH_SHORT).show()
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -503,9 +544,8 @@ class ScreenTextCopyController(
             return
         }
 
-        val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
-        if (fallbackText.isNotEmpty()) {
-            launchGoogleSearch(fallbackText, question)
+        if (fallbackText.isNotEmpty() || cleanQuestion.isNotEmpty()) {
+            launchGoogleSearch(fallbackText, cleanQuestion)
         } else {
             Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
         }
@@ -522,22 +562,26 @@ class ScreenTextCopyController(
         viewH: Int,
         question: String = ""
     ) {
+        val cleanQuestion = question.trim()
+        if (cleanQuestion.isNotEmpty()) {
+            copyQuestionToClipboardIfPresent(cleanQuestion)
+        }
         val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
         val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
         if (cropped != null) {
             try {
-                if (question.isBlank() && customVisualSearchLauncher?.invoke(cropped) == true) {
+                if (cleanQuestion.isBlank() && customVisualSearchLauncher?.invoke(cropped) == true) {
                     return
                 }
-                SelectionToolbarHelper.launchGoogleAiModeImage(context, cropped, question, fallbackText)
+                SelectionToolbarHelper.launchGoogleAiModeImage(context, cropped, cleanQuestion, fallbackText)
             } finally {
                 runCatching { if (!cropped.isRecycled) cropped.recycle() }
             }
             return
         }
-        val combined = SelectionToolbarHelper.combineQuestionForAiSearch(question, fallbackText)
+        val combined = SelectionToolbarHelper.combineQuestionForAiSearch(cleanQuestion, fallbackText)
         if (combined.isNotEmpty()) {
-            SelectionToolbarHelper.launchGoogleAiModeText(context, fallbackText, question)
+            SelectionToolbarHelper.launchGoogleAiModeText(context, fallbackText, cleanQuestion)
         } else {
             Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
         }
@@ -550,18 +594,22 @@ class ScreenTextCopyController(
         viewH: Int,
         question: String = ""
     ) {
+        val cleanQuestion = question.trim()
+        if (cleanQuestion.isNotEmpty()) {
+            copyQuestionToClipboardIfPresent(cleanQuestion)
+        }
         val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
         if (cropped != null) {
             try {
-                SelectionToolbarHelper.launchGeminiImage(context, cropped, question)
+                SelectionToolbarHelper.launchGeminiImage(context, cropped, cleanQuestion)
             } finally {
                 runCatching { if (!cropped.isRecycled) cropped.recycle() }
             }
             return
         }
         val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
-        if (fallbackText.isNotEmpty() || question.isNotBlank()) {
-            SelectionToolbarHelper.launchGeminiText(context, fallbackText, question)
+        if (fallbackText.isNotEmpty() || cleanQuestion.isNotEmpty()) {
+            SelectionToolbarHelper.launchGeminiText(context, fallbackText, cleanQuestion)
         } else {
             Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
         }
@@ -574,18 +622,22 @@ class ScreenTextCopyController(
         viewH: Int,
         question: String = ""
     ) {
+        val cleanQuestion = question.trim()
+        if (cleanQuestion.isNotEmpty()) {
+            copyQuestionToClipboardIfPresent(cleanQuestion)
+        }
         val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
         if (cropped != null) {
             try {
-                SelectionToolbarHelper.launchChatGptImage(context, cropped, question)
+                SelectionToolbarHelper.launchChatGptImage(context, cropped, cleanQuestion)
             } finally {
                 runCatching { if (!cropped.isRecycled) cropped.recycle() }
             }
             return
         }
         val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
-        if (fallbackText.isNotEmpty() || question.isNotBlank()) {
-            SelectionToolbarHelper.launchChatGptText(context, fallbackText, question)
+        if (fallbackText.isNotEmpty() || cleanQuestion.isNotEmpty()) {
+            SelectionToolbarHelper.launchChatGptText(context, fallbackText, cleanQuestion)
         } else {
             Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
         }

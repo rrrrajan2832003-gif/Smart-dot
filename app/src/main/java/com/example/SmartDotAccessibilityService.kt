@@ -1,7 +1,10 @@
 package com.example
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.os.Build
@@ -29,10 +32,42 @@ class SmartDotAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         Log.d(TAG, "Accessibility Service Successfully Hooked and Enabled")
         instance = this
+        syncUserPausedFromPrefs(this)
+        updateBankingShieldForPackage(getActiveForegroundPackageName(packageName))
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Mandatory callback for AccessibilityService
+        if (isUserPaused) {
+            return
+        }
+        val eventType = event?.eventType ?: return
+        if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+            eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED
+        ) {
+            val pkg = event.packageName?.toString()?.takeIf { it.isNotBlank() }
+                ?: getActiveForegroundPackageName(packageName)
+            updateBankingShieldForPackage(pkg)
+        }
+    }
+
+    internal fun updateBankingShieldForPackage(pkg: String?) {
+        if (isUserPaused) {
+            if (isShieldActive) {
+                isShieldActive = false
+                onShieldStateChangedListener?.invoke(false)
+            }
+            return
+        }
+        if (pkg.isNullOrBlank()) return
+        val normalized = pkg.trim()
+        if (normalized == packageName || normalized == "com.android.systemui") {
+            return
+        }
+        val shouldShield = isProtectedBankingPackage(normalized, packageName)
+        if (shouldShield != isShieldActive) {
+            isShieldActive = shouldShield
+            onShieldStateChangedListener?.invoke(shouldShield)
+        }
     }
 
     override fun onInterrupt() {
@@ -42,6 +77,10 @@ class SmartDotAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "Accessibility Service Disconnected")
+        if (isShieldActive) {
+            isShieldActive = false
+            onShieldStateChangedListener?.invoke(false)
+        }
         if (instance == this) {
             instance = null
         }
@@ -178,6 +217,49 @@ class SmartDotAccessibilityService : AccessibilityService() {
     internal var activeRootTestHook: AccessibilityNodeInfo? = null
     internal var accessibleRootsTestHook: (() -> List<AccessibilityNodeInfo>)? = null
     internal var splitModeCheckTestHook: (() -> Boolean)? = null
+    internal var autoScrollTestHook: ((Int) -> Boolean)? = null
+
+    /**
+     * Dispatches a smooth vertical swipe upward (scroll down the feed) on API 24+.
+     * Speed multiplier (1x / 2x / 3x) tunes swipe duration & stroke travel.
+     */
+    fun performAutoScrollStep(speedMultiplier: Int = 1): Boolean {
+        autoScrollTestHook?.let { return it(speedMultiplier) }
+        if (isUserPaused) return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+
+        val dm = resources.displayMetrics
+        val w = dm.widthPixels.coerceAtLeast(360)
+        val h = dm.heightPixels.coerceAtLeast(640)
+        val centerX = w * 0.5f
+        val startY = when {
+            speedMultiplier >= 3 -> h * 0.78f
+            speedMultiplier == 2 -> h * 0.75f
+            else -> h * 0.72f
+        }
+        val endY = when {
+            speedMultiplier >= 3 -> h * 0.22f
+            speedMultiplier == 2 -> h * 0.25f
+            else -> h * 0.28f
+        }
+        val durationMs = when {
+            speedMultiplier >= 3 -> 220L
+            speedMultiplier == 2 -> 320L
+            else -> 440L
+        }
+
+        val path = Path().apply {
+            moveTo(centerX, startY)
+            lineTo(centerX, endY)
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, durationMs))
+            .build()
+
+        return runCatching {
+            dispatchGesture(gesture, null, null)
+        }.getOrDefault(false)
+    }
 
     private fun dispatchGlobalAction(action: Int): Boolean {
         performGlobalActionTestHook?.let { return it(action) }
@@ -397,17 +479,93 @@ class SmartDotAccessibilityService : AccessibilityService() {
         private const val TAG = "SmartDotAccessibility"
         private const val ROW_SORT_TOLERANCE_PX = 24
         private const val MAX_SCAN_DEPTH = 48
+        const val PREF_USER_PAUSED = "a11y_user_paused"
+
+        private val EXACT_PAYMENT_PACKAGES = setOf(
+            "com.phonepe.app",
+            "com.google.android.apps.nbu.paisa.user",
+            "net.one97.paytm",
+            "in.org.npci.upiapp",
+            "com.dreamplug.androidapp",
+            "in.amazon.mShop.android.shopping"
+        )
+
+        private val EXCLUDED_NON_BANKING_PACKAGES = setOf(
+            "com.android.systemui",
+            "com.android.chrome",
+            "com.google.android.googlequicksearchbox",
+            "com.android.vending",
+            "com.android.settings"
+        )
 
         @Volatile
         var instance: SmartDotAccessibilityService? = null
             private set
+
+        @Volatile
+        var isUserPaused: Boolean = false
+            private set
+
+        @Volatile
+        var isShieldActive: Boolean = false
+            internal set
+
+        @Volatile
+        var onShieldStateChangedListener: ((Boolean) -> Unit)? = null
+
+        fun syncUserPausedFromPrefs(context: Context): Boolean {
+            val prefs = context.getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE)
+            val paused = prefs.getBoolean(PREF_USER_PAUSED, false)
+            isUserPaused = paused
+            if (paused && isShieldActive) {
+                isShieldActive = false
+                onShieldStateChangedListener?.invoke(false)
+            }
+            return paused
+        }
+
+        fun setUserPaused(context: Context, paused: Boolean) {
+            context.getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(PREF_USER_PAUSED, paused)
+                .apply()
+            isUserPaused = paused
+            if (paused) {
+                if (isShieldActive) {
+                    isShieldActive = false
+                    onShieldStateChangedListener?.invoke(false)
+                }
+            } else {
+                instance?.let { svc ->
+                    svc.updateBankingShieldForPackage(svc.getActiveForegroundPackageName(svc.packageName))
+                }
+            }
+        }
+
+        fun isProtectedBankingPackage(pkg: String?, ownPackage: String = "com.example"): Boolean {
+            if (pkg.isNullOrBlank()) return false
+            val lower = pkg.lowercase().trim()
+            if (lower == ownPackage.lowercase() || lower in EXCLUDED_NON_BANKING_PACKAGES) {
+                return false
+            }
+            if (lower in EXACT_PAYMENT_PACKAGES) {
+                return true
+            }
+            return lower.contains("bank") ||
+                lower.contains("upi") ||
+                lower.contains(".pay") ||
+                lower.contains("pay.") ||
+                lower.contains("paisa") ||
+                lower.contains("bhim") ||
+                lower.contains("wallet")
+        }
 
         internal fun setInstanceForTest(service: SmartDotAccessibilityService?) {
             instance = service
         }
 
         fun isEnabled(): Boolean {
-            return instance != null
+            return instance != null && !isUserPaused
         }
 
         /**

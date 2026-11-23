@@ -95,6 +95,12 @@ object SelectionToolbarHelper {
             label = "Full Screen Translate",
             iconRes = R.drawable.ic_toolbar_full_translate,
             contentDesc = "Full Screen Translate"
+        ),
+        GOOGLE_LENS(
+            id = "google_lens",
+            label = "Google Lens",
+            iconRes = R.drawable.ic_toolbar_lens,
+            contentDesc = "Open in Google Lens"
         );
 
         companion object {
@@ -222,6 +228,138 @@ object SelectionToolbarHelper {
                 Toast.makeText(context, "Unable to open Google Search.", Toast.LENGTH_SHORT).show()
                 false
             }
+        }
+    }
+
+    /**
+     * Sends BOTH a cropped image URI (EXTRA_STREAM) and typed question text (EXTRA_TEXT)
+     * directly to Google App / Lens for multimodal visual search.
+     */
+    fun createGoogleSearchImageAndTextIntent(
+        context: Context,
+        croppedBitmap: Bitmap,
+        question: String = "",
+        fallbackText: String = ""
+    ): Intent? {
+        val uri = writeCutoutToCacheUri(context, croppedBitmap) ?: return null
+        val pm = context.packageManager
+        val cleanQuestion = question.trim()
+
+        val candidates = listOf(
+            GOOGLE_APP_PACKAGE,
+            "com.google.googlelens",
+            "com.google.ar.lens"
+        )
+        for (pkg in candidates) {
+            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "image/png"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                if (cleanQuestion.isNotEmpty()) {
+                    putExtra(Intent.EXTRA_TEXT, cleanQuestion)
+                }
+                setPackage(pkg)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            if (sendIntent.resolveActivity(pm) != null) {
+                return sendIntent
+            }
+        }
+
+        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "image/png")
+            if (cleanQuestion.isNotEmpty()) {
+                putExtra(Intent.EXTRA_TEXT, cleanQuestion)
+            }
+            setPackage(GOOGLE_APP_PACKAGE)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        if (viewIntent.resolveActivity(pm) != null) {
+            return viewIntent
+        }
+
+        val combined = combineQuestionForAiSearch(cleanQuestion, fallbackText)
+        if (combined.isNotEmpty()) {
+            return createGoogleSearchIntent(context, combined)
+        }
+
+        val fallbackSend = Intent(Intent.ACTION_SEND).apply {
+            type = "image/png"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            if (cleanQuestion.isNotEmpty()) {
+                putExtra(Intent.EXTRA_TEXT, cleanQuestion)
+            }
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        return Intent.createChooser(fallbackSend, "Visual Search").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+
+    fun launchGoogleSearchImageAndText(
+        context: Context,
+        croppedBitmap: Bitmap,
+        question: String = "",
+        fallbackText: String = ""
+    ): Boolean {
+        val intent = createGoogleSearchImageAndTextIntent(context, croppedBitmap, question, fallbackText)
+            ?: return false
+        return runCatching {
+            context.startActivity(intent)
+            true
+        }.getOrElse { e ->
+            Log.e(TAG, "Failed launching multimodal image+question search", e)
+            Toast.makeText(context, "Unable to search image with question.", Toast.LENGTH_SHORT).show()
+            false
+        }
+    }
+
+    /**
+     * 1-tap Google Lens launcher targeting com.google.googlelens -> com.google.ar.lens ->
+     * com.google.android.googlequicksearchbox with PNG EXTRA_STREAM.
+     */
+    fun createGoogleLensImageIntent(context: Context, bitmap: Bitmap): Intent? {
+        val uri = writeCutoutToCacheUri(context, bitmap) ?: return null
+        val pm = context.packageManager
+        val lensPackages = listOf(
+            "com.google.googlelens",
+            "com.google.ar.lens",
+            GOOGLE_APP_PACKAGE
+        )
+        for (pkg in lensPackages) {
+            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "image/png"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                setPackage(pkg)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            if (sendIntent.resolveActivity(pm) != null) {
+                return sendIntent
+            }
+        }
+        val genericSend = Intent(Intent.ACTION_SEND).apply {
+            type = "image/png"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        if (genericSend.resolveActivity(pm) != null) {
+            return Intent.createChooser(genericSend, "Google Lens").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        }
+        return Intent(Intent.ACTION_VIEW, Uri.parse("https://lens.google.com/")).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+
+    fun launchGoogleLensImage(context: Context, bitmap: Bitmap): Boolean {
+        val intent = createGoogleLensImageIntent(context, bitmap) ?: return false
+        return runCatching {
+            context.startActivity(intent)
+            true
+        }.getOrElse { e ->
+            Log.e(TAG, "Failed launching Google Lens", e)
+            Toast.makeText(context, "Google Lens unavailable.", Toast.LENGTH_SHORT).show()
+            false
         }
     }
 

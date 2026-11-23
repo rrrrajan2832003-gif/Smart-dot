@@ -182,15 +182,11 @@ object InAppShortcutLauncher {
         }
 
         val candidates = buildIntentCandidates(context, actionId)
-        for ((intent, label) in candidates) {
+        for ((intent, _) in candidates) {
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             val launched = runCatching {
-                if (actionId.startsWith("settings_")) {
-                    context.startActivity(intent)
-                    true
-                } else {
-                    FreeformWindowLauncher.launchInFreeformWindow(context, intent, label)
-                }
+                context.startActivity(intent)
+                true
             }.getOrDefault(false)
             if (launched) return true
         }

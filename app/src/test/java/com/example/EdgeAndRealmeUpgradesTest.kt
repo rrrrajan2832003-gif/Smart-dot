@@ -55,7 +55,6 @@ class EdgeAndRealmeUpgradesTest {
         appContext = RuntimeEnvironment.getApplication()
         ShadowSettings.setCanDrawOverlays(true)
         appContext.getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE).edit().clear().commit()
-        FreeformWindowLauncher.promptShownCountForTest = 0
         SmartDotAccessibilityService.setInstanceForTest(null)
     }
 
@@ -378,14 +377,13 @@ class EdgeAndRealmeUpgradesTest {
     }
 
     @Test
-    fun `FreeformWindowLauncher attaches Realme UI windowing extras and launches Realme Smart Sidebar`() {
-        val intent = Intent(Intent.ACTION_MAIN)
-        val prepared = FreeformWindowLauncher.prepareFreeformIntent(intent)
-        assertEquals(5, prepared.getIntExtra(FreeformWindowLauncher.EXTRA_ANDROID_WINDOWING_MODE, -1))
-        assertTrue(prepared.getBooleanExtra(FreeformWindowLauncher.EXTRA_OPLUS_FREEFORM, false))
-        assertTrue((prepared.flags and Intent.FLAG_ACTIVITY_NEW_TASK) != 0)
-        assertTrue((prepared.flags and Intent.FLAG_ACTIVITY_MULTIPLE_TASK) != 0)
-        assertEquals(Rect(120, 250, 960, 1450), FreeformWindowLauncher.REALME_FLEXIBLE_BOUNDS)
+    fun `FreeformWindowLauncher launches apps full screen without freeform extras and launches Realme Smart Sidebar`() {
+        val intent = Intent(Intent.ACTION_MAIN).setPackage("com.android.chrome")
+        assertTrue(FreeformWindowLauncher.launchFullscreen(appContext, intent, "Chrome"))
+        val launchedApp = Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
+        assertNotNull(launchedApp)
+        assertTrue((launchedApp!!.flags and Intent.FLAG_ACTIVITY_NEW_TASK) != 0)
+        assertEquals(0, launchedApp.flags and Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
 
         // When unavailable, returns false cleanly
         assertFalse(FreeformWindowLauncher.launchRealmeSmartSidebar(appContext))
@@ -529,6 +527,22 @@ class EdgeAndRealmeUpgradesTest {
 
     @Test
     fun `FloatingService Voice Assistant prioritizes Google App VOICE_COMMAND`() {
+        val shadowPm = Shadows.shadowOf(appContext.packageManager)
+        val resolveInfo = ResolveInfo().apply {
+            activityInfo = ActivityInfo().apply {
+                packageName = "com.google.android.googlequicksearchbox"
+                name = "com.google.android.googlequicksearchbox.VoiceCommandActivity"
+                exported = true
+                applicationInfo = android.content.pm.ApplicationInfo().apply {
+                    packageName = "com.google.android.googlequicksearchbox"
+                }
+            }
+        }
+        shadowPm.addResolveInfoForIntent(
+            Intent(Intent.ACTION_VOICE_COMMAND).setPackage("com.google.android.googlequicksearchbox"),
+            resolveInfo
+        )
+
         val controller = Robolectric.buildService(FloatingService::class.java)
         val service = controller.create().startCommand(0, 1).get()
 

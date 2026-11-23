@@ -26,6 +26,9 @@ interface SmartDotDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertNote(note: NoteEntry)
 
+    @Update
+    suspend fun updateNote(note: NoteEntry)
+
     @Query("DELETE FROM notes WHERE id = :id")
     suspend fun deleteNoteById(id: Long)
 }

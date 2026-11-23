@@ -284,7 +284,7 @@ class SmartDotTenFixesTest {
         assertTrue(intent.dataString!!.contains("https://www.google.com/search?udm=50"))
         assertTrue(intent.dataString!!.contains("explain+briefly+black+holes"))
 
-        // Also test FloatingService executeAction("google_ai_mode") targeting Google App directly
+        // Also test FloatingService executeAction("google_ai_mode") opens floating resizable AI WebView window
         val service = Robolectric.buildService(FloatingService::class.java)
             .create()
             .startCommand(0, 1)
@@ -293,14 +293,15 @@ class SmartDotTenFixesTest {
             .getDeclaredMethod("executeAction", String::class.java)
             .apply { isAccessible = true }
 
-        val shadowApp = Shadows.shadowOf(appContext)
         drainStartedActivities()
         executeAction.invoke(service, "google_ai_mode")
 
-        val started = shadowApp.nextStartedActivity
-        assertNotNull(started)
-        assertEquals(SelectionToolbarHelper.GOOGLE_APP_PACKAGE, started!!.`package`)
-        assertEquals("https://www.google.com/search?udm=50", started.dataString)
+        val fwmField = FloatingService::class.java
+            .getDeclaredField("floatingWindowManager")
+            .apply { isAccessible = true }
+        val fwm = fwmField.get(service) as FloatingWindowManager
+        assertTrue(fwm.hasWindow("floating_ai_google_ai_mode"))
+        fwm.closeAllWindows()
         service.stopSelf()
     }
 
@@ -373,10 +374,24 @@ class SmartDotTenFixesTest {
             pkgInfo.requestedPermissions?.contains("com.android.alarm.permission.SET_ALARM") == true
         )
 
-        registerResolveActivity(
-            action = Intent.ACTION_MAIN,
-            packageName = "com.google.android.apps.googleassistant"
+        val assistantComp = android.content.ComponentName(
+            "com.google.android.apps.googleassistant",
+            "com.google.android.apps.googleassistant.AssistantActivity"
         )
+        Shadows.shadowOf(appContext.packageManager).apply {
+            addActivityIfNotPresent(assistantComp)
+            addResolveInfoForIntent(
+                Intent().setComponent(assistantComp),
+                ResolveInfo().apply {
+                    activityInfo = ActivityInfo().apply {
+                        packageName = assistantComp.packageName
+                        name = assistantComp.className
+                        exported = true
+                        applicationInfo = ApplicationInfo().apply { packageName = assistantComp.packageName }
+                    }
+                }
+            )
+        }
         registerResolveActivity(
             action = AlarmClock.ACTION_SHOW_ALARMS,
             packageName = "com.google.android.deskclock"

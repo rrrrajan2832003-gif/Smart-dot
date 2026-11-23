@@ -193,6 +193,24 @@
                 android:textColorHint="#94A3B8"
                 android:textSize="12sp" />
 
+            <TextView
+                android:id="@+id/btn_word_quick_translate"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp"
+                android:clickable="true"
+                android:contentDescription="@string/quick_translate_chip_desc"
+                android:focusable="true"
+                android:gravity="center"
+                android:minWidth="48dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:text="@string/quick_translate_chip_label"
+                android:textColor="#00E5FF"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
             <ImageButton
                 android:id="@+id/btn_word_ai_send"
                 android:layout_width="38dp"
@@ -307,6 +325,24 @@
                 android:textColor="#F8FAFC"
                 android:textColorHint="#94A3B8"
                 android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/btn_cutout_quick_translate"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:layout_marginStart="4dp"
+                android:layout_marginEnd="4dp"
+                android:clickable="true"
+                android:contentDescription="@string/quick_translate_chip_desc"
+                android:focusable="true"
+                android:gravity="center"
+                android:minWidth="48dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:text="@string/quick_translate_chip_label"
+                android:textColor="#00E5FF"
+                android:textSize="11sp"
+                android:textStyle="bold" />
 
             <ImageButton
                 android:id="@+id/btn_cutout_ai_send"

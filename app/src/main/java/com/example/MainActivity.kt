@@ -387,6 +387,7 @@ fun SmartDotScreen(
     
     var dotStyle by remember { mutableStateOf(prefs.getString("dot_style", "Normal Circle") ?: "Normal Circle") }
     var dotPositionLocked by remember { mutableStateOf(prefs.getBoolean("dot_position_locked", false)) }
+    var a11yPaused by remember { mutableStateOf(prefs.getBoolean(SmartDotAccessibilityService.PREF_USER_PAUSED, false)) }
     
     var shortcutIconSize by remember { mutableStateOf(prefs.getInt("shortcut_icon_size", 28)) }
     var shortcutTextSize by remember { mutableStateOf(prefs.getInt("shortcut_text_size", 11)) }
@@ -402,6 +403,7 @@ fun SmartDotScreen(
         dotEnabled = prefs.getBoolean("floating_dot_enabled", true)
         sidebarEnabled = prefs.getBoolean("sidebar_enabled", true)
         dotPositionLocked = prefs.getBoolean("dot_position_locked", false)
+        a11yPaused = prefs.getBoolean(SmartDotAccessibilityService.PREF_USER_PAUSED, false)
     }
 
     fun updateServiceStyle() {
@@ -632,6 +634,49 @@ fun SmartDotScreen(
                                 modifier = Modifier
                                     .minimumInteractiveComponentSize()
                                     .testTag("switch_lock_position")
+                            )
+                        }
+
+                        HorizontalDivider(
+                            color = Color(0xFF334155).copy(alpha = 0.7f),
+                            thickness = 1.dp,
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        )
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                                Text(
+                                    text = "Pause Accessibility",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFF8FAFC)
+                                )
+                                Text(
+                                    text = "Pause accessibility features & auto-hiding without system settings",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+                            Switch(
+                                checked = a11yPaused,
+                                onCheckedChange = { isChecked ->
+                                    a11yPaused = isChecked
+                                    SmartDotAccessibilityService.setUserPaused(context, isChecked)
+                                    updateServiceStyle()
+                                },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.Black,
+                                    checkedTrackColor = activeAccent
+                                ),
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("switch_pause_accessibility")
                             )
                         }
                     }
@@ -1947,7 +1992,7 @@ fun SmartDotScreen(
                             color = Color(0xFFF8FAFC)
                         )
                         Text(
-                            text = "Reorder or hide the 10 icon buttons for Text Selection & Circle Cutout bars.",
+                            text = "Reorder or hide the 11 icon buttons for Text Selection & Circle Cutout bars.",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color(0xFF94A3B8)
                         )

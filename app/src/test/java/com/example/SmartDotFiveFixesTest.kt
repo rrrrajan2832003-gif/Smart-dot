@@ -73,13 +73,14 @@ class SmartDotFiveFixesTest {
             .performScrollTo()
             .assertIsDisplayed()
 
-        // Toggle visibility OFF for 5 actions so only 5 remain visible -> Row 2 should hide completely
+        // Toggle visibility OFF for 6 of 11 actions so only 5 remain visible -> Row 2 should hide completely
         val toHide = listOf(
             ToolbarAction.GEMINI,
             ToolbarAction.CHATGPT,
             ToolbarAction.SHARE,
             ToolbarAction.FULL_SCREEN_TRANSLATE,
-            ToolbarAction.GOOGLE_AI_MODE
+            ToolbarAction.GOOGLE_AI_MODE,
+            ToolbarAction.GOOGLE_LENS
         )
         toHide.forEach { action ->
             composeRule.onNodeWithTag("btn_toolbar_visibility_${action.id}")
@@ -154,12 +155,12 @@ class SmartDotFiveFixesTest {
         controller.release()
         scope.cancel()
 
-        // Reset restores all 10 visible icons
+        // Reset restores all 11 visible icons
         composeRule.onNodeWithTag("btn_reset_toolbar_order")
             .performScrollTo()
             .performClick()
         assertTrue(SelectionToolbarHelper.getHiddenToolbarActions(prefs).isEmpty())
-        assertEquals(10, SelectionToolbarHelper.getVisibleToolbarOrder(prefs).size)
+        assertEquals(11, SelectionToolbarHelper.getVisibleToolbarOrder(prefs).size)
     }
 
     @Test

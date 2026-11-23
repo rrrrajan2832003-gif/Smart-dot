@@ -15,6 +15,8 @@ import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
 import android.util.Log
 import android.view.Display
 import android.view.Gravity
@@ -109,7 +111,9 @@ class InlineTextOverlayController(
         onCutoutGoogleAiModeClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int, question: String) -> Unit)? = null,
         onCutoutGeminiClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int, question: String) -> Unit)? = null,
         onCutoutChatGptClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int, question: String) -> Unit)? = null,
-        onCutoutShareClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int) -> Unit)? = null
+        onCutoutShareClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int) -> Unit)? = null,
+        onWordLensClicked: (() -> Unit)? = null,
+        onCutoutLensClicked: ((cutoutRect: RectF, viewW: Int, viewH: Int) -> Unit)? = null
     ) {
         val refs = setupBaseOverlay(
             mode = OverlayMode.COPY,
@@ -138,7 +142,9 @@ class InlineTextOverlayController(
             onCutoutGoogleAiModeClicked = onCutoutGoogleAiModeClicked,
             onCutoutGeminiClicked = onCutoutGeminiClicked,
             onCutoutChatGptClicked = onCutoutChatGptClicked,
-            onCutoutShareClicked = onCutoutShareClicked
+            onCutoutShareClicked = onCutoutShareClicked,
+            onWordLensClicked = onWordLensClicked,
+            onCutoutLensClicked = onCutoutLensClicked
         ) ?: return
 
         val (root, selView, controlsPill, wordActionBar, copyBtn) = refs
@@ -296,7 +302,9 @@ class InlineTextOverlayController(
         onCutoutGoogleAiModeClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)? = null,
         onCutoutGeminiClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)? = null,
         onCutoutChatGptClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)? = null,
-        onCutoutShareClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)? = null
+        onCutoutShareClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)? = null,
+        onWordLensClicked: (() -> Unit)? = null,
+        onCutoutLensClicked: ((RectF, Int, Int) -> Unit)? = null
     ): BaseOverlayRefs? {
         dismissInternal()
 
@@ -325,6 +333,7 @@ class InlineTextOverlayController(
         val wordRow2 = root.findViewById<LinearLayout>(R.id.inline_word_row2)
         val wordQuestionRow = root.findViewById<LinearLayout>(R.id.inline_word_question_row)
         val etWordQuestion = root.findViewById<EditText>(R.id.et_word_ai_question)
+        val btnWordQuickTranslate = root.findViewById<TextView>(R.id.btn_word_quick_translate)
         val btnWordSend = root.findViewById<ImageButton>(R.id.btn_word_ai_send)
         val wordTranslateBubble = root.findViewById<LinearLayout>(R.id.inline_word_translate_bubble)
         val tvWordTranslated = root.findViewById<TextView>(R.id.tv_inline_word_translated_text)
@@ -335,6 +344,7 @@ class InlineTextOverlayController(
         val cutoutRow2 = root.findViewById<LinearLayout>(R.id.inline_cutout_row2)
         val cutoutQuestionRow = root.findViewById<LinearLayout>(R.id.inline_cutout_question_row)
         val etCutoutQuestion = root.findViewById<EditText>(R.id.et_cutout_ai_question)
+        val btnCutoutQuickTranslate = root.findViewById<TextView>(R.id.btn_cutout_quick_translate)
         val btnCutoutSend = root.findViewById<ImageButton>(R.id.btn_cutout_ai_send)
         val btnCutoutClose = root.findViewById<ImageButton>(R.id.btn_cutout_close)
 
@@ -450,6 +460,35 @@ class InlineTextOverlayController(
         btnCutoutSend.setColorFilter(accentColor, PorterDuff.Mode.SRC_IN)
         btnCutoutClose.setColorFilter(Color.parseColor("#CBD5E1"), PorterDuff.Mode.SRC_IN)
 
+        fun styleQuickTranslateChip(chip: TextView, enabled: Boolean) {
+            chip.isEnabled = enabled
+            chip.alpha = if (enabled) 1f else 0.35f
+            chip.setTextColor(if (enabled) accentColor else Color.parseColor("#94A3B8"))
+            chip.background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 8f * density
+                setColor(Color.argb(180, 15, 23, 42))
+                setStroke((1f * density).toInt().coerceAtLeast(1), if (enabled) accentColor else Color.parseColor("#475569"))
+            }
+        }
+        styleQuickTranslateChip(btnWordQuickTranslate, enabled = true)
+        styleQuickTranslateChip(btnCutoutQuickTranslate, enabled = true)
+
+        etWordQuestion.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                styleQuickTranslateChip(btnWordQuickTranslate, enabled = s.isNullOrBlank())
+            }
+        })
+        etCutoutQuestion.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                styleQuickTranslateChip(btnCutoutQuickTranslate, enabled = s.isNullOrBlank())
+            }
+        })
+
         val normalizedOrder = normalizeToolbarOrder(toolbarOrder)
 
         // Populate Text Selection Icon-Only Grid (only visible icons, up to 5 per row)
@@ -496,7 +535,8 @@ class InlineTextOverlayController(
                     onGeminiTextClicked = onGeminiTextClicked,
                     onChatGptTextClicked = onChatGptTextClicked,
                     onShareTextClicked = onShareTextClicked,
-                    onFullScreenTranslateClicked = onFullScreenTranslateClicked
+                    onFullScreenTranslateClicked = onFullScreenTranslateClicked,
+                    onWordLensClicked = onWordLensClicked
                 )
             }
             if (index < 5) wordRow1.addView(btn) else wordRow2.addView(btn)
@@ -524,6 +564,16 @@ class InlineTextOverlayController(
             dismissInternal()
             onGoogleAiModeTextClicked?.invoke(selected, question)
             dismissCb?.invoke()
+        }
+        btnWordQuickTranslate.setOnClickListener {
+            if (!btnWordQuickTranslate.isEnabled || !etWordQuestion.text.isNullOrBlank()) return@setOnClickListener
+            val selected = activeCopyableText.trim()
+            if (selected.isNotEmpty()) {
+                val dismissCb = activeDismissCallback
+                dismissInternal()
+                onSearchClicked?.invoke(selected, "Translate to Hindi/English")
+                dismissCb?.invoke()
+            }
         }
         btnWordSend.setOnClickListener { submitWordQuestion() }
         etWordQuestion.setOnEditorActionListener { _, actionId, _ ->
@@ -572,6 +622,7 @@ class InlineTextOverlayController(
                     onCutoutChatGptClicked = onCutoutChatGptClicked,
                     onCutoutShareClicked = onCutoutShareClicked,
                     onFullScreenTranslateClicked = onFullScreenTranslateClicked,
+                    onCutoutLensClicked = onCutoutLensClicked,
                     onDismiss = onDismiss
                 )
             }
@@ -593,6 +644,16 @@ class InlineTextOverlayController(
             val h = selView.height
             dismissInternal()
             onCutoutGoogleAiModeClicked?.invoke(box, overlapping, w, h, question)
+            onDismiss()
+        }
+        btnCutoutQuickTranslate.setOnClickListener {
+            if (!btnCutoutQuickTranslate.isEnabled || !etCutoutQuestion.text.isNullOrBlank()) return@setOnClickListener
+            val box = currentCutoutRect ?: selView.getActiveCutoutRect() ?: return@setOnClickListener
+            val overlapping = selView.getWordsInsideCutout()
+            val w = selView.width
+            val h = selView.height
+            dismissInternal()
+            onCutoutSearchWithFallback?.invoke(box, overlapping, w, h, "Translate to Hindi/English")
             onDismiss()
         }
         btnCutoutSend.setOnClickListener { submitCutoutQuestion() }
@@ -762,7 +823,8 @@ class InlineTextOverlayController(
         onGeminiTextClicked: ((String, String) -> Unit)?,
         onChatGptTextClicked: ((String, String) -> Unit)?,
         onShareTextClicked: ((String) -> Unit)?,
-        onFullScreenTranslateClicked: (() -> Unit)?
+        onFullScreenTranslateClicked: (() -> Unit)?,
+        onWordLensClicked: (() -> Unit)?
     ) {
         val chosen = activeCopyableText.trim()
         when (action) {
@@ -843,6 +905,12 @@ class InlineTextOverlayController(
                 dismissInternal()
                 onFullScreenTranslateClicked?.invoke()
             }
+            SelectionToolbarHelper.ToolbarAction.GOOGLE_LENS -> {
+                val dismissCb = activeDismissCallback
+                dismissInternal()
+                onWordLensClicked?.invoke()
+                dismissCb?.invoke()
+            }
         }
     }
 
@@ -869,6 +937,7 @@ class InlineTextOverlayController(
         onCutoutChatGptClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)?,
         onCutoutShareClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)?,
         onFullScreenTranslateClicked: (() -> Unit)?,
+        onCutoutLensClicked: ((RectF, Int, Int) -> Unit)?,
         onDismiss: () -> Unit
     ) {
         when (action) {
@@ -929,6 +998,11 @@ class InlineTextOverlayController(
             SelectionToolbarHelper.ToolbarAction.FULL_SCREEN_TRANSLATE -> {
                 dismissInternal()
                 onFullScreenTranslateClicked?.invoke()
+            }
+            SelectionToolbarHelper.ToolbarAction.GOOGLE_LENS -> {
+                dismissInternal()
+                onCutoutLensClicked?.invoke(box, viewW, viewH)
+                onDismiss()
             }
         }
     }
@@ -999,6 +1073,7 @@ class InlineTextOverlayController(
             SelectionToolbarHelper.ToolbarAction.CHATGPT -> R.id.btn_inline_word_chatgpt
             SelectionToolbarHelper.ToolbarAction.SHARE -> R.id.btn_inline_word_share
             SelectionToolbarHelper.ToolbarAction.FULL_SCREEN_TRANSLATE -> R.id.btn_inline_word_full_translate
+            SelectionToolbarHelper.ToolbarAction.GOOGLE_LENS -> R.id.btn_inline_word_lens
         }
     }
 
@@ -1014,6 +1089,7 @@ class InlineTextOverlayController(
             SelectionToolbarHelper.ToolbarAction.CHATGPT -> R.id.btn_cutout_chatgpt
             SelectionToolbarHelper.ToolbarAction.SHARE -> R.id.btn_cutout_share
             SelectionToolbarHelper.ToolbarAction.FULL_SCREEN_TRANSLATE -> R.id.btn_cutout_full_translate
+            SelectionToolbarHelper.ToolbarAction.GOOGLE_LENS -> R.id.btn_cutout_lens
         }
     }
 

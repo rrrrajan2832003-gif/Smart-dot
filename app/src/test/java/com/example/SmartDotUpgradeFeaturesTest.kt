@@ -715,7 +715,7 @@ class SmartDotUpgradeFeaturesTest {
         assertNotNull("Floating Window shortcut must launch active foreground app", relaunched)
         assertEquals(targetPkg, relaunched.component?.packageName ?: relaunched.`package`)
         assertTrue((relaunched.flags and Intent.FLAG_ACTIVITY_NEW_TASK) != 0)
-        assertTrue((relaunched.flags and Intent.FLAG_ACTIVITY_MULTIPLE_TASK) != 0)
+        assertEquals(0, relaunched.flags and Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
     }
 
     private fun waitUntilOverlayVisible(controller: ScreenTextCopyController) {

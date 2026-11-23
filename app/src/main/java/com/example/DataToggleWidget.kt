@@ -68,6 +68,20 @@ class DataToggleWidget : AppWidgetProvider() {
                 return
             }
 
+            val a11y = SmartDotAccessibilityService.instance
+            if (a11y != null && !SmartDotAccessibilityService.isUserPaused) {
+                a11y.performQuickTileToggle(QuickTileAutomation.QuickTileTarget.MOBILE_DATA) { ok ->
+                    if (!ok) {
+                        openFallbackConnectivityPanel(context)
+                    }
+                }
+                return
+            }
+
+            openFallbackConnectivityPanel(context)
+        }
+
+        private fun openFallbackConnectivityPanel(context: Context) {
             val launched = runCatching {
                 context.startActivity(
                     QuickTileAutomation.buildFallbackSettingsIntent(

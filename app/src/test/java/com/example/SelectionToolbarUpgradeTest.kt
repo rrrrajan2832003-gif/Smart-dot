@@ -163,8 +163,8 @@ class SelectionToolbarUpgradeTest {
         val wordButtons = (0 until wordRow1.childCount).map { wordRow1.getChildAt(it) } +
             (0 until wordRow2.childCount).map { wordRow2.getChildAt(it) }
         assertEquals("Row 1 must have 5 icons", 5, wordRow1.childCount)
-        assertEquals("Row 2 must have 5 icons", 5, wordRow2.childCount)
-        assertEquals("Word toolbar must have all 10 icon buttons", 10, wordButtons.size)
+        assertEquals("Row 2 must have 6 icons", 6, wordRow2.childCount)
+        assertEquals("Word toolbar must have all 11 icon buttons", 11, wordButtons.size)
         assertZeroTextViews(wordRow1)
         assertZeroTextViews(wordRow2)
 
@@ -269,6 +269,7 @@ class SelectionToolbarUpgradeTest {
             ToolbarAction.TRANSLATE,
             ToolbarAction.GOOGLE_AI_MODE,
             ToolbarAction.SEARCH,
+            ToolbarAction.GOOGLE_LENS,
             ToolbarAction.SAVE_IMAGE,
             ToolbarAction.COPY,
             ToolbarAction.SHARE,
@@ -328,7 +329,7 @@ class SelectionToolbarUpgradeTest {
         val cutoutRow2 = root.findViewById<LinearLayout>(R.id.inline_cutout_row2)
         val cutoutBar = root.findViewById<LinearLayout>(R.id.inline_cutout_action_bar)
         assertEquals(5, cutoutRow1.childCount)
-        assertEquals(5, cutoutRow2.childCount)
+        assertEquals(6, cutoutRow2.childCount)
         assertZeroTextViews(cutoutRow1)
         assertZeroTextViews(cutoutRow2)
 

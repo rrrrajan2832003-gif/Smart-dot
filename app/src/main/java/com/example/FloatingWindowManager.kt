@@ -492,6 +492,18 @@ class FloatingWindowManager(
         keys.forEach { closeWindow(it) }
     }
 
+    fun setShieldHidden(hidden: Boolean) {
+        activeWindows.values.forEach { managed ->
+            if (hidden) {
+                managed.rootView.visibility = View.GONE
+                managed.bubbleView?.visibility = View.GONE
+            } else {
+                managed.rootView.visibility = if (managed.isMinimized) View.GONE else View.VISIBLE
+                managed.bubbleView?.visibility = if (managed.isMinimized) View.VISIBLE else View.GONE
+            }
+        }
+    }
+
     private fun destroyChildWebViews(view: View) {
         if (view is WebView) {
             runCatching {

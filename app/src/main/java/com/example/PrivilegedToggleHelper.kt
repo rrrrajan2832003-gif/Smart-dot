@@ -127,11 +127,21 @@ object PrivilegedToggleHelper {
         val currentlyOn = runCatching { adapter?.isEnabled == true }.getOrDefault(false)
         val nextState = !currentlyOn
 
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && adapter != null) {
-            val directOk = runCatching {
-                if (currentlyOn) adapter.disable() else adapter.enable()
-            }.getOrDefault(false)
-            if (directOk) return nextState
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU && adapter != null) {
+            val hasBtPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                androidx.core.content.ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.BLUETOOTH_CONNECT
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            }
+            if (hasBtPermission) {
+                val directOk = runCatching {
+                    if (currentlyOn) adapter.disable() else adapter.enable()
+                }.getOrDefault(false)
+                if (directOk) return nextState
+            }
         }
 
         val cmd = if (nextState) "svc bluetooth enable" else "svc bluetooth disable"
@@ -145,7 +155,19 @@ object PrivilegedToggleHelper {
         val currentlyOn = isMobileDataEnabledBestEffort(context)
         val nextState = !currentlyOn
 
-        // Attempt direct TelephonyManager.setDataEnabled only on system/carrier-privileged apps
+        // 1) Try Settings.Global.putInt if WRITE_SECURE_SETTINGS was granted (via ADB/root)
+        val hasWriteSecure = androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.WRITE_SECURE_SETTINGS
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (hasWriteSecure) {
+            val globalOk = runCatching {
+                Settings.Global.putInt(context.contentResolver, "mobile_data", if (nextState) 1 else 0)
+            }.getOrDefault(false)
+            if (globalOk) return nextState
+        }
+
+        // 2) Attempt direct TelephonyManager.setDataEnabled only on system/carrier-privileged apps
         val hasModifyPhoneState = androidx.core.content.ContextCompat.checkSelfPermission(
             context,
             "android.permission.MODIFY_PHONE_STATE"
@@ -163,6 +185,7 @@ object PrivilegedToggleHelper {
         }
         if (telephonyOk) return nextState
 
+        // 3) Shizuku / root shell command (`svc data enable/disable`)
         val cmd = if (nextState) "svc data enable" else "svc data disable"
         if (executePrivilegedShell(cmd)) {
             return nextState

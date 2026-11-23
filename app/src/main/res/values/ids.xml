@@ -11,6 +11,7 @@
     <item name="btn_inline_word_chatgpt" type="id" />
     <item name="btn_inline_word_share" type="id" />
     <item name="btn_inline_word_full_translate" type="id" />
+    <item name="btn_inline_word_lens" type="id" />
 
     <!-- Cutout box toolbar action button IDs -->
     <item name="btn_cutout_copy_text" type="id" />
@@ -23,4 +24,5 @@
     <item name="btn_cutout_chatgpt" type="id" />
     <item name="btn_cutout_share" type="id" />
     <item name="btn_cutout_full_translate" type="id" />
+    <item name="btn_cutout_lens" type="id" />
 </resources>

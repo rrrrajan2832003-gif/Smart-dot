@@ -202,9 +202,12 @@ object QuickTileAutomation {
         return if (node.isEnabled) node else null
     }
 
+    internal const val TILE_POLL_DELAY_MS = 80L
+    internal const val BACK_COLLAPSE_DELAY_MS = 80L
+
     /**
      * Automates Quick Settings tile toggling on an active [SmartDotAccessibilityService] or
-     * injected hooks for unit testing.
+     * injected hooks for unit testing using 80ms fast-poll & instant shade collapse.
      */
     fun automateQuickSettingsToggle(
         target: QuickTileTarget,
@@ -219,7 +222,7 @@ object QuickTileAutomation {
         }
 
         var pollAttempts = 0
-        val maxAttempts = 8
+        val maxAttempts = 10
 
         fun pollForTile() {
             val roots = rootsProvider()
@@ -251,28 +254,28 @@ object QuickTileAutomation {
                                 handler.postDelayed({
                                     performGlobalActionFn(AccessibilityService.GLOBAL_ACTION_BACK)
                                     onResult(true)
-                                }, 140L)
-                            }, 160L)
-                        } else if (++subAttempts < 5) {
-                            handler.postDelayed(::pollSubPanel, 120L)
+                                }, BACK_COLLAPSE_DELAY_MS)
+                            }, BACK_COLLAPSE_DELAY_MS)
+                        } else if (++subAttempts < 7) {
+                            handler.postDelayed(::pollSubPanel, TILE_POLL_DELAY_MS)
                         } else {
                             // Keep panel open if sub-toggle could not be isolated
                             onResult(true)
                         }
                     }
-                    handler.postDelayed(::pollSubPanel, 180L)
+                    handler.postDelayed(::pollSubPanel, TILE_POLL_DELAY_MS)
                 } else {
                     // Single tile click toggled directly -> collapse Quick Settings immediately
                     handler.postDelayed({
                         performGlobalActionFn(AccessibilityService.GLOBAL_ACTION_BACK)
                         onResult(true)
-                    }, 180L)
+                    }, BACK_COLLAPSE_DELAY_MS)
                 }
                 return
             }
 
             if (++pollAttempts < maxAttempts) {
-                handler.postDelayed(::pollForTile, 120L)
+                handler.postDelayed(::pollForTile, TILE_POLL_DELAY_MS)
             } else {
                 Log.w(TAG, "Quick tile '${target.displayName}' not found after polling; closing shade.")
                 performGlobalActionFn(AccessibilityService.GLOBAL_ACTION_BACK)
@@ -280,6 +283,6 @@ object QuickTileAutomation {
             }
         }
 
-        handler.postDelayed(::pollForTile, 180L)
+        handler.postDelayed(::pollForTile, TILE_POLL_DELAY_MS)
     }
 }

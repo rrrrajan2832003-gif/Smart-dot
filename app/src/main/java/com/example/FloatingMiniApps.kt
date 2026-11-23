@@ -15,6 +15,8 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.webkit.CookieManager
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -485,6 +487,64 @@ object FloatingMiniApps {
                 setPadding(dp(context, 8f), dp(context, 8f), dp(context, 8f), dp(context, 8f))
             }
 
+            var editingNote: NoteEntry? = null
+
+            val editBanner = LinearLayout(context).apply {
+                tag = "fw_notes_edit_banner"
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                visibility = View.GONE
+                setPadding(dp(context, 8f), dp(context, 4f), dp(context, 8f), dp(context, 4f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 8f).toFloat()
+                    setColor(Color.parseColor("#1E293B"))
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dp(context, 4f)
+                }
+            }
+            val tvEditStatus = TextView(context).apply {
+                text = context.getString(R.string.note_editing_label)
+                textSize = 11f
+                setTextColor(accentColor)
+                setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val btnCancelEdit = TextView(context).apply {
+                tag = "fw_notes_cancel_edit"
+                text = context.getString(R.string.note_cancel_edit)
+                textSize = 11f
+                setTextColor(Color.parseColor("#EF4444"))
+                setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                setPadding(dp(context, 6f), dp(context, 2f), dp(context, 6f), dp(context, 2f))
+            }
+            editBanner.addView(tvEditStatus)
+            editBanner.addView(btnCancelEdit)
+
+            val etTitle = EditText(context).apply {
+                tag = "fw_notes_title_input"
+                hint = context.getString(R.string.note_title_hint)
+                setTextColor(Color.WHITE)
+                setHintTextColor(Color.parseColor("#64748B"))
+                textSize = 12.5f
+                isSingleLine = true
+                setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                setPadding(dp(context, 10f), dp(context, 6f), dp(context, 10f), dp(context, 6f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 10f).toFloat()
+                    setColor(Color.parseColor("#1E293B"))
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dp(context, 4f)
+                }
+            }
+
             val inputRow = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -526,6 +586,16 @@ object FloatingMiniApps {
             inputRow.addView(etNote)
             inputRow.addView(btnSave)
 
+            fun clearEditMode() {
+                editingNote = null
+                editBanner.visibility = View.GONE
+                btnSave.text = "Save"
+                etTitle.setText("")
+                etNote.setText("")
+            }
+
+            btnCancelEdit.setOnClickListener { clearEditMode() }
+
             val listContainer = LinearLayout(context).apply {
                 tag = "fw_notes_list"
                 orientation = LinearLayout.VERTICAL
@@ -543,15 +613,28 @@ object FloatingMiniApps {
             val windowScope = CoroutineScope(Dispatchers.Main + notesJob)
 
             btnSave.setOnClickListener {
+                val titleTxt = etTitle.text?.toString()?.trim().orEmpty()
                 val txt = etNote.text?.toString()?.trim().orEmpty()
                 if (txt.isEmpty()) {
                     Toast.makeText(context, "Write a note first.", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }
-                etNote.setText("")
+                val activeEdit = editingNote
+                clearEditMode()
                 windowScope.launch {
                     withContext(Dispatchers.IO) {
-                        SmartDotDatabase.getDatabase(context).smartDotDao().insertNote(NoteEntry(content = txt))
+                        val dao = SmartDotDatabase.getDatabase(context).smartDotDao()
+                        if (activeEdit != null) {
+                            dao.updateNote(
+                                activeEdit.copy(
+                                    title = titleTxt,
+                                    content = txt,
+                                    timestamp = System.currentTimeMillis()
+                                )
+                            )
+                        } else {
+                            dao.insertNote(NoteEntry(title = titleTxt, content = txt))
+                        }
                     }
                 }
             }
@@ -571,6 +654,7 @@ object FloatingMiniApps {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         notes.forEach { note ->
                             val row = LinearLayout(context).apply {
+                                tag = "fw_note_row_${note.id}"
                                 orientation = LinearLayout.HORIZONTAL
                                 gravity = Gravity.CENTER_VERTICAL
                                 setPadding(dp(context, 8f), dp(context, 8f), dp(context, 8f), dp(context, 8f))
@@ -584,20 +668,45 @@ object FloatingMiniApps {
                                 ).apply {
                                     bottomMargin = dp(context, 6f)
                                 }
+                                setOnClickListener {
+                                    editingNote = note
+                                    etTitle.setText(note.title)
+                                    etNote.setText(note.content)
+                                    etNote.setSelection(note.content.length)
+                                    etNote.requestFocus()
+                                    editBanner.visibility = View.VISIBLE
+                                    btnSave.text = "Update"
+                                }
+                            }
+                            val textCol = LinearLayout(context).apply {
+                                orientation = LinearLayout.VERTICAL
+                                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                            }
+                            if (note.title.isNotBlank()) {
+                                textCol.addView(TextView(context).apply {
+                                    text = note.title
+                                    setTextColor(accentColor)
+                                    textSize = 12f
+                                    setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                                    maxLines = 1
+                                    ellipsize = TextUtils.TruncateAt.END
+                                })
                             }
                             val tvContent = TextView(context).apply {
                                 text = note.content
                                 setTextColor(Color.WHITE)
                                 textSize = 12.5f
-                                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                             }
+                            textCol.addView(tvContent)
+
                             val btnCopy = TextView(context).apply {
                                 text = "Copy"
                                 textSize = 10.5f
                                 setTextColor(accentColor)
                                 setPadding(dp(context, 8f), dp(context, 4f), dp(context, 8f), dp(context, 4f))
                                 setOnClickListener {
-                                    clipboard.setPrimaryClip(ClipData.newPlainText("Note", note.content))
+                                    val combined = if (note.title.isNotBlank()) "${note.title}\n${note.content}" else note.content
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("Note", combined))
                                     Toast.makeText(context, "Copied note", Toast.LENGTH_SHORT).show()
                                 }
                             }
@@ -607,6 +716,7 @@ object FloatingMiniApps {
                                 setTextColor(Color.parseColor("#EF4444"))
                                 setPadding(dp(context, 6f), dp(context, 4f), dp(context, 6f), dp(context, 4f))
                                 setOnClickListener {
+                                    if (editingNote?.id == note.id) clearEditMode()
                                     windowScope.launch {
                                         withContext(Dispatchers.IO) {
                                             SmartDotDatabase.getDatabase(context).smartDotDao().deleteNoteById(note.id)
@@ -614,7 +724,7 @@ object FloatingMiniApps {
                                     }
                                 }
                             }
-                            row.addView(tvContent)
+                            row.addView(textCol)
                             row.addView(btnCopy)
                             row.addView(btnDel)
                             listContainer.addView(row)
@@ -623,6 +733,8 @@ object FloatingMiniApps {
                 }
             }
 
+            container.addView(editBanner)
+            container.addView(etTitle)
             container.addView(inputRow)
             container.addView(scroller)
 
@@ -1130,6 +1242,201 @@ object FloatingMiniApps {
 
             val cleanup: () -> Unit = {
                 ViewerPickerActivity.pendingCallback = null
+            }
+            container to cleanup
+        }
+    }
+
+    /**
+     * Opens official Gemini, ChatGPT, or Google AI Mode web interfaces inside a movable &
+     * resizable FloatingWindowManager overlay with Desktop/Mobile User-Agent toggle and
+     * zero-permission WebChromeClient file/image upload support.
+     */
+    @SuppressLint("SetJavaScriptEnabled")
+    fun openFloatingAiWebWindow(
+        context: Context,
+        manager: FloatingWindowManager,
+        accentColor: Int,
+        aiModeId: String
+    ): FloatingWindowManager.ManagedWindow? {
+        val (title, targetUrl, iconRes) = when (aiModeId) {
+            "chatgpt" -> Triple(
+                context.getString(R.string.floating_window_title_chatgpt),
+                "https://chatgpt.com/",
+                R.drawable.ic_toolbar_chatgpt
+            )
+            "google_ai_mode" -> Triple(
+                context.getString(R.string.floating_window_title_ai_mode),
+                "https://www.google.com/search?udm=50",
+                R.drawable.ic_toolbar_ai_mode
+            )
+            else -> Triple(
+                context.getString(R.string.floating_window_title_gemini),
+                "https://gemini.google.com/app",
+                R.drawable.ic_toolbar_gemini
+            )
+        }
+
+        return manager.openOrFocusWindow(
+            windowId = "floating_ai_$aiModeId",
+            title = title,
+            accentColor = accentColor,
+            iconRes = iconRes,
+            requiresTextInput = true
+        ) { _ ->
+            val container = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(context, 4f), dp(context, 4f), dp(context, 4f), dp(context, 4f))
+            }
+
+            var isDesktopMode = false
+            val mobileUa =
+                "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+            val desktopUa =
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+            val webView = WebView(context).apply {
+                tag = "fw_ai_webview_$aiModeId"
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.allowFileAccess = false
+                settings.allowContentAccess = true
+                settings.useWideViewPort = true
+                settings.loadWithOverviewMode = true
+                settings.builtInZoomControls = true
+                settings.displayZoomControls = false
+                settings.userAgentString = mobileUa
+                runCatching {
+                    val cm = CookieManager.getInstance()
+                    cm.setAcceptCookie(true)
+                    cm.setAcceptThirdPartyCookies(this, true)
+                }
+                webViewClient = WebViewClient()
+                webChromeClient = object : WebChromeClient() {
+                    override fun onShowFileChooser(
+                        webView: WebView?,
+                        filePathCallback: ValueCallback<Array<Uri>>?,
+                        fileChooserParams: FileChooserParams?
+                    ): Boolean {
+                        if (filePathCallback == null) return false
+                        ViewerPickerActivity.pendingWebFileCallback?.onReceiveValue(null)
+                        ViewerPickerActivity.pendingWebFileCallback = filePathCallback
+                        val acceptTypes = fileChooserParams?.acceptTypes
+                            ?.filter { it.isNotBlank() }
+                            ?.toTypedArray()
+                        val pickerIntent = Intent(context, ViewerPickerActivity::class.java).apply {
+                            putExtra(ViewerPickerActivity.EXTRA_PICK_MODE, ViewerPickerActivity.MODE_WEB_FILE_CHOOSER)
+                            if (acceptTypes != null && acceptTypes.isNotEmpty()) {
+                                putExtra(ViewerPickerActivity.EXTRA_ACCEPT_MIME_TYPES, acceptTypes)
+                            }
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        return runCatching {
+                            context.startActivity(pickerIntent)
+                            true
+                        }.getOrElse {
+                            ViewerPickerActivity.pendingWebFileCallback?.onReceiveValue(null)
+                            ViewerPickerActivity.pendingWebFileCallback = null
+                            false
+                        }
+                    }
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    0,
+                    1f
+                )
+            }
+
+            val topControls = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dp(context, 4f)
+                }
+            }
+
+            val btnBack = TextView(context).apply {
+                tag = "fw_ai_back_$aiModeId"
+                text = "◀ Back"
+                textSize = 11f
+                setTextColor(Color.WHITE)
+                setPadding(dp(context, 8f), dp(context, 4f), dp(context, 8f), dp(context, 4f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 8f).toFloat()
+                    setColor(Color.parseColor("#1E293B"))
+                }
+                setOnClickListener { if (webView.canGoBack()) webView.goBack() }
+            }
+
+            val btnReload = TextView(context).apply {
+                tag = "fw_ai_reload_$aiModeId"
+                text = "↻ Reload"
+                textSize = 11f
+                setTextColor(Color.WHITE)
+                setPadding(dp(context, 8f), dp(context, 4f), dp(context, 8f), dp(context, 4f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 8f).toFloat()
+                    setColor(Color.parseColor("#1E293B"))
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    marginStart = dp(context, 6f)
+                }
+                setOnClickListener { webView.reload() }
+            }
+
+            val btnMode = TextView(context).apply {
+                tag = "fw_ai_mode_toggle_$aiModeId"
+                text = "Mode: Mobile"
+                textSize = 11f
+                setTextColor(accentColor)
+                setPadding(dp(context, 10f), dp(context, 4f), dp(context, 10f), dp(context, 4f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 8f).toFloat()
+                    setColor(Color.parseColor("#1E293B"))
+                    setStroke(1, accentColor)
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    marginStart = dp(context, 6f)
+                }
+            }
+            btnMode.setOnClickListener {
+                isDesktopMode = !isDesktopMode
+                if (isDesktopMode) {
+                    btnMode.text = "Mode: Desktop"
+                    webView.settings.userAgentString = desktopUa
+                } else {
+                    btnMode.text = "Mode: Mobile"
+                    webView.settings.userAgentString = mobileUa
+                }
+                webView.reload()
+            }
+
+            topControls.addView(btnBack)
+            topControls.addView(btnReload)
+            topControls.addView(btnMode)
+
+            webView.loadUrl(targetUrl)
+
+            container.addView(topControls)
+            container.addView(webView)
+
+            val cleanup: () -> Unit = {
+                ViewerPickerActivity.pendingWebFileCallback?.onReceiveValue(null)
+                ViewerPickerActivity.pendingWebFileCallback = null
+                runCatching {
+                    webView.stopLoading()
+                    webView.destroy()
+                }
             }
             container to cleanup
         }
