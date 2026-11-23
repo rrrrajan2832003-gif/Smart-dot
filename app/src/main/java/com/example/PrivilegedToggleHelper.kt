@@ -145,14 +145,22 @@ object PrivilegedToggleHelper {
         val currentlyOn = isMobileDataEnabledBestEffort(context)
         val nextState = !currentlyOn
 
-        // Attempt direct TelephonyManager.setDataEnabled (system/carrier-privileged devices)
-        val telephonyOk = runCatching {
-            val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
-                ?: return@runCatching false
-            val setEnabled = TelephonyManager::class.java.getMethod("setDataEnabled", Boolean::class.javaPrimitiveType)
-            setEnabled.invoke(tm, nextState)
-            true
-        }.getOrDefault(false)
+        // Attempt direct TelephonyManager.setDataEnabled only on system/carrier-privileged apps
+        val hasModifyPhoneState = androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            "android.permission.MODIFY_PHONE_STATE"
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val telephonyOk = if (hasModifyPhoneState) {
+            runCatching {
+                val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+                    ?: return@runCatching false
+                val setEnabled = TelephonyManager::class.java.getMethod("setDataEnabled", Boolean::class.javaPrimitiveType)
+                setEnabled.invoke(tm, nextState)
+                true
+            }.getOrDefault(false)
+        } else {
+            false
+        }
         if (telephonyOk) return nextState
 
         val cmd = if (nextState) "svc data enable" else "svc data disable"

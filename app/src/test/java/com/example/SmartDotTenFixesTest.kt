@@ -589,8 +589,14 @@ class SmartDotTenFixesTest {
         assertFalse(icon.contentDescription.isNullOrBlank())
         assertFalse("Compact 1x1 widget must contain zero crowded TextViews", containsTextView(widgetView as ViewGroup))
 
-        // Tapping widget calls silent Mobile Data toggle -> "svc data enable" and ZERO Quick Settings pulls
+        // Tapping widget calls silent Mobile Data toggle (`svc data enable`) with ZERO QS/Panel UI
+        ShadowToast.reset()
         DataToggleWidget.handleWidgetTap(appContext)
+        assertEquals("Mobile Data ON", ShadowToast.getTextOfLatestToast())
+        assertNull(
+            "Silent widget toggle must not open fallback Settings Panel activity",
+            Shadows.shadowOf(appContext).nextStartedActivity
+        )
         assertTrue(shellCommands.contains("svc data enable"))
         assertFalse(
             "Silent toggle must NEVER pull down GLOBAL_ACTION_QUICK_SETTINGS",
@@ -598,6 +604,10 @@ class SmartDotTenFixesTest {
         )
 
         // Wi-Fi & Bluetooth silent shell execution
+        @Suppress("DEPRECATION")
+        val wifiManager = appContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+        @Suppress("DEPRECATION")
+        wifiManager.setWifiEnabled(false)
         assertEquals(true, PrivilegedToggleHelper.toggleSilently(appContext, QuickTileTarget.WIFI))
         assertTrue(shellCommands.contains("svc wifi enable"))
         assertEquals(true, PrivilegedToggleHelper.toggleSilently(appContext, QuickTileTarget.BLUETOOTH))
