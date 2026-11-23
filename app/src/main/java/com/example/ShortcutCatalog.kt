@@ -35,10 +35,10 @@ val ACTION_LIST = listOf(
     AvailableAction("google_ai_mode", "Google AI Mode", "System Shortcuts", "Launch Google AI Mode inside floating window"),
     AvailableAction("gemini", "Gemini AI", "System Shortcuts", "Open Google Gemini inside floating browser window"),
     AvailableAction("chatgpt", "ChatGPT", "System Shortcuts", "Open OpenAI ChatGPT inside floating browser window"),
-    AvailableAction("google_lens", "Google Lens", "System Shortcuts", "1-tap capture screen and send directly to Google Lens"),
+    AvailableAction("google_lens", "Google Lens", "System Shortcuts", "Circle-to-Search overlay with instant in-place screen Translate"),
     AvailableAction("black_screen_mode", "Black Screen Pocket Mode", "System Shortcuts", "Turn screen OLED black while keeping audio playing (double-tap unlock)"),
     AvailableAction("auto_scroller", "Hands-Free Auto-Scroller", "System Shortcuts", "Smooth automatic screen scroller with Play/Pause and 1x-3x speed"),
-    AvailableAction("screen_magnifier", "Floating Magnifying Glass", "System Shortcuts", "Draggable 2.5x circular zoom lens overlay"),
+    AvailableAction("auto_clicker", "Auto-Clicker", "System Shortcuts", "Draggable tap target ring with Play/Pause & 100ms-2000ms interval"),
     AvailableAction("notifications", "Notifications", "System Shortcuts", "Expand status bar notification panel"),
     AvailableAction("quick_settings", "Quick Settings", "System Shortcuts", "Expand status bar quick settings panel"),
     AvailableAction("split_screen", "Split Screen", "System Shortcuts", "Initiate direct 1-tap Split Screen Mode"),
@@ -111,7 +111,7 @@ fun resolveShortcutShortLabel(actionId: String): String {
         "google_lens" -> "Lens"
         "black_screen_mode" -> "Pocket Mode"
         "auto_scroller" -> "Auto Scroll"
-        "screen_magnifier" -> "Magnifier"
+        "auto_clicker" -> "Auto Click"
         "power_menu" -> "Power"
         "volume_panel" -> "Vol Panel"
         "media_play_pause" -> "Play/Pause"

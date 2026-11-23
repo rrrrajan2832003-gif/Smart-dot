@@ -54,6 +54,7 @@ class SmartDotFeaturesTest {
 
     @After
     fun tearDown() {
+        PrivilegedToggleHelper.shizukuShellTestHook = null
         ShadowSettings.setCanDrawOverlays(false)
     }
 
@@ -200,13 +201,20 @@ class SmartDotFeaturesTest {
         assertNotNull("Swipe Up -> Voice Assistant should start activity", voiceIntent)
         assertEquals(Intent.ACTION_ASSIST, voiceIntent.action)
 
-        // Swipe Down-Left on locked Edge Sidebar -> triggers wifi settings without changing sidebar y
+        // Swipe Down-Left on locked Edge Sidebar -> toggles Wi-Fi silently in background without changing sidebar y or opening Settings
+        val wifiCommands = mutableListOf<String>()
+        PrivilegedToggleHelper.shizukuShellTestHook = { cmd ->
+            wifiCommands.add(cmd)
+            true
+        }
         dispatchRawDragGesture(sidebar, startX = 1060f, startY = 400f, endX = 880f, endY = 580f)
         assertEquals(initialSidebarY, sidebarParams.y)
-
-        val wifiIntent = Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
-        assertNotNull("Swipe Down-Left -> Wi-Fi should start settings activity", wifiIntent)
-        assertEquals(android.provider.Settings.Panel.ACTION_WIFI, wifiIntent.action)
+        assertTrue("Swipe Down-Left -> Wi-Fi should toggle silently via svc wifi", wifiCommands.any { it.startsWith("svc wifi") })
+        assertNull(
+            "Direct silent Wi-Fi toggle must NOT open Settings Panel",
+            Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
+        )
+        PrivilegedToggleHelper.shizukuShellTestHook = null
 
         // Unlock position -> dragging dot updates saved coordinates
         prefs.edit().putBoolean("dot_position_locked", false).commit()

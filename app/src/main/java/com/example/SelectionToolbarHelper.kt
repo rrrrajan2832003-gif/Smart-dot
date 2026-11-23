@@ -1,6 +1,9 @@
 package com.example
 
 import android.app.SearchManager
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -231,9 +234,63 @@ object SelectionToolbarHelper {
         }
     }
 
+    private fun attachImageClipData(context: Context, intent: Intent, uri: Uri) {
+        intent.clipData = ClipData.newUri(context.contentResolver, "Cutout Image", uri)
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+
+    private fun copyQuestionToClipboard(context: Context, question: String) {
+        val clean = question.trim()
+        if (clean.isEmpty()) return
+        runCatching {
+            val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            cb?.setPrimaryClip(ClipData.newPlainText("SmartDot Question", clean))
+        }
+    }
+
     /**
-     * Sends BOTH a cropped image URI (EXTRA_STREAM) and typed question text (EXTRA_TEXT)
-     * directly to Google App / Lens for multimodal visual search.
+     * Launches native Google Circle-to-Search / Google Lens overlay directly without uploading
+     * any full-screen screenshot. Returns null if no native Lens activity is present.
+     */
+    fun createNativeGoogleLensIntent(context: Context): Intent? {
+        val pm = context.packageManager
+        val explicitComponents = listOf(
+            ComponentName(GOOGLE_APP_PACKAGE, "com.google.android.apps.search.lens.LensActivity"),
+            ComponentName(GOOGLE_APP_PACKAGE, "com.google.android.apps.gsa.staticplugins.lens.LensActivity"),
+            ComponentName(SEARCH_LITE_PACKAGE, "com.google.android.apps.searchlite.lens.LensActivity")
+        )
+        for (comp in explicitComponents) {
+            val query = Intent().apply {
+                component = comp
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val exported = runCatching {
+                pm.queryIntentActivities(query, 0).any { it.activityInfo?.exported == true }
+            }.getOrDefault(false)
+            if (exported) return query
+        }
+
+        val lensPackages = listOf("com.google.ar.lens", "com.google.googlelens")
+        for (pkg in lensPackages) {
+            pm.getLaunchIntentForPackage(pkg)?.let { launchIntent ->
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                return launchIntent
+            }
+        }
+        return null
+    }
+
+    fun launchNativeGoogleLens(context: Context): Boolean {
+        val intent = createNativeGoogleLensIntent(context) ?: return false
+        return runCatching {
+            context.startActivity(intent)
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * Sends BOTH a cropped image URI (EXTRA_STREAM + ClipData) and typed question text
+     * (EXTRA_TEXT + EXTRA_SUBJECT) directly to Google App / Lens for multimodal visual search.
      */
     fun createGoogleSearchImageAndTextIntent(
         context: Context,
@@ -256,9 +313,11 @@ object SelectionToolbarHelper {
                 putExtra(Intent.EXTRA_STREAM, uri)
                 if (cleanQuestion.isNotEmpty()) {
                     putExtra(Intent.EXTRA_TEXT, cleanQuestion)
+                    putExtra(Intent.EXTRA_SUBJECT, cleanQuestion)
                 }
+                attachImageClipData(context, this, uri)
                 setPackage(pkg)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             if (sendIntent.resolveActivity(pm) != null) {
                 return sendIntent
@@ -269,9 +328,11 @@ object SelectionToolbarHelper {
             setDataAndType(uri, "image/png")
             if (cleanQuestion.isNotEmpty()) {
                 putExtra(Intent.EXTRA_TEXT, cleanQuestion)
+                putExtra(Intent.EXTRA_SUBJECT, cleanQuestion)
             }
+            attachImageClipData(context, this, uri)
             setPackage(GOOGLE_APP_PACKAGE)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         if (viewIntent.resolveActivity(pm) != null) {
             return viewIntent
@@ -287,8 +348,9 @@ object SelectionToolbarHelper {
             putExtra(Intent.EXTRA_STREAM, uri)
             if (cleanQuestion.isNotEmpty()) {
                 putExtra(Intent.EXTRA_TEXT, cleanQuestion)
+                putExtra(Intent.EXTRA_SUBJECT, cleanQuestion)
             }
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            attachImageClipData(context, this, uri)
         }
         return Intent.createChooser(fallbackSend, "Visual Search").apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -301,6 +363,7 @@ object SelectionToolbarHelper {
         question: String = "",
         fallbackText: String = ""
     ): Boolean {
+        copyQuestionToClipboard(context, question)
         val intent = createGoogleSearchImageAndTextIntent(context, croppedBitmap, question, fallbackText)
             ?: return false
         return runCatching {
@@ -465,9 +528,11 @@ object SelectionToolbarHelper {
             putExtra(Intent.EXTRA_STREAM, uri)
             if (cleanQuestion.isNotEmpty()) {
                 putExtra(Intent.EXTRA_TEXT, cleanQuestion)
+                putExtra(Intent.EXTRA_SUBJECT, cleanQuestion)
             }
+            attachImageClipData(context, this, uri)
             setPackage(GOOGLE_APP_PACKAGE)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         if (lensSend.resolveActivity(pm) != null) {
             return lensSend
@@ -477,9 +542,11 @@ object SelectionToolbarHelper {
             setDataAndType(uri, "image/png")
             if (cleanQuestion.isNotEmpty()) {
                 putExtra(Intent.EXTRA_TEXT, cleanQuestion)
+                putExtra(Intent.EXTRA_SUBJECT, cleanQuestion)
             }
+            attachImageClipData(context, this, uri)
             setPackage(GOOGLE_APP_PACKAGE)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         if (lensView.resolveActivity(pm) != null) {
             return lensView
@@ -501,6 +568,7 @@ object SelectionToolbarHelper {
         question: String = "",
         fallbackText: String = ""
     ): Boolean {
+        copyQuestionToClipboard(context, question)
         val intent = createGoogleAiModeImageIntent(context, croppedBitmap, question, fallbackText)
             ?: return false
         return runCatching {
@@ -598,9 +666,11 @@ object SelectionToolbarHelper {
             putExtra(Intent.EXTRA_STREAM, uri)
             if (cleanQuestion.isNotEmpty()) {
                 putExtra(Intent.EXTRA_TEXT, cleanQuestion)
+                putExtra(Intent.EXTRA_SUBJECT, cleanQuestion)
             }
+            attachImageClipData(context, this, uri)
             setPackage(targetPackage)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         if (sendImageIntent.resolveActivity(pm) != null) {
             return sendImageIntent
@@ -610,6 +680,7 @@ object SelectionToolbarHelper {
         if (launchIntent != null) {
             if (cleanQuestion.isNotEmpty()) {
                 launchIntent.putExtra(Intent.EXTRA_TEXT, cleanQuestion)
+                launchIntent.putExtra(Intent.EXTRA_SUBJECT, cleanQuestion)
             }
             launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             return launchIntent
@@ -628,6 +699,7 @@ object SelectionToolbarHelper {
     }
 
     fun launchGeminiImage(context: Context, croppedBitmap: Bitmap, question: String = ""): Boolean {
+        copyQuestionToClipboard(context, question)
         val intent = createTargetAppImageIntent(
             context = context,
             targetPackage = GEMINI_PACKAGE,
@@ -646,6 +718,7 @@ object SelectionToolbarHelper {
     }
 
     fun launchChatGptImage(context: Context, croppedBitmap: Bitmap, question: String = ""): Boolean {
+        copyQuestionToClipboard(context, question)
         val intent = createTargetAppImageIntent(
             context = context,
             targetPackage = CHATGPT_PACKAGE,

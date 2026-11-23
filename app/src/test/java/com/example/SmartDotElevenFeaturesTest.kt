@@ -204,9 +204,9 @@ class SmartDotElevenFeaturesTest {
             root.layout(0, 0, 1080, 2400)
 
             val etWordQuestion = root.findViewById<EditText>(R.id.et_word_ai_question)
-            val btnWordQuickTranslate = root.findViewById<TextView>(R.id.btn_word_quick_translate)
+            val btnWordQuickTranslate = root.findViewById<ImageButton>(R.id.btn_word_quick_translate)
             val etCutoutQuestion = root.findViewById<EditText>(R.id.et_cutout_ai_question)
-            val btnCutoutQuickTranslate = root.findViewById<TextView>(R.id.btn_cutout_quick_translate)
+            val btnCutoutQuickTranslate = root.findViewById<ImageButton>(R.id.btn_cutout_quick_translate)
 
             assertTrue(btnWordQuickTranslate.isEnabled)
             assertEquals(1.0f, btnWordQuickTranslate.alpha, 0.01f)
@@ -270,25 +270,48 @@ class SmartDotElevenFeaturesTest {
         service.stopSelf()
     }
 
-    // Feature 2 & 6: Compact 48dp widget + 80ms Quick-Tile automation + fast fallback
+    // Feature 2 & 6: True 1-Tap Direct Mobile Data Widget (Shizuku -> WRITE_SECURE_SETTINGS, never opening Settings/QS)
     @Test
-    fun `Feature 2 & 6 - Widget uses 48dp compact layout and fast 80ms QuickTileAutomation delays`() {
-        assertEquals(80L, QuickTileAutomation.TILE_POLL_DELAY_MS)
-        assertEquals(80L, QuickTileAutomation.BACK_COLLAPSE_DELAY_MS)
-
+    fun `Feature 2 & 6 - DataToggleWidget toggles silently via Shizuku or WRITE_SECURE_SETTINGS with zero QS or Settings`() {
         val widgetView = LayoutInflater.from(appContext).inflate(R.layout.widget_data_toggle, null)
         val icon = widgetView.findViewById<ImageView>(R.id.widget_data_icon)
         assertNotNull(icon)
 
-        // When silent toggle is unavailable and A11y service is present, DataToggleWidget invokes QuickTileAutomation (never opening panel first)
         val a11yService = Robolectric.setupService(SmartDotAccessibilityService::class.java)
-        a11yService.performGlobalActionTestHook = { true }
+        val globalActions = mutableListOf<Int>()
+        a11yService.performGlobalActionTestHook = { act ->
+            globalActions.add(act)
+            true
+        }
         SmartDotAccessibilityService.setInstanceForTest(a11yService)
+
+        // Path 1: Shizuku shell `svc data enable`
+        val cmds = mutableListOf<String>()
+        PrivilegedToggleHelper.shizukuShellTestHook = { cmd ->
+            cmds.add(cmd)
+            true
+        }
+        PrivilegedToggleHelper.mobileDataStateTestHook = { false }
 
         drainActivities()
         DataToggleWidget.handleWidgetTap(appContext)
-        // Quick-Tile flow triggers GLOBAL_ACTION_QUICK_SETTINGS via postDelayed without opening Settings Panel immediately
+        assertTrue(cmds.contains("svc data enable"))
+        assertTrue("Widget must NEVER open Quick Settings", globalActions.isEmpty())
+        assertNull("Widget must NEVER open Settings Panel", Shadows.shadowOf(appContext).peekNextStartedActivity())
+
+        // Path 2: Unprivileged tap does NOT open Quick Settings or Settings Panel either
+        PrivilegedToggleHelper.shizukuShellTestHook = { false }
+        PrivilegedToggleHelper.rootShellTestHook = { false }
+        DataToggleWidget.handleWidgetTap(appContext)
+        assertTrue(globalActions.isEmpty())
         assertNull(Shadows.shadowOf(appContext).peekNextStartedActivity())
+
+        // Path 3: WRITE_SECURE_SETTINGS fallback updates Settings.Global `mobile_data`
+        Shadows.shadowOf(appContext).grantPermissions(android.Manifest.permission.WRITE_SECURE_SETTINGS)
+        android.provider.Settings.Global.putInt(appContext.contentResolver, "mobile_data", 0)
+        PrivilegedToggleHelper.mobileDataStateTestHook = null
+        assertEquals(true, PrivilegedToggleHelper.toggleMobileDataSilently(appContext))
+        assertEquals(1, android.provider.Settings.Global.getInt(appContext.contentResolver, "mobile_data", 0))
     }
 
     // Feature 3: Full-Screen Installed App Launches without Freeform Prompt
@@ -339,13 +362,21 @@ class SmartDotElevenFeaturesTest {
         service.stopSelf()
     }
 
-    // Feature 5: Black Screen Pocket Mode, Hands-Free Auto-Scroller, Floating Magnifier
+    // Feature 5: True Pure-Black OLED Pocket Mode, Hands-Free Auto-Scroller, Auto-Clicker (replacing Magnifier)
     @Test
-    fun `Feature 5 - Pocket Mode, Auto-Scroller, and Floating Magnifier toggles and shield visibility work`() {
+    fun `Feature 5 - OLED Pocket Mode, Auto-Scroller, and Auto-Clicker work properly`() {
+        assertFalse("Magnifier must be removed from ACTION_LIST", ACTION_LIST.any { it.id == "screen_magnifier" })
+        assertTrue("Auto-Clicker must be in ACTION_LIST", ACTION_LIST.any { it.id == "auto_clicker" })
+
         val a11yService = Robolectric.setupService(SmartDotAccessibilityService::class.java)
         var scrollCalls = 0
+        val tapCoords = mutableListOf<Pair<Float, Float>>()
         a11yService.autoScrollTestHook = { speed ->
             scrollCalls += speed
+            true
+        }
+        a11yService.autoClickTestHook = { x, y ->
+            tapCoords.add(x to y)
             true
         }
         SmartDotAccessibilityService.setInstanceForTest(a11yService)
@@ -353,9 +384,16 @@ class SmartDotElevenFeaturesTest {
         val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val proTools = ProToolsOverlayManager(appContext, wm)
 
-        // 1) Black Screen Pocket Mode
+        // 1) True Pure-Black OLED Pocket Mode with dim lock icon (0.20f)
         proTools.toggleBlackScreenMode()
         assertTrue(proTools.isBlackScreenActive())
+        val blackScreenField = ProToolsOverlayManager::class.java
+            .getDeclaredField("blackScreenView")
+            .apply { isAccessible = true }
+        val blackRoot = blackScreenField.get(proTools) as FrameLayout
+        val unlockIcon = blackRoot.findViewWithTag<ImageView>("pro_black_screen_unlock_badge")
+        assertNotNull(unlockIcon)
+        assertEquals(0.20f, unlockIcon.alpha, 0.01f)
         proTools.toggleBlackScreenMode()
         assertFalse(proTools.isBlackScreenActive())
 
@@ -367,13 +405,40 @@ class SmartDotElevenFeaturesTest {
         proTools.toggleAutoScroller()
         assertFalse(proTools.isAutoScrollerActive())
 
-        // 3) Floating Magnifying Glass
-        proTools.toggleMagnifier(Color.CYAN)
-        assertTrue(proTools.isMagnifierActive())
+        // 3) Auto-Clicker (target crosshair + Play/Pause pass-through + interval cycling)
+        proTools.toggleAutoClicker(Color.CYAN)
+        assertTrue(proTools.isAutoClickerActive())
+        assertFalse(proTools.isAutoClickerPlaying())
+        assertEquals(500L, proTools.getAutoClickerIntervalMs())
+
+        val targetField = ProToolsOverlayManager::class.java
+            .getDeclaredField("autoClickerTargetParams")
+            .apply { isAccessible = true }
+        val barField = ProToolsOverlayManager::class.java
+            .getDeclaredField("autoClickerBarView")
+            .apply { isAccessible = true }
+        val bar = barField.get(proTools) as LinearLayout
+        val btnSpeed = bar.findViewWithTag<TextView>("pro_auto_clicker_speed")
+        val btnPlayPause = bar.findViewWithTag<TextView>("pro_auto_clicker_play_pause")
+
+        btnSpeed.performClick()
+        assertEquals(1000L, proTools.getAutoClickerIntervalMs())
+
+        btnPlayPause.performClick()
+        assertTrue(proTools.isAutoClickerPlaying())
+        val lpWhilePlaying = targetField.get(proTools) as WindowManager.LayoutParams
+        assertTrue((lpWhilePlaying.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0)
+        assertTrue("Auto-Clicker must dispatch taps via AccessibilityService", tapCoords.isNotEmpty())
+
+        btnPlayPause.performClick()
+        assertFalse(proTools.isAutoClickerPlaying())
+        val lpWhilePaused = targetField.get(proTools) as WindowManager.LayoutParams
+        assertEquals(0, lpWhilePaused.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+
         proTools.setShieldHidden(true)
         proTools.setShieldHidden(false)
-        proTools.toggleMagnifier(Color.CYAN)
-        assertFalse(proTools.isMagnifierActive())
+        proTools.toggleAutoClicker(Color.CYAN)
+        assertFalse(proTools.isAutoClickerActive())
 
         proTools.releaseAll()
     }
@@ -477,12 +542,87 @@ class SmartDotElevenFeaturesTest {
             assertEquals(Intent.ACTION_SEND, intent!!.action)
             assertEquals("image/png", intent.type)
             assertNotNull("Cutout image URI must be attached in EXTRA_STREAM", intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))
+            assertNotNull("Cutout image URI must be attached in ClipData", intent.clipData)
             assertEquals("Identify this part", intent.getStringExtra(Intent.EXTRA_TEXT))
+            assertEquals("Identify this part", intent.getStringExtra(Intent.EXTRA_SUBJECT))
             assertEquals("Identify this part", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
         } finally {
             controller.release()
             scope.cancel()
         }
+    }
+
+    @Test
+    fun `Circle-to-Search Lens mode opens bottom bar without full image upload and translates screen in-place`() {
+        val a11yService = Robolectric.setupService(SmartDotAccessibilityService::class.java)
+        SmartDotAccessibilityService.setInstanceForTest(a11yService)
+
+        val scope = CoroutineScope(Dispatchers.Main + Job())
+        val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val bitmap = Bitmap.createBitmap(1080, 2400, Bitmap.Config.ARGB_8888)
+        var fullScreenTranslateCalls = 0
+        val ocrHelper = ScreenOcrHelper(
+            customOcrRunner = {
+                listOf(ScreenOcrHelper.OcrRawItem("Bonjour", Rect(100, 300, 280, 360), isLine = false)) to emptyList()
+            }
+        )
+        val controller = ScreenTextCopyController(
+            context = appContext,
+            serviceScope = scope,
+            clipboardManager = clipboard,
+            getAccentColor = { Color.CYAN },
+            dismissActivePopup = {},
+            setHostOverlaysVisible = {},
+            onAccessibilityRequired = {},
+            nodeExtractor = { emptyList() },
+            ocrHelperFactory = { ocrHelper },
+            screenBitmapCapturer = { cb -> cb(bitmap) },
+            onFullScreenTranslateRequested = { fullScreenTranslateCalls++ }
+        )
+
+        try {
+            drainActivities()
+            controller.start(circleToSearchBarMode = true)
+            ShadowLooper.idleMainLooper(ScreenTextCopyController.CAPTURE_HIDE_DELAY_MS + 15L, TimeUnit.MILLISECONDS)
+            val deadline = System.currentTimeMillis() + 3000L
+            while (!controller.isOverlayShowing() && System.currentTimeMillis() < deadline) {
+                ShadowLooper.idleMainLooper(20, TimeUnit.MILLISECONDS)
+                Thread.sleep(10)
+            }
+            assertTrue(controller.isOverlayShowing())
+            assertNull("Circle-to-Search bar mode must NOT upload full-screen image", Shadows.shadowOf(appContext).nextStartedActivity)
+
+            val overlayCtrl = ScreenTextCopyController::class.java
+                .getDeclaredField("overlayController")
+                .apply { isAccessible = true }
+                .get(controller) as InlineTextOverlayController
+            val root = InlineTextOverlayController::class.java
+                .getDeclaredField("overlayView")
+                .apply { isAccessible = true }
+                .get(overlayCtrl) as View
+
+            val bottomBar = root.findViewById<LinearLayout>(R.id.circle_to_search_bottom_bar)
+            val btnTranslate = root.findViewById<ImageButton>(R.id.btn_circle_search_translate)
+            assertEquals(View.VISIBLE, bottomBar.visibility)
+            assertNotNull(btnTranslate)
+
+            btnTranslate.performClick()
+            assertEquals(1, fullScreenTranslateCalls)
+        } finally {
+            controller.release()
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `MainActivity Silent Toggle Setup card copies ADB WRITE_SECURE_SETTINGS grant command`() {
+        composeRule.onNodeWithTag("silent_toggle_setup_card").performScrollTo()
+        composeRule.onNodeWithTag("btn_copy_adb_command").performScrollTo().performClick()
+        composeRule.waitForIdle()
+
+        val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val copied = clipboard.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+        assertEquals(PrivilegedToggleHelper.adbGrantCommand(appContext), copied)
     }
 
     // Feature 9: 1-Tap Google Lens Shortcut

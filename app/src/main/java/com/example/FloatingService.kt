@@ -1189,7 +1189,7 @@ class FloatingService : Service() {
             "google_lens" -> R.drawable.ic_toolbar_lens
             "black_screen_mode" -> android.R.drawable.ic_lock_idle_lock
             "auto_scroller" -> android.R.drawable.arrow_down_float
-            "screen_magnifier" -> android.R.drawable.ic_menu_search
+            "auto_clicker" -> android.R.drawable.ic_menu_mylocation
             "power_menu" -> android.R.drawable.ic_lock_power_off
             "volume_panel" -> android.R.drawable.ic_lock_silent_mode_off
             "media_play_pause" -> android.R.drawable.ic_media_play
@@ -1288,23 +1288,15 @@ class FloatingService : Service() {
 
     private fun triggerGoogleLensOneTap() {
         activePopupWindow?.dismiss()
+        if (SelectionToolbarHelper.launchNativeGoogleLens(this)) {
+            return
+        }
         val sInstance = SmartDotAccessibilityService.instance
         if (sInstance == null || SmartDotAccessibilityService.isUserPaused) {
             showAccessibilityDialog()
             return
         }
-        setOverlayViewsVisible(false)
-        Handler(Looper.getMainLooper()).postDelayed({
-            sInstance.captureScreenBitmapInMemory { bitmap ->
-                setOverlayViewsVisible(true)
-                if (bitmap != null) {
-                    SelectionToolbarHelper.launchGoogleLensImage(this, bitmap)
-                    bitmap.recycle()
-                } else {
-                    Toast.makeText(this, "Could not capture screen for Google Lens.", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }, 120L)
+        getOrCreateScreenTextCopyController().start(circleToSearchBarMode = true)
     }
 
     private fun getConfiguredAccentColor(): Int {
@@ -1437,6 +1429,27 @@ class FloatingService : Service() {
         }
     }
 
+    private fun triggerDirectSilentToggle(target: QuickTileAutomation.QuickTileTarget) {
+        activePopupWindow?.dismiss()
+        val silentResult = PrivilegedToggleHelper.toggleSilently(this, target)
+        if (silentResult != null) {
+            if (target == QuickTileAutomation.QuickTileTarget.MOBILE_DATA) {
+                DataToggleWidget.refreshAllWidgets(this, forcedState = silentResult)
+            }
+            Toast.makeText(
+                this,
+                "${target.displayName} ${if (silentResult) "ON" else "OFF"}",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
+        Toast.makeText(
+            this,
+            getString(R.string.silent_toggle_requires_privilege),
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
     private fun triggerOneTapQuickTileToggle(target: QuickTileAutomation.QuickTileTarget) {
         activePopupWindow?.dismiss()
         // 1. Silent toggle first (Bluetooth < API 33, System Auto-Rotate, WRITE_SECURE_SETTINGS, Shizuku / root svc)
@@ -1557,9 +1570,9 @@ class FloatingService : Service() {
                     activePopupWindow?.dismiss()
                     getOrCreateProToolsManager().toggleAutoScroller()
                 }
-                "screen_magnifier" -> {
+                "auto_clicker" -> {
                     activePopupWindow?.dismiss()
-                    getOrCreateProToolsManager().toggleMagnifier(getConfiguredAccentColor())
+                    getOrCreateProToolsManager().toggleAutoClicker(getConfiguredAccentColor())
                 }
                 "home" -> performGlobalActionSafety(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
                 "back" -> performGlobalActionSafety(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
@@ -1632,9 +1645,9 @@ class FloatingService : Service() {
                 }
                 "voice_assistant" -> triggerVoiceAssistant()
                 "flashlight" -> toggleFlashlight()
-                "wifi" -> triggerOneTapQuickTileToggle(QuickTileAutomation.QuickTileTarget.WIFI)
-                "mobile_data" -> triggerOneTapQuickTileToggle(QuickTileAutomation.QuickTileTarget.MOBILE_DATA)
-                "bluetooth" -> triggerOneTapQuickTileToggle(QuickTileAutomation.QuickTileTarget.BLUETOOTH)
+                "wifi" -> triggerDirectSilentToggle(QuickTileAutomation.QuickTileTarget.WIFI)
+                "mobile_data" -> triggerDirectSilentToggle(QuickTileAutomation.QuickTileTarget.MOBILE_DATA)
+                "bluetooth" -> triggerDirectSilentToggle(QuickTileAutomation.QuickTileTarget.BLUETOOTH)
                 "brightness" -> {
                     val stepped = PrivilegedToggleHelper.adjustBrightnessByStep(this, +35)
                     if (stepped != null) {

@@ -291,10 +291,21 @@ class SmartDotExtendedFeaturesTest {
         assertNotNull(scheduled)
         controller.destroy()
 
-        // DataToggleWidget tap falls back cleanly to system connectivity panel
-        val widget = DataToggleWidget()
-        widget.onReceive(appContext, Intent(DataToggleWidget.ACTION_WIDGET_TOGGLE_DATA))
-        val dataPanelIntent = Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
-        assertNotNull(dataPanelIntent)
+        // DataToggleWidget tap toggles Mobile Data silently without opening connectivity Settings Panel
+        val shellCommands = mutableListOf<String>()
+        PrivilegedToggleHelper.shizukuShellTestHook = { cmd ->
+            shellCommands.add(cmd)
+            true
+        }
+        PrivilegedToggleHelper.mobileDataStateTestHook = { false }
+        try {
+            val widget = DataToggleWidget()
+            widget.onReceive(appContext, Intent(DataToggleWidget.ACTION_WIDGET_TOGGLE_DATA))
+            assertTrue(shellCommands.contains("svc data enable"))
+            assertNull(Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity)
+        } finally {
+            PrivilegedToggleHelper.shizukuShellTestHook = null
+            PrivilegedToggleHelper.mobileDataStateTestHook = null
+        }
     }
 }

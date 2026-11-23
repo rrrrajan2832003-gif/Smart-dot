@@ -193,23 +193,15 @@
                 android:textColorHint="#94A3B8"
                 android:textSize="12sp" />
 
-            <TextView
+            <ImageButton
                 android:id="@+id/btn_word_quick_translate"
-                android:layout_width="wrap_content"
-                android:layout_height="30dp"
-                android:layout_marginStart="4dp"
-                android:layout_marginEnd="4dp"
-                android:clickable="true"
+                android:layout_width="38dp"
+                android:layout_height="38dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
                 android:contentDescription="@string/quick_translate_chip_desc"
-                android:focusable="true"
-                android:gravity="center"
-                android:minWidth="48dp"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
-                android:text="@string/quick_translate_chip_label"
-                android:textColor="#00E5FF"
-                android:textSize="11sp"
-                android:textStyle="bold" />
+                android:padding="8dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_tab_translate" />
 
             <ImageButton
                 android:id="@+id/btn_word_ai_send"
@@ -326,23 +318,15 @@
                 android:textColorHint="#94A3B8"
                 android:textSize="12sp" />
 
-            <TextView
+            <ImageButton
                 android:id="@+id/btn_cutout_quick_translate"
-                android:layout_width="wrap_content"
-                android:layout_height="30dp"
-                android:layout_marginStart="4dp"
-                android:layout_marginEnd="4dp"
-                android:clickable="true"
+                android:layout_width="38dp"
+                android:layout_height="38dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
                 android:contentDescription="@string/quick_translate_chip_desc"
-                android:focusable="true"
-                android:gravity="center"
-                android:minWidth="48dp"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
-                android:text="@string/quick_translate_chip_label"
-                android:textColor="#00E5FF"
-                android:textSize="11sp"
-                android:textStyle="bold" />
+                android:padding="8dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_tab_translate" />
 
             <ImageButton
                 android:id="@+id/btn_cutout_ai_send"
@@ -371,6 +355,67 @@
                 android:scaleType="centerInside"
                 android:src="@drawable/ic_app_close" />
         </LinearLayout>
+    </LinearLayout>
+
+    <!-- Circle-to-Search Style Bottom Bar for Google Lens Shortcut (with In-Place Screen Translate on Right) -->
+    <LinearLayout
+        android:id="@+id/circle_to_search_bottom_bar"
+        android:layout_width="wrap_content"
+        android:layout_height="52dp"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="28dp"
+        android:elevation="12dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:visibility="gone">
+
+        <ImageButton
+            android:id="@+id/btn_circle_search_native_lens"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/circle_search_native_lens_desc"
+            android:padding="12dp"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_toolbar_lens" />
+
+        <TextView
+            android:id="@+id/tv_circle_search_prompt"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:maxWidth="200dp"
+            android:paddingStart="4dp"
+            android:paddingEnd="6dp"
+            android:text="@string/circle_search_hint"
+            android:textColor="#E2E8F0"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/btn_circle_search_translate"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/circle_search_translate_desc"
+            android:padding="11dp"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_tab_translate" />
+
+        <ImageButton
+            android:id="@+id/btn_circle_search_close"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/screen_copy_close"
+            android:padding="13dp"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_app_close" />
     </LinearLayout>
 
 </com.example.InlineOverlayRootLayout>

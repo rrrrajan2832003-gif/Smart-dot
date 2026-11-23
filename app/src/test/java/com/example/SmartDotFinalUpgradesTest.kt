@@ -25,6 +25,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -275,10 +276,21 @@ class SmartDotFinalUpgradesTest {
             receiverInfo.metaData.getInt("android.appwidget.provider")
         )
 
-        val widget = DataToggleWidget()
-        widget.onReceive(appContext, Intent(DataToggleWidget.ACTION_WIDGET_TOGGLE_DATA))
-        val launchedIntent = Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
-        assertNotNull(launchedIntent)
-        assertEquals(Settings.Panel.ACTION_INTERNET_CONNECTIVITY, launchedIntent.action)
+        val shellCommands = mutableListOf<String>()
+        PrivilegedToggleHelper.shizukuShellTestHook = { cmd ->
+            shellCommands.add(cmd)
+            true
+        }
+        PrivilegedToggleHelper.mobileDataStateTestHook = { false }
+        try {
+            val widget = DataToggleWidget()
+            widget.onReceive(appContext, Intent(DataToggleWidget.ACTION_WIDGET_TOGGLE_DATA))
+            assertTrue(shellCommands.contains("svc data enable"))
+            val launchedIntent = Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
+            assertNull("Widget must never open Settings Panel on tap", launchedIntent)
+        } finally {
+            PrivilegedToggleHelper.shizukuShellTestHook = null
+            PrivilegedToggleHelper.mobileDataStateTestHook = null
+        }
     }
 }

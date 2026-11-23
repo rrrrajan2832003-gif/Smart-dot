@@ -218,6 +218,30 @@ class SmartDotAccessibilityService : AccessibilityService() {
     internal var accessibleRootsTestHook: (() -> List<AccessibilityNodeInfo>)? = null
     internal var splitModeCheckTestHook: (() -> Boolean)? = null
     internal var autoScrollTestHook: ((Int) -> Boolean)? = null
+    internal var autoClickTestHook: ((Float, Float) -> Boolean)? = null
+
+    /**
+     * Dispatches a single-point tap gesture at screen coordinates (x, y) on API 24+ for Auto-Clicker.
+     */
+    fun performTapAt(x: Float, y: Float): Boolean {
+        autoClickTestHook?.let { return it(x, y) }
+        if (isUserPaused) return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+
+        val safeX = x.coerceAtLeast(0f)
+        val safeY = y.coerceAtLeast(0f)
+        val path = Path().apply {
+            moveTo(safeX, safeY)
+            lineTo(safeX + 0.5f, safeY + 0.5f)
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, 40L))
+            .build()
+
+        return runCatching {
+            dispatchGesture(gesture, null, null)
+        }.getOrDefault(false)
+    }
 
     /**
      * Dispatches a smooth vertical swipe upward (scroll down the feed) on API 24+.

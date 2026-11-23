@@ -3,15 +3,18 @@ package com.example
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.widget.RemoteViews
 import android.widget.Toast
 
 /**
- * 1x1 Home Screen Data ON/OFF Widget.
- * Tapping triggers SmartDotAccessibilityService Mobile Data quick-tile automation,
- * or opens the system Internet Connectivity panel when Accessibility isn't active.
+ * True 1-Tap Direct Mobile Data Home Screen Widget:
+ * Toggles Mobile Data silently in the background via Shizuku (`svc data enable/disable`) or
+ * `WRITE_SECURE_SETTINGS` + `TelephonyManager` reflection without EVER opening Quick Settings
+ * or Android Internet/Settings panels.
  */
 class DataToggleWidget : AppWidgetProvider() {
 
@@ -38,9 +41,21 @@ class DataToggleWidget : AppWidgetProvider() {
         fun updateWidgetView(
             context: Context,
             appWidgetManager: AppWidgetManager,
-            appWidgetId: Int
+            appWidgetId: Int,
+            forcedState: Boolean? = null
         ) {
+            val isOn = forcedState ?: PrivilegedToggleHelper.isMobileDataEnabledBestEffort(context)
             val views = RemoteViews(context.packageName, R.layout.widget_data_toggle)
+            views.setInt(
+                R.id.widget_data_root,
+                "setBackgroundResource",
+                if (isOn) R.drawable.bg_widget_data_tile else R.drawable.bg_widget_data_tile_off
+            )
+            views.setInt(
+                R.id.widget_data_icon,
+                "setColorFilter",
+                Color.parseColor(if (isOn) "#00E5FF" else "#64748B")
+            )
             val toggleIntent = Intent(context, DataToggleWidget::class.java).apply {
                 action = ACTION_WIDGET_TOGGLE_DATA
             }
@@ -54,12 +69,20 @@ class DataToggleWidget : AppWidgetProvider() {
             appWidgetManager.updateAppWidget(appWidgetId, views)
         }
 
+        fun refreshAllWidgets(context: Context, forcedState: Boolean? = null) {
+            val manager = runCatching { AppWidgetManager.getInstance(context) }.getOrNull() ?: return
+            val ids = runCatching {
+                manager.getAppWidgetIds(ComponentName(context, DataToggleWidget::class.java))
+            }.getOrNull() ?: return
+            for (widgetId in ids) {
+                updateWidgetView(context, manager, widgetId, forcedState)
+            }
+        }
+
         fun handleWidgetTap(context: Context) {
-            val toggledState = PrivilegedToggleHelper.toggleSilently(
-                context,
-                QuickTileAutomation.QuickTileTarget.MOBILE_DATA
-            )
+            val toggledState = PrivilegedToggleHelper.toggleMobileDataSilently(context)
             if (toggledState != null) {
+                refreshAllWidgets(context, forcedState = toggledState)
                 Toast.makeText(
                     context,
                     "Mobile Data ${if (toggledState) "ON" else "OFF"}",
@@ -68,31 +91,11 @@ class DataToggleWidget : AppWidgetProvider() {
                 return
             }
 
-            val a11y = SmartDotAccessibilityService.instance
-            if (a11y != null && !SmartDotAccessibilityService.isUserPaused) {
-                a11y.performQuickTileToggle(QuickTileAutomation.QuickTileTarget.MOBILE_DATA) { ok ->
-                    if (!ok) {
-                        openFallbackConnectivityPanel(context)
-                    }
-                }
-                return
-            }
-
-            openFallbackConnectivityPanel(context)
-        }
-
-        private fun openFallbackConnectivityPanel(context: Context) {
-            val launched = runCatching {
-                context.startActivity(
-                    QuickTileAutomation.buildFallbackSettingsIntent(
-                        QuickTileAutomation.QuickTileTarget.MOBILE_DATA
-                    )
-                )
-                true
-            }.getOrDefault(false)
-            if (!launched) {
-                Toast.makeText(context, "Unable to open Mobile Data settings.", Toast.LENGTH_SHORT).show()
-            }
+            Toast.makeText(
+                context,
+                context.getString(R.string.silent_toggle_requires_privilege),
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 }

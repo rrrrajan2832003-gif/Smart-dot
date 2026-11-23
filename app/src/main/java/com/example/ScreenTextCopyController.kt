@@ -62,6 +62,7 @@ class ScreenTextCopyController(
 
     private var retainedScreenBitmap: Bitmap? = null
     private var isActive = false
+    private var pendingCircleToSearchBarMode = false
     private var ocrRequestToken: Long = 0L
 
     @Volatile
@@ -85,9 +86,14 @@ class ScreenTextCopyController(
         return translateHelper ?: translateHelperFactory().also { translateHelper = it }
     }
 
-    fun start() {
+    @JvmOverloads
+    fun start(circleToSearchBarMode: Boolean = false) {
         if (isActive || isOverlayShowing()) {
-            Toast.makeText(context, "Screen Text Copy is already active.", Toast.LENGTH_SHORT).show()
+            if (circleToSearchBarMode && isOverlayShowing()) {
+                overlayController?.showCircleToSearchBottomBar()
+            } else {
+                Toast.makeText(context, "Screen Text Copy is already active.", Toast.LENGTH_SHORT).show()
+            }
             return
         }
 
@@ -106,6 +112,7 @@ class ScreenTextCopyController(
         }
 
         isActive = true
+        pendingCircleToSearchBarMode = circleToSearchBarMode
         dismissActivePopup()
         setHostOverlaysVisible(false)
 
@@ -257,6 +264,7 @@ class ScreenTextCopyController(
             onDismiss = {
                 ocrRequestToken++
                 isActive = false
+                pendingCircleToSearchBarMode = false
                 releaseRetainedBitmap()
                 stopSpeaking()
                 setHostOverlaysVisible(true)
@@ -324,7 +332,8 @@ class ScreenTextCopyController(
             },
             onCutoutLensClicked = { boxRect, viewW, viewH ->
                 launchLensOnCutout(boxRect, viewW, viewH)
-            }
+            },
+            showCircleToSearchBar = pendingCircleToSearchBarMode
         )
     }
 
@@ -480,11 +489,19 @@ class ScreenTextCopyController(
     }
 
     private fun launchLensOnFullScreen() {
-        val bmp = retainedScreenBitmap?.takeIf { !it.isRecycled }
-        if (bmp != null) {
-            SelectionToolbarHelper.launchGoogleLensImage(context, bmp)
+        // Circle-to-Search style: try native Lens overlay or reveal our Circle-to-Search bottom bar
+        // with in-place Screen Translate (never upload the full-screen image).
+        if (SelectionToolbarHelper.launchNativeGoogleLens(context)) {
+            ocrRequestToken++
+            isActive = false
+            pendingCircleToSearchBarMode = false
+            releaseRetainedBitmap()
+            stopSpeaking()
+            overlayController?.dismiss()
+            setHostOverlaysVisible(true)
         } else {
-            Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
+            pendingCircleToSearchBarMode = true
+            overlayController?.showCircleToSearchBottomBar()
         }
     }
 
@@ -814,6 +831,7 @@ class ScreenTextCopyController(
         translateHelper?.close()
         translateHelper = null
         isActive = false
+        pendingCircleToSearchBarMode = false
     }
 
     companion object {

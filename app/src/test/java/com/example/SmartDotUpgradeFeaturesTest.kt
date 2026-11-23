@@ -269,7 +269,7 @@ class SmartDotUpgradeFeaturesTest {
     }
 
     @Test
-    fun `FloatingService quick tile shortcuts fall back cleanly to Settings Panels when Accessibility is off`() {
+    fun `FloatingService BT WiFi MobileData shortcuts toggle silently in background without opening Settings Panels`() {
         val service = Robolectric.buildService(FloatingService::class.java)
             .create()
             .startCommand(0, 1)
@@ -279,15 +279,34 @@ class SmartDotUpgradeFeaturesTest {
             .apply { isAccessible = true }
 
         val shadowApp = Shadows.shadowOf(appContext)
+        val shellCommands = mutableListOf<String>()
+        PrivilegedToggleHelper.shizukuShellTestHook = { cmd ->
+            shellCommands.add(cmd)
+            true
+        }
+        PrivilegedToggleHelper.mobileDataStateTestHook = { false }
+        try {
+            executeAction.invoke(service, "bluetooth")
+            assertTrue(shellCommands.any { it.startsWith("svc bluetooth") })
+            assertNull("Bluetooth must toggle silently without Settings Panel", shadowApp.nextStartedActivity)
 
+            executeAction.invoke(service, "mobile_data")
+            assertTrue(shellCommands.contains("svc data enable"))
+            assertNull("Mobile Data must toggle silently without Settings Panel", shadowApp.nextStartedActivity)
+
+            executeAction.invoke(service, "wifi")
+            assertTrue(shellCommands.any { it.startsWith("svc wifi") })
+            assertNull("Wi-Fi must toggle silently without Settings Panel", shadowApp.nextStartedActivity)
+        } finally {
+            PrivilegedToggleHelper.shizukuShellTestHook = null
+            PrivilegedToggleHelper.mobileDataStateTestHook = null
+        }
+
+        // Unprivileged fallback still must NEVER open BT/Wi-Fi/Mobile Data Settings Panels
         executeAction.invoke(service, "bluetooth")
-        assertEquals(Settings.ACTION_BLUETOOTH_SETTINGS, shadowApp.nextStartedActivity?.action)
-
-        executeAction.invoke(service, "mobile_data")
-        assertEquals(Settings.Panel.ACTION_INTERNET_CONNECTIVITY, shadowApp.nextStartedActivity?.action)
-
+        assertNull(shadowApp.nextStartedActivity)
         executeAction.invoke(service, "wifi")
-        assertEquals(Settings.Panel.ACTION_WIFI, shadowApp.nextStartedActivity?.action)
+        assertNull(shadowApp.nextStartedActivity)
 
         Settings.System.putInt(appContext.contentResolver, Settings.System.ACCELEROMETER_ROTATION, 0)
         executeAction.invoke(service, "auto_rotate")

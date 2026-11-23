@@ -59,7 +59,8 @@
     <string name="qr_scanner_title">QR &amp; Barcode Scanner</string>
     <string name="black_screen_unlock_hint">Pocket Mode Active • Double-tap to unlock</string>
     <string name="auto_scroller_label">Auto-Scroller</string>
-    <string name="magnifier_label">Magnifier 2.5x</string>
+    <string name="auto_clicker_label">Auto-Clicker</string>
+    <string name="auto_clicker_accessibility_required">Enable Accessibility Service to use Auto-Clicker.</string>
     <string name="floating_window_title_ai">Floating AI</string>
     <string name="floating_window_title_chatgpt">ChatGPT</string>
     <string name="floating_window_title_ai_mode">Google AI Mode</string>
@@ -74,4 +75,9 @@
     <string name="qr_open_url">Open URL</string>
     <string name="qr_scan_again">Scan Again</string>
     <string name="banking_shield_toast">Banking/Payment app detected — SmartDot hidden</string>
+    <string name="circle_search_hint">Circle anything or tap 文A to translate screen</string>
+    <string name="circle_search_translate_desc">Translate entire live screen in-place</string>
+    <string name="circle_search_native_lens_desc">Open native Google Lens</string>
+    <string name="silent_toggle_requires_privilege">Grant Shizuku or WRITE_SECURE_SETTINGS in SmartDot app for 1-tap silent toggle.</string>
+    <string name="silent_toggle_adb_copied">ADB grant command copied to clipboard</string>
 </resources>

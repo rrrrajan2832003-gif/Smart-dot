@@ -3,6 +3,8 @@ package com.example
 // Clean refresh trigger comment to unlock preview emulator screen
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -71,6 +73,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -399,11 +402,22 @@ fun SmartDotScreen(
     var menuGridRows by remember { mutableStateOf(prefs.getInt("menu_grid_rows", 4)) }
     var menuGridCols by remember { mutableStateOf(prefs.getInt("menu_grid_cols", 3)) }
 
+    var hasWriteSecure by remember { mutableStateOf(PrivilegedToggleHelper.hasWriteSecureSettings(context)) }
+    var shizukuActive by remember { mutableStateOf(PrivilegedToggleHelper.isShizukuActive()) }
+    var shizukuInstalled by remember { mutableStateOf(PrivilegedToggleHelper.isShizukuInstalled(context)) }
+
+    fun refreshSilentToggleStatus() {
+        hasWriteSecure = PrivilegedToggleHelper.hasWriteSecureSettings(context)
+        shizukuActive = PrivilegedToggleHelper.isShizukuActive()
+        shizukuInstalled = PrivilegedToggleHelper.isShizukuInstalled(context)
+    }
+
     LaunchedEffect(isServiceRunning) {
         dotEnabled = prefs.getBoolean("floating_dot_enabled", true)
         sidebarEnabled = prefs.getBoolean("sidebar_enabled", true)
         dotPositionLocked = prefs.getBoolean("dot_position_locked", false)
         a11yPaused = prefs.getBoolean(SmartDotAccessibilityService.PREF_USER_PAUSED, false)
+        refreshSilentToggleStatus()
     }
 
     fun updateServiceStyle() {
@@ -719,7 +733,205 @@ fun SmartDotScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
+        // Compact Helper Card: Enable 1-Tap Silent Data / Wi-Fi / Bluetooth
+        val silentReady = hasWriteSecure || shizukuActive
+        val adbCommandText = remember(context) { PrivilegedToggleHelper.adbGrantCommand(context) }
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(
+                    width = 1.dp,
+                    color = if (silentReady) Color(0xFF10B981).copy(alpha = 0.7f) else Color(0xFF334155),
+                    shape = RoundedCornerShape(16.dp)
+                )
+                .testTag("silent_toggle_setup_card"),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Enable 1-Tap Silent Data/Wi-Fi/Bluetooth",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFF8FAFC)
+                        )
+                        Text(
+                            text = if (silentReady) {
+                                "Ready: Mobile Data, Wi-Fi & Bluetooth toggle silently in background"
+                            } else {
+                                "Grant Shizuku or ADB WRITE_SECURE_SETTINGS for 1-tap silent toggles"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (silentReady) Color(0xFFA7F3D0) else Color(0xFF94A3B8)
+                        )
+                    }
+                    IconButton(
+                        onClick = { refreshSilentToggleStatus() },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("btn_refresh_silent_status")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refresh silent toggle status",
+                            tint = Color(0xFF00E5FF)
+                        )
+                    }
+                }
 
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Surface(
+                        color = Color(0xFF0F172A),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(
+                            1.dp,
+                            if (shizukuActive) Color(0xFF10B981) else Color(0xFF334155)
+                        ),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Text(
+                                text = "Shizuku",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF94A3B8)
+                            )
+                            Text(
+                                text = when {
+                                    shizukuActive -> "Ready"
+                                    shizukuInstalled -> "Installed (Paused)"
+                                    else -> "Not Installed"
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (shizukuActive) Color(0xFF10B981) else Color(0xFFFBBF24)
+                            )
+                        }
+                    }
+
+                    Surface(
+                        color = Color(0xFF0F172A),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(
+                            1.dp,
+                            if (hasWriteSecure) Color(0xFF10B981) else Color(0xFF334155)
+                        ),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Text(
+                                text = "Secure Settings",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF94A3B8)
+                            )
+                            Text(
+                                text = if (hasWriteSecure) "Granted" else "Not Granted",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (hasWriteSecure) Color(0xFF10B981) else Color(0xFFFBBF24)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Surface(
+                    color = Color(0xFF0F172A),
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, Color(0xFF334155)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = adbCommandText,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = Color(0xFFCBD5E1),
+                        modifier = Modifier.padding(10.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            val cb = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                            cb?.setPrimaryClip(ClipData.newPlainText("SmartDot ADB Grant Command", adbCommandText))
+                            Toast.makeText(
+                                context,
+                                context.getString(R.string.silent_toggle_adb_copied),
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF06B6D4),
+                            contentColor = Color.Black
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .testTag("btn_copy_adb_command")
+                    ) {
+                        Text(
+                            text = "Copy ADB Command",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            val launch = context.packageManager
+                                .getLaunchIntentForPackage(PrivilegedToggleHelper.SHIZUKU_PACKAGE)
+                                ?.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                            val opened = if (launch != null) {
+                                runCatching { context.startActivity(launch); true }.getOrDefault(false)
+                            } else {
+                                false
+                            }
+                            if (!opened) {
+                                runCatching {
+                                    context.startActivity(
+                                        Intent(
+                                            Intent.ACTION_VIEW,
+                                            Uri.parse("https://shizuku.rikka.app/")
+                                        ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                                    )
+                                }
+                            }
+                        },
+                        border = BorderStroke(1.dp, Color(0xFF475569)),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .testTag("btn_open_shizuku")
+                    ) {
+                        Text(
+                            text = if (shizukuInstalled) "Open Shizuku" else "Get Shizuku",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFF8FAFC)
+                        )
+                    }
+                }
+            }
+        }
 
         Spacer(modifier = Modifier.height(16.dp))
 
