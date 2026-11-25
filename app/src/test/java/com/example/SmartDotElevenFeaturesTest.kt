@@ -247,8 +247,15 @@ class SmartDotElevenFeaturesTest {
             assertEquals("${SelectionToolbarHelper.DEFAULT_QUICK_PROMPT_1}Quantum", started1.getStringExtra(SearchManager.QUERY))
 
             // Re-open overlay and tap Preset 2
+            if (controller.isOverlayShowing()) overlayCtrl.dismiss()
             controller.start()
             ShadowLooper.idleMainLooper(ScreenTextCopyController.CAPTURE_HIDE_DELAY_MS + 15L, TimeUnit.MILLISECONDS)
+            val deadline2 = System.currentTimeMillis() + 3000L
+            while (!controller.isOverlayShowing() && System.currentTimeMillis() < deadline2) {
+                ShadowLooper.idleMainLooper(20, TimeUnit.MILLISECONDS)
+                Thread.sleep(10)
+            }
+            assertTrue(controller.isOverlayShowing())
             val root2 = InlineTextOverlayController::class.java
                 .getDeclaredField("overlayView")
                 .apply { isAccessible = true }

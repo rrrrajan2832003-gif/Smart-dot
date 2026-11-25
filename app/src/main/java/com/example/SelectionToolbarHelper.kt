@@ -29,6 +29,7 @@ object SelectionToolbarHelper {
     const val PREF_SELECTION_TOOLBAR_HIDDEN = "selection_toolbar_hidden"
     const val PREF_QUICK_PROMPT_1 = "quick_prompt_1"
     const val PREF_QUICK_PROMPT_2 = "quick_prompt_2"
+    const val PREF_SHOW_QUESTION_BOXES = "show_selection_question_boxes"
 
     const val DEFAULT_QUICK_PROMPT_1 = "ट्रांसलेट टू हिंदी = "
     const val DEFAULT_QUICK_PROMPT_2 = "मतलब "
@@ -37,6 +38,19 @@ object SelectionToolbarHelper {
     const val SEARCH_LITE_PACKAGE = "com.google.android.apps.searchlite"
     const val GEMINI_PACKAGE = "com.google.android.apps.bard"
     const val CHATGPT_PACKAGE = "com.openai.chatgpt"
+
+    fun isShowQuestionBoxesEnabled(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return isShowQuestionBoxesEnabled(prefs)
+    }
+
+    fun isShowQuestionBoxesEnabled(prefs: SharedPreferences): Boolean {
+        return prefs.getBoolean(PREF_SHOW_QUESTION_BOXES, true)
+    }
+
+    fun setShowQuestionBoxesEnabled(prefs: SharedPreferences, enabled: Boolean) {
+        prefs.edit().putBoolean(PREF_SHOW_QUESTION_BOXES, enabled).apply()
+    }
 
     fun getQuickPrompt1(context: Context): String {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -64,6 +78,45 @@ object SelectionToolbarHelper {
 
     fun saveQuickPrompt2(prefs: SharedPreferences, prompt: String) {
         prefs.edit().putString(PREF_QUICK_PROMPT_2, prompt).apply()
+    }
+
+    /**
+     * Direct 1-tap Intent targeting SmartDot's own Accessibility Service detail toggle page
+     * (skipping the generic Accessibility / Downloaded Apps sub-menu when supported by the OS).
+     */
+    fun createSmartDotAccessibilityDetailsIntent(context: Context): Intent {
+        val componentFlat = ComponentName(context, SmartDotAccessibilityService::class.java).flattenToString()
+        val detailsIntent = Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS").apply {
+            putExtra(Intent.EXTRA_COMPONENT_NAME, componentFlat)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        if (detailsIntent.resolveActivity(context.packageManager) != null) {
+            return detailsIntent
+        }
+        return createSmartDotAccessibilityFragmentFallbackIntent(context)
+    }
+
+    fun createSmartDotAccessibilityFragmentFallbackIntent(context: Context): Intent {
+        val componentFlat = ComponentName(context, SmartDotAccessibilityService::class.java).flattenToString()
+        return Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+            putExtra(":settings:fragment_args_key", componentFlat)
+            putExtra(
+                ":settings:show_fragment_args",
+                android.os.Bundle().apply {
+                    putString(":settings:fragment_args_key", componentFlat)
+                }
+            )
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+
+    fun createDisplayOverAppsIntent(context: Context): Intent {
+        return Intent(
+            android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:${context.packageName}")
+        ).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
     }
 
     fun buildPresetQuery(presetText: String, targetText: String): String {
@@ -842,11 +895,15 @@ object SelectionToolbarHelper {
         }
     }
 
-    fun writeCutoutToCacheUri(context: Context, bitmap: Bitmap): Uri? {
+    fun writeCutoutToCacheUri(
+        context: Context,
+        bitmap: Bitmap,
+        fileName: String = "cutout_${System.currentTimeMillis()}.png"
+    ): Uri? {
         if (bitmap.isRecycled) return null
         return try {
             val cutoutDir = File(context.cacheDir, "cutouts").apply { mkdirs() }
-            val file = File(cutoutDir, "cutout_${System.currentTimeMillis()}.png")
+            val file = File(cutoutDir, fileName)
             FileOutputStream(file).use { out ->
                 val ok = bitmap.compress(Bitmap.CompressFormat.PNG, 95, out)
                 if (!ok) return null

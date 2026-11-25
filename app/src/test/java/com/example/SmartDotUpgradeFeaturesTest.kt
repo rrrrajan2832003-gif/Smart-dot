@@ -299,7 +299,7 @@ class SmartDotUpgradeFeaturesTest {
             // When Accessibility is unavailable, safely falls back to connectivity Settings intent
             SmartDotAccessibilityService.setInstanceForTest(null)
             executeAction.invoke(service, "wifi")
-            assertEquals(Settings.ACTION_WIFI_SETTINGS, shadowApp.nextStartedActivity?.action)
+            assertEquals(Settings.Panel.ACTION_WIFI, shadowApp.nextStartedActivity?.action)
             executeAction.invoke(service, "bluetooth")
             assertEquals(Settings.ACTION_BLUETOOTH_SETTINGS, shadowApp.nextStartedActivity?.action)
         } finally {
@@ -679,7 +679,7 @@ class SmartDotUpgradeFeaturesTest {
     // -------------------------------------------------------------
 
     @Test
-    fun `Floating Window shortcut exists in ACTION_LIST and relaunches active foreground app in freeform mode`() {
+    fun `Floating Window shortcut exists in ACTION_LIST and pops active foreground app into SmartDot resizable floating window`() {
         val actionEntry = ACTION_LIST.find { it.id == "floating_window" }
         assertNotNull(actionEntry)
         assertEquals("Floating Window", actionEntry!!.name)
@@ -688,26 +688,7 @@ class SmartDotUpgradeFeaturesTest {
         val a11yService = Robolectric.buildService(SmartDotAccessibilityService::class.java).create().get()
         SmartDotAccessibilityService.setInstanceForTest(a11yService)
 
-        val targetPkg = "com.sample.reader"
-        val targetActivity = "com.sample.reader.ReaderActivity"
-
-        val shadowPm = Shadows.shadowOf(appContext.packageManager)
-        val resolveInfo = ResolveInfo().apply {
-            activityInfo = ActivityInfo().apply {
-                packageName = targetPkg
-                name = targetActivity
-                applicationInfo = ApplicationInfo().apply {
-                    packageName = targetPkg
-                    nonLocalizedLabel = "Sample Reader"
-                }
-            }
-        }
-        val mainLauncherIntent = Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_LAUNCHER)
-            setPackage(targetPkg)
-        }
-        shadowPm.addResolveInfoForIntent(mainLauncherIntent, resolveInfo)
-
+        val targetPkg = "com.whatsapp"
         val activeRoot = AccessibilityNodeInfo.obtain().apply {
             packageName = targetPkg
             isVisibleToUser = true
@@ -729,11 +710,12 @@ class SmartDotUpgradeFeaturesTest {
         executeAction.invoke(floatingService, "floating_window")
         ShadowLooper.idleMainLooper()
 
-        val relaunched = Shadows.shadowOf(appContext).nextStartedActivity
-        assertNotNull("Floating Window shortcut must launch active foreground app", relaunched)
-        assertEquals(targetPkg, relaunched.component?.packageName ?: relaunched.`package`)
-        assertTrue((relaunched.flags and Intent.FLAG_ACTIVITY_NEW_TASK) != 0)
-        assertEquals(0, relaunched.flags and Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        // Must open inside SmartDot's own resizable FloatingWindowManager without launching external full-screen Activity
+        assertNull(Shadows.shadowOf(appContext).nextStartedActivity)
+        val managerField = FloatingService::class.java.getDeclaredField("floatingWindowManager").apply { isAccessible = true }
+        val fwm = managerField.get(floatingService) as FloatingWindowManager
+        assertTrue("Active WhatsApp must pop into SmartDot floating window", fwm.hasWindow("floating_whatsapp"))
+        fwm.closeAllWindows()
     }
 
     private fun waitUntilOverlayVisible(controller: ScreenTextCopyController) {

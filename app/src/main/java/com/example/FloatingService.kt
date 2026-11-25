@@ -147,10 +147,12 @@ class FloatingService : Service() {
     private var proToolsOverlayManager: ProToolsOverlayManager? = null
     private var isShieldHidden = false
 
-    // Accelerometer Shake-to-Torch detector (zero vibration)
+    // Accelerometer Shake-to-Torch & Back-Tap Gesture detectors (zero vibration)
     private var sensorManager: SensorManager? = null
     private var shakeDetector: ShakeDetector? = null
     private var isShakeListenerRegistered = false
+    private var backTapDetector: BackTapDetector? = null
+    private var isBackTapListenerRegistered = false
 
     companion object {
         const val ACTION_UPDATE_SETTINGS = "com.example.UPDATE_SETTINGS"
@@ -160,6 +162,8 @@ class FloatingService : Service() {
         const val EXTRA_RECORD_WITH_AUDIO = "extra_record_with_audio"
         const val PREF_SHAKE_TORCH_ENABLED = "shake_torch_enabled"
         const val PREF_SHAKE_SENSITIVITY = "shake_sensitivity_threshold"
+        const val PREF_BACK_TAP_DATA_ENABLED = "back_tap_data_enabled"
+        const val PREF_BACK_TAP_SENSITIVITY = "back_tap_sensitivity_threshold"
         const val PREF_HIDE_SHORTCUT_LABELS = "hide_shortcut_labels"
         var isRunning = false
             private set
@@ -186,6 +190,7 @@ class FloatingService : Service() {
         clipboardManager.addPrimaryClipChangedListener(clipListener)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         syncShakeTorchListener()
+        syncBackTapListener()
         SmartDotAccessibilityService.syncUserPausedFromPrefs(this)
         isShieldHidden = SmartDotAccessibilityService.isShieldActive
         SmartDotAccessibilityService.onShieldStateChangedListener = { shieldActive ->
@@ -1183,6 +1188,9 @@ class FloatingService : Service() {
             "floating_calculator" -> R.drawable.ic_tab_calc
             "floating_translator" -> R.drawable.ic_tab_translate
             "floating_viewer" -> android.R.drawable.ic_menu_gallery
+            "floating_media_files" -> android.R.drawable.ic_menu_gallery
+            "floating_whatsapp" -> R.drawable.ic_radial_whatsapp
+            "floating_instagram", "floating_facebook", "floating_telegram" -> R.drawable.ic_floating_window
             "google_ai_mode" -> R.drawable.ic_toolbar_ai_mode
             "gemini" -> R.drawable.ic_toolbar_gemini
             "chatgpt" -> R.drawable.ic_toolbar_chatgpt
@@ -1200,6 +1208,7 @@ class FloatingService : Service() {
             "youtube_subscriptions", "youtube_search" -> android.R.drawable.ic_menu_slideshow
             "whatsapp_chat", "whatsapp_camera" -> R.drawable.ic_radial_whatsapp
             "settings_wifi", "settings_bluetooth", "settings_battery", "settings_app_info", "accessibility_settings" -> R.drawable.ic_radial_settings
+            "display_over_apps" -> R.drawable.ic_floating_window
             "custom_url_intent" -> android.R.drawable.ic_menu_directions
             else -> R.drawable.ic_radial_settings
         }
@@ -1487,29 +1496,41 @@ class FloatingService : Service() {
             return
         }
         val pm = packageManager
-        val launchIntent = pm.getLaunchIntentForPackage(activePkg)
-        if (launchIntent == null) {
-            val webUrl = FreeformWindowLauncher.webFallbackUrlForPackage(activePkg)
-            if (webUrl != null) {
-                FloatingMiniApps.openFloatingBrowser(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor(), webUrl)
-                return
-            }
-            if (!FreeformWindowLauncher.launchRealmeSmartSidebar(this)) {
-                Toast.makeText(this, getString(R.string.floating_window_no_active_app), Toast.LENGTH_SHORT).show()
-            }
-            return
-        }
         val appLabel = runCatching {
             val appInfo = pm.getApplicationInfo(activePkg, 0)
             pm.getApplicationLabel(appInfo).toString()
         }.getOrNull() ?: activePkg
-        val launched = FreeformWindowLauncher.launchFullscreen(this, launchIntent, appLabel)
-        if (!launched) {
-            val webUrl = FreeformWindowLauncher.webFallbackUrlForPackage(activePkg)
-            if (webUrl != null) {
-                FloatingMiniApps.openFloatingBrowser(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor(), webUrl)
-            } else {
-                FreeformWindowLauncher.launchRealmeSmartSidebar(this)
+        val detectedUrl = sInstance.extractActiveBrowserUrl()
+
+        val manager = getOrCreateFloatingWindowManager()
+        val accentColor = getConfiguredAccentColor()
+        when (val target = FreeformWindowLauncher.resolveFloatingTargetForPackage(activePkg, appLabel, detectedUrl)) {
+            is FreeformWindowLauncher.FloatingAppTarget.SocialWeb -> {
+                FloatingMiniApps.openFloatingSocialApp(this, manager, accentColor, target.appId)
+            }
+            is FreeformWindowLauncher.FloatingAppTarget.YouTube -> {
+                FloatingMiniApps.openFloatingYouTube(this, manager, accentColor)
+            }
+            is FreeformWindowLauncher.FloatingAppTarget.AiWeb -> {
+                FloatingMiniApps.openFloatingAiWebWindow(this, manager, accentColor, target.aiModeId)
+            }
+            is FreeformWindowLauncher.FloatingAppTarget.Notes -> {
+                FloatingMiniApps.openFloatingNotes(this, manager, serviceScope, accentColor)
+            }
+            is FreeformWindowLauncher.FloatingAppTarget.Calculator -> {
+                FloatingMiniApps.openFloatingCalculator(this, manager, accentColor)
+            }
+            is FreeformWindowLauncher.FloatingAppTarget.MediaFiles -> {
+                FloatingMiniApps.openFloatingMediaFiles(this, manager, accentColor)
+            }
+            is FreeformWindowLauncher.FloatingAppTarget.Browser -> {
+                FloatingMiniApps.openFloatingBrowser(
+                    context = this,
+                    manager = manager,
+                    accentColor = accentColor,
+                    initialUrl = target.url,
+                    navigateIfOpen = true
+                )
             }
         }
     }
@@ -1544,6 +1565,26 @@ class FloatingService : Service() {
                     activePopupWindow?.dismiss()
                     FloatingMiniApps.openFloatingViewer(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor())
                 }
+                "floating_media_files" -> {
+                    activePopupWindow?.dismiss()
+                    FloatingMiniApps.openFloatingMediaFiles(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor())
+                }
+                "floating_whatsapp" -> {
+                    activePopupWindow?.dismiss()
+                    FloatingMiniApps.openFloatingSocialApp(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor(), "whatsapp")
+                }
+                "floating_instagram" -> {
+                    activePopupWindow?.dismiss()
+                    FloatingMiniApps.openFloatingSocialApp(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor(), "instagram")
+                }
+                "floating_facebook" -> {
+                    activePopupWindow?.dismiss()
+                    FloatingMiniApps.openFloatingSocialApp(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor(), "facebook")
+                }
+                "floating_telegram" -> {
+                    activePopupWindow?.dismiss()
+                    FloatingMiniApps.openFloatingSocialApp(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor(), "telegram")
+                }
                 "google_ai_mode" -> {
                     activePopupWindow?.dismiss()
                     FloatingMiniApps.openFloatingBrowser(
@@ -1576,11 +1617,16 @@ class FloatingService : Service() {
                 "google_lens" -> triggerGoogleLensOneTap()
                 "accessibility_settings" -> {
                     activePopupWindow?.dismiss()
-                    startActivity(
-                        Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                    )
+                    val detailsIntent = SelectionToolbarHelper.createSmartDotAccessibilityDetailsIntent(this)
+                    runCatching {
+                        startActivity(detailsIntent)
+                    }.onFailure {
+                        startActivity(SelectionToolbarHelper.createSmartDotAccessibilityFragmentFallbackIntent(this))
+                    }
+                }
+                "display_over_apps" -> {
+                    activePopupWindow?.dismiss()
+                    startActivity(SelectionToolbarHelper.createDisplayOverAppsIntent(this))
                 }
                 "black_screen_mode" -> {
                     activePopupWindow?.dismiss()
@@ -3049,6 +3095,42 @@ class FloatingService : Service() {
     }
 
     // -------------------------------------------------------------
+    // Double-Tap Back of Phone to Toggle Mobile Data (Zero Vibration)
+    // -------------------------------------------------------------
+    private fun syncBackTapListener() {
+        val manager = sensorManager ?: (getSystemService(Context.SENSOR_SERVICE) as? SensorManager)?.also {
+            sensorManager = it
+        } ?: return
+        val sensitivity = prefs.getFloat(
+            PREF_BACK_TAP_SENSITIVITY,
+            BackTapDetector.DEFAULT_SENSITIVITY
+        ).coerceIn(BackTapDetector.MIN_SENSITIVITY, BackTapDetector.MAX_SENSITIVITY)
+        val enabled = prefs.getBoolean(PREF_BACK_TAP_DATA_ENABLED, false)
+        if (enabled) {
+            val detector = backTapDetector ?: BackTapDetector(zSpikeThreshold = sensitivity) {
+                Handler(Looper.getMainLooper()).post {
+                    triggerOneTapQuickTileToggle(QuickTileAutomation.QuickTileTarget.MOBILE_DATA)
+                }
+            }.also { backTapDetector = it }
+            detector.setThreshold(sensitivity)
+            if (!isBackTapListenerRegistered) {
+                val sensor = manager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
+                    ?: manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+                    ?: return
+                isBackTapListenerRegistered = manager.registerListener(
+                    detector,
+                    sensor,
+                    SensorManager.SENSOR_DELAY_GAME
+                )
+            }
+        } else if (isBackTapListenerRegistered) {
+            backTapDetector?.let { manager.unregisterListener(it) }
+            backTapDetector?.reset()
+            isBackTapListenerRegistered = false
+        }
+    }
+
+    // -------------------------------------------------------------
     // Core Utilities and Infrastructure Actions
     // -------------------------------------------------------------
     private fun performGlobalActionSafety(actionId: Int) {
@@ -3389,6 +3471,7 @@ class FloatingService : Service() {
         }
         setupSidebarWidget()
         syncShakeTorchListener()
+        syncBackTapListener()
     }
 
     private fun buildSidebarPillBackground(
@@ -3697,6 +3780,11 @@ class FloatingService : Service() {
         if (isShakeListenerRegistered) {
             shakeDetector?.let { sensorManager?.unregisterListener(it) }
             isShakeListenerRegistered = false
+        }
+        if (isBackTapListenerRegistered) {
+            backTapDetector?.let { sensorManager?.unregisterListener(it) }
+            backTapDetector?.reset()
+            isBackTapListenerRegistered = false
         }
         removeStopRecordingPill()
         if (screenRecorderManager?.isRecording == true) {

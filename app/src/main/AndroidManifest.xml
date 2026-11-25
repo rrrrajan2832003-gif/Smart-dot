@@ -66,6 +66,9 @@
         <intent>
             <action android:name="android.intent.action.WEB_SEARCH" />
         </intent>
+        <intent>
+            <action android:name="android.settings.ACCESSIBILITY_DETAILS_SETTINGS" />
+        </intent>
         <!-- Intent queries for Visual Search / Google Lens & Sharing -->
         <intent>
             <action android:name="android.intent.action.SEND" />

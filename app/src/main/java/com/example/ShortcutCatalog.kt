@@ -20,6 +20,11 @@ val ACTION_LIST = listOf(
     AvailableAction("floating_calculator", "Floating Calculator", "Floating Mini-Apps", "Resizable calculator window with live formula evaluation"),
     AvailableAction("floating_translator", "Floating Translator", "Floating Mini-Apps", "Auto-detect offline ML Kit translator in a floating window"),
     AvailableAction("floating_viewer", "Floating File/Image Viewer", "Floating Mini-Apps", "Zero-permission Photo Picker & document viewer window"),
+    AvailableAction("floating_media_files", "Floating Media & Files", "Floating Mini-Apps", "All-in-one floating file manager, image viewer, video & audio player"),
+    AvailableAction("floating_whatsapp", "Floating WhatsApp", "Floating Mini-Apps", "Movable resizable WhatsApp Web window with persistent login"),
+    AvailableAction("floating_instagram", "Floating Instagram", "Floating Mini-Apps", "Movable resizable Instagram window inside SmartDot"),
+    AvailableAction("floating_facebook", "Floating Facebook", "Floating Mini-Apps", "Movable resizable Facebook window inside SmartDot"),
+    AvailableAction("floating_telegram", "Floating Telegram", "Floating Mini-Apps", "Movable resizable Telegram Web window inside SmartDot"),
 
     // System Actions
     AvailableAction("home", "Home", "System Shortcuts", "Go to device Home screen"),
@@ -36,14 +41,15 @@ val ACTION_LIST = listOf(
     AvailableAction("gemini", "Gemini AI", "System Shortcuts", "Open Google Gemini inside floating browser window"),
     AvailableAction("chatgpt", "ChatGPT", "System Shortcuts", "Open OpenAI ChatGPT inside floating browser window"),
     AvailableAction("google_lens", "Google Lens", "System Shortcuts", "Capture screen and open directly in Google Lens"),
-    AvailableAction("accessibility_settings", "Accessibility Settings", "System Shortcuts", "Open Android Accessibility Settings in 1 tap"),
+    AvailableAction("accessibility_settings", "Accessibility Settings", "System Shortcuts", "Open SmartDot Accessibility toggle page in 1 tap"),
+    AvailableAction("display_over_apps", "Display Over Apps", "System Shortcuts", "Open Display over other apps permission for SmartDot in 1 tap"),
     AvailableAction("black_screen_mode", "Black Screen Pocket Mode", "System Shortcuts", "Turn screen OLED black while keeping audio playing (double-tap unlock)"),
     AvailableAction("auto_scroller", "Hands-Free Auto-Scroller", "System Shortcuts", "Smooth automatic screen scroller with Play/Pause and 1x-3x speed"),
     AvailableAction("auto_clicker", "Auto-Clicker", "System Shortcuts", "Draggable tap target ring with Play/Pause & 100ms-2000ms interval"),
     AvailableAction("notifications", "Notifications", "System Shortcuts", "Expand status bar notification panel"),
     AvailableAction("quick_settings", "Quick Settings", "System Shortcuts", "Expand status bar quick settings panel"),
     AvailableAction("split_screen", "Split Screen", "System Shortcuts", "Initiate direct 1-tap Split Screen Mode"),
-    AvailableAction("floating_window", "Floating Window", "System Shortcuts", "Pop out current active app into a movable floating window"),
+    AvailableAction("floating_window", "Floating Window", "System Shortcuts", "Convert current active app into SmartDot's movable resizable floating window"),
     AvailableAction("realme_smart_sidebar", "Realme Smart Sidebar", "System Shortcuts", "Trigger built-in Realme / ColorOS Smart Sidebar"),
     AvailableAction("open_app_drawer", "Open App Drawer", "System Shortcuts", "Open installed launcher app drawer"),
     AvailableAction("voice_assistant", "Voice Assistant", "System Shortcuts", "Activate Google Voice Assistant"),
@@ -106,11 +112,17 @@ fun resolveShortcutShortLabel(actionId: String): String {
         "floating_calculator" -> "Calc Win"
         "floating_translator" -> "Trans Win"
         "floating_viewer" -> "Viewer"
+        "floating_media_files" -> "Media/Files"
+        "floating_whatsapp" -> "WhatsApp"
+        "floating_instagram" -> "Instagram"
+        "floating_facebook" -> "Facebook"
+        "floating_telegram" -> "Telegram"
         "google_ai_mode" -> "AI Mode"
         "gemini" -> "Gemini"
         "chatgpt" -> "ChatGPT"
         "google_lens" -> "Lens"
         "accessibility_settings" -> "Accessibility"
+        "display_over_apps" -> "Overlay Perm"
         "black_screen_mode" -> "Pocket Mode"
         "auto_scroller" -> "Auto Scroll"
         "auto_clicker" -> "Auto Click"

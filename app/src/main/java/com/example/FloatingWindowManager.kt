@@ -19,17 +19,18 @@ import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import kotlin.math.abs
 
 /**
  * Multi-window floating mini-apps engine using Android WindowManager overlays.
- * Supports multiple simultaneous movable & resizable windows with:
- * - Colored draggable title bar
- * - Minimize to floating bubble (tap bubble to restore)
- * - Maximize / Restore toggle
- * - Close (X) button
- * - Bottom-right corner drag resize grip
+ * Clean "Floating Apps" window design:
+ * - Sleek Top Title Bar: Left Hamburger Menu (☰) + Icon + Title on left;
+ *   Minimize (_), Maximize (□), Close (✕) on right.
+ * - Left Hamburger (☰) Dropdown Side Menu with per-window tools + bottom Opacity Slider.
+ * - Bottom-right corner drag resize grip & minimize-to-bubble support.
  */
 class FloatingWindowManager(
     private val context: Context,
@@ -42,21 +43,115 @@ class FloatingWindowManager(
         var height: Int
     )
 
+    data class WindowMenuItem(
+        val id: String,
+        val label: String,
+        val tag: String? = null,
+        val closeOnTap: Boolean = true,
+        val textColor: Int? = null,
+        val onClick: () -> Unit
+    )
+
     data class ManagedWindow(
         val windowId: String,
-        val title: String,
+        var title: String,
         val accentColor: Int,
         val iconRes: Int,
         val rootView: LinearLayout,
         val contentHost: FrameLayout,
+        val titleView: TextView,
+        val menuButton: TextView,
+        val menuDrawer: LinearLayout,
+        val menuItemsContainer: LinearLayout,
+        val opacitySeekBar: SeekBar,
+        val opacityValueLabel: TextView,
         val layoutParams: WindowManager.LayoutParams,
         val savedBounds: WindowBounds,
         var isMaximized: Boolean = false,
         var isMinimized: Boolean = false,
+        var windowAlpha: Float = 1.0f,
         var bubbleView: FrameLayout? = null,
         var bubbleParams: WindowManager.LayoutParams? = null,
         var onCloseCleanup: (() -> Unit)? = null
-    )
+    ) {
+        private val density = rootView.resources.displayMetrics.density.coerceAtLeast(1f)
+
+        fun updateTitle(newTitle: String) {
+            title = newTitle
+            titleView.text = newTitle
+        }
+
+        fun toggleMenu() {
+            menuDrawer.visibility = if (menuDrawer.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            if (menuDrawer.visibility == View.VISIBLE) {
+                menuDrawer.bringToFront()
+            }
+        }
+
+        fun closeMenu() {
+            menuDrawer.visibility = View.GONE
+        }
+
+        fun setWindowOpacityPercent(percent: Int) {
+            val clamped = percent.coerceIn(25, 100)
+            windowAlpha = clamped / 100f
+            rootView.alpha = windowAlpha
+            opacityValueLabel.text = "Opacity: $clamped%"
+            val targetProgress = clamped - 25
+            if (opacitySeekBar.progress != targetProgress) {
+                opacitySeekBar.progress = targetProgress
+            }
+        }
+
+        fun setMenuItems(items: List<WindowMenuItem>) {
+            menuItemsContainer.removeAllViews()
+            val ctx = menuItemsContainer.context
+            items.forEach { item ->
+                val tv = TextView(ctx).apply {
+                    tag = item.tag ?: "fw_menu_item_${windowId}_${item.id}"
+                    text = item.label
+                    textSize = 12.5f
+                    setTextColor(item.textColor ?: Color.parseColor("#F8FAFC"))
+                    gravity = Gravity.CENTER_VERTICAL
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                    minHeight = (38 * density).toInt()
+                    setPadding(
+                        (12 * density).toInt(),
+                        (8 * density).toInt(),
+                        (12 * density).toInt(),
+                        (8 * density).toInt()
+                    )
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = 8f * density
+                        setColor(Color.parseColor("#1E293B"))
+                    }
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        bottomMargin = (4 * density).toInt()
+                    }
+                    setOnClickListener {
+                        if (item.closeOnTap) {
+                            closeMenu()
+                        }
+                        item.onClick()
+                    }
+                }
+                menuItemsContainer.addView(tv)
+            }
+        }
+
+        fun updateMenuItemLabel(tag: String, newLabel: String, newColor: Int? = null) {
+            val tv = menuItemsContainer.findViewWithTag<TextView>(tag) ?: return
+            tv.text = newLabel
+            if (newColor != null) {
+                tv.setTextColor(newColor)
+            }
+        }
+    }
 
     private val density = context.resources.displayMetrics.density.coerceAtLeast(1f)
     private val activeWindows = LinkedHashMap<String, ManagedWindow>()
@@ -129,7 +224,7 @@ class FloatingWindowManager(
             elevation = 14f * density
         }
 
-        // 1. Colored Draggable Title Bar
+        // 1. Sleek Top Title Bar: [☰] [Icon] [Title]   [_] [□] [✕]
         val headerHeightPx = (40 * density).toInt()
         val titleBar = LinearLayout(context).apply {
             tag = "fw_title_bar_$windowId"
@@ -139,7 +234,7 @@ class FloatingWindowManager(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 headerHeightPx
             )
-            setPadding((10 * density).toInt(), 0, (4 * density).toInt(), 0)
+            setPadding((4 * density).toInt(), 0, (4 * density).toInt(), 0)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 val r = 15f * density
@@ -150,8 +245,20 @@ class FloatingWindowManager(
 
         val headerTextColor = if (isColorLight(accentColor)) Color.parseColor("#0F172A") else Color.WHITE
 
+        val btnMenu = TextView(context).apply {
+            tag = "fw_btn_menu_$windowId"
+            text = "☰"
+            textSize = 16f
+            gravity = Gravity.CENTER
+            setTextColor(headerTextColor)
+            contentDescription = "Menu $title"
+            layoutParams = LinearLayout.LayoutParams((36 * density).toInt(), (36 * density).toInt()).apply {
+                marginEnd = (2 * density).toInt()
+            }
+        }
+
         val iconView = ImageView(context).apply {
-            layoutParams = LinearLayout.LayoutParams((18 * density).toInt(), (18 * density).toInt()).apply {
+            layoutParams = LinearLayout.LayoutParams((16 * density).toInt(), (16 * density).toInt()).apply {
                 marginEnd = (6 * density).toInt()
             }
             setImageResource(iconRes)
@@ -160,6 +267,7 @@ class FloatingWindowManager(
         }
 
         val titleView = TextView(context).apply {
+            tag = "fw_title_text_$windowId"
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             text = title
             textSize = 13.5f
@@ -170,14 +278,14 @@ class FloatingWindowManager(
         }
 
         fun createChromeBtn(symbol: String, btnTag: String, desc: String): ImageButton {
-            val sizePx = (36 * density).toInt()
+            val sizePx = (34 * density).toInt()
             return ImageButton(context).apply {
                 tag = btnTag
                 contentDescription = desc
                 layoutParams = LinearLayout.LayoutParams(sizePx, sizePx)
                 setBackgroundColor(Color.TRANSPARENT)
                 scaleType = ImageView.ScaleType.CENTER_INSIDE
-                setPadding((8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt())
+                setPadding((7 * density).toInt(), (7 * density).toInt(), (7 * density).toInt(), (7 * density).toInt())
                 setColorFilter(headerTextColor, PorterDuff.Mode.SRC_IN)
                 val res = when (symbol) {
                     "min" -> R.drawable.ic_fw_minimize
@@ -192,13 +300,14 @@ class FloatingWindowManager(
         val btnMaximize = createChromeBtn("max", "fw_btn_maximize_$windowId", "Maximize or restore $title")
         val btnClose = createChromeBtn("close", "fw_btn_close_$windowId", "Close $title")
 
+        titleBar.addView(btnMenu)
         titleBar.addView(iconView)
         titleBar.addView(titleView)
         titleBar.addView(btnMinimize)
         titleBar.addView(btnMaximize)
         titleBar.addView(btnClose)
 
-        // 2. Content Host + Bottom-Right Corner Resize Grip layered cleanly in FrameLayout
+        // 2. Content Host + Left Hamburger Dropdown Drawer + Bottom-Right Corner Resize Grip
         val bodyOverlay = FrameLayout(context).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -215,6 +324,84 @@ class FloatingWindowManager(
             )
         }
 
+        val menuItemsContainer = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val menuItemsScroll = ScrollView(context).apply {
+            isVerticalScrollBarEnabled = true
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+            addView(menuItemsContainer)
+        }
+
+        val opacityValueLabel = TextView(context).apply {
+            tag = "fw_opacity_label_$windowId"
+            text = "Opacity: 100%"
+            textSize = 11f
+            setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+            setTextColor(accentColor)
+        }
+
+        val opacitySeekBar = SeekBar(context).apply {
+            tag = "fw_opacity_slider_$windowId"
+            contentDescription = "Window opacity slider"
+            max = 75 // 25%..100%
+            progress = 75
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (2 * density).toInt()
+            }
+        }
+
+        val opacityFooter = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((10 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 8f * density
+                setColor(Color.parseColor("#1E293B"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (6 * density).toInt()
+            }
+            addView(opacityValueLabel)
+            addView(opacitySeekBar)
+        }
+
+        val menuDrawer = LinearLayout(context).apply {
+            tag = "fw_menu_drawer_$windowId"
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            isClickable = true
+            isFocusable = true
+            elevation = 10f * density
+            setPadding((8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                val r = 12f * density
+                cornerRadii = floatArrayOf(0f, 0f, r, r, r, r, 0f, 0f)
+                setColor(Color.parseColor("#0F172A"))
+                setStroke((1.2f * density).toInt().coerceAtLeast(1), accentColor)
+            }
+            layoutParams = FrameLayout.LayoutParams(
+                (212 * density).toInt(),
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START
+            ).apply {
+                bottomMargin = (18 * density).toInt()
+            }
+            addView(menuItemsScroll)
+            addView(opacityFooter)
+        }
+
         val gripSize = (24 * density).toInt()
         val resizeGrip = ImageView(context).apply {
             tag = "fw_resize_grip_$windowId"
@@ -227,6 +414,7 @@ class FloatingWindowManager(
         }
 
         bodyOverlay.addView(contentHost)
+        bodyOverlay.addView(menuDrawer)
         bodyOverlay.addView(resizeGrip)
 
         root.addView(titleBar)
@@ -239,9 +427,30 @@ class FloatingWindowManager(
             iconRes = iconRes,
             rootView = root,
             contentHost = contentHost,
+            titleView = titleView,
+            menuButton = btnMenu,
+            menuDrawer = menuDrawer,
+            menuItemsContainer = menuItemsContainer,
+            opacitySeekBar = opacitySeekBar,
+            opacityValueLabel = opacityValueLabel,
             layoutParams = lp,
             savedBounds = WindowBounds(initialX, initialY, defaultW, defaultH)
         )
+
+        opacitySeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val pct = (25 + progress).coerceIn(25, 100)
+                managed.windowAlpha = pct / 100f
+                managed.rootView.alpha = managed.windowAlpha
+                managed.opacityValueLabel.text = "Opacity: $pct%"
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+
+        // Default minimal menu (always has Opacity slider footer; mini-apps customize items via setMenuItems)
+        managed.setMenuItems(emptyList())
 
         val (innerView, cleanup) = contentBuilder(managed)
         managed.onCloseCleanup = cleanup
@@ -253,7 +462,8 @@ class FloatingWindowManager(
             )
         )
 
-        // Wire Chrome Controls
+        // Wire Chrome & Hamburger Controls
+        btnMenu.setOnClickListener { managed.toggleMenu() }
         btnClose.setOnClickListener { closeWindow(windowId) }
         btnMinimize.setOnClickListener { minimizeToBubble(managed) }
         btnMaximize.setOnClickListener { toggleMaximize(managed) }
@@ -362,9 +572,9 @@ class FloatingWindowManager(
     @SuppressLint("ClickableViewAccessibility")
     fun minimizeToBubble(managed: ManagedWindow) {
         if (managed.isMinimized) return
+        managed.closeMenu()
         managed.isMinimized = true
-        // Use GONE instead of removing WebView from window tree if possible, OR keep attached as GONE
-        // so YouTube / Browser media state stays alive cleanly while bubble is shown!
+        // Keep rootView attached as View.GONE so WebView / MediaPlayer audio continues cleanly!
         managed.rootView.visibility = View.GONE
 
         val bubbleSizePx = (52 * density).toInt()
@@ -463,7 +673,6 @@ class FloatingWindowManager(
 
     fun bringToFront(managed: ManagedWindow) {
         if (!activeWindows.containsKey(managed.windowId)) return
-        // Re-order in WindowManager safely when multiple windows are open
         if (activeWindows.size > 1) {
             runCatching {
                 windowManager.removeView(managed.rootView)

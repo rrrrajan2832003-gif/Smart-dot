@@ -82,4 +82,12 @@
     <string name="bookmark_removed">Bookmark removed</string>
     <string name="bookmarks_empty">No bookmarks saved yet. Tap ☆ to save this page.</string>
     <string name="accessibility_settings_action">Accessibility</string>
+    <string name="display_over_apps_action">Display Over Apps</string>
+    <string name="quick_prompts_saved">Quick preset prompts saved</string>
+    <string name="floating_window_title_media_files">Media &amp; Files</string>
+    <string name="floating_window_title_whatsapp">WhatsApp</string>
+    <string name="floating_window_title_instagram">Instagram</string>
+    <string name="floating_window_title_facebook">Facebook</string>
+    <string name="floating_window_title_telegram">Telegram</string>
+    <string name="floating_window_title_gmail">Gmail</string>
 </resources>

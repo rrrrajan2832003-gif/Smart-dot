@@ -1,15 +1,19 @@
 package com.example
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.app.DownloadManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Environment
 import android.speech.tts.TextToSpeech
 import android.text.TextUtils
 import android.view.Gravity
@@ -17,6 +21,8 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.webkit.CookieManager
+import android.webkit.PermissionRequest
+import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
@@ -33,6 +39,7 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import com.example.database.NoteEntry
 import com.example.database.SmartDotDatabase
 import kotlinx.coroutines.CoroutineScope
@@ -49,12 +56,11 @@ import java.util.WeakHashMap
 
 /**
  * Provides the dedicated self-contained floating mini-apps inside FloatingWindowManager:
- * 1. Floating Browser (WebView + URL/Search bar + Bookmark Manager + Back/Forward + Multi-Tabs)
- * 2. Floating YouTube (Mobile m.youtube.com WebView + Desktop mode toggle + background playback)
- * 3. Floating Notes (Room DB sticky notepad)
- * 4. Floating Calculator (CalculatorEvaluator live keypad)
- * 5. Floating Translator (ML Kit auto-detect offline translator)
- * 6. Floating File/Image Viewer (zero-permission Photo Picker & SAF viewer)
+ * 1. Floating Browser (Clutter-free WebView + compact URL pill + Left ☰ Menu for Back/Forward/Reload/Tabs/Bookmarks/History/Downloads/Copy-Paste/Desktop+Opacity)
+ * 2. Floating Social & Web Apps (WhatsApp Web w/ Desktop Chrome UA, Instagram, Facebook, Telegram, Gmail)
+ * 3. Floating YouTube (Full-bleed WebView + background playback + Left ☰ Menu)
+ * 4. Floating Media & Files (File Browser + Image Viewer + Video Player + Audio Player)
+ * 5. Floating Notes, Floating Calculator, Floating Translator, Floating File/Image Viewer, & Floating AI Web
  */
 object FloatingMiniApps {
 
@@ -63,13 +69,33 @@ object FloatingMiniApps {
         val url: String
     )
 
+    data class HistoryEntry(
+        val title: String,
+        val url: String,
+        val timestamp: Long
+    )
+
+    data class DownloadEntry(
+        val fileName: String,
+        val url: String,
+        val timestamp: Long
+    )
+
     const val PREF_BROWSER_BOOKMARKS = "floating_browser_bookmarks"
+    const val PREF_BROWSER_HISTORY = "floating_browser_history"
+    const val PREF_BROWSER_DOWNLOADS = "floating_browser_downloads"
+
+    private const val MOBILE_USER_AGENT =
+        "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+    private const val DESKTOP_USER_AGENT =
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
     @Volatile
     internal var pendingBrowserUploadImageUri: Uri? = null
 
     private val browserNavigators = WeakHashMap<View, (String, Uri?) -> Unit>()
 
+    // --- Bookmarks Persistence ---
     fun getBrowserBookmarks(context: Context): List<BookmarkEntry> {
         val prefs = context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
         val raw = prefs.getString(PREF_BROWSER_BOOKMARKS, null).orEmpty()
@@ -91,10 +117,10 @@ object FloatingMiniApps {
     private fun saveBrowserBookmarks(context: Context, entries: List<BookmarkEntry>) {
         val arr = JSONArray()
         entries.forEach { entry ->
-            val obj = JSONObject()
-            obj.put("title", entry.title)
-            obj.put("url", entry.url)
-            arr.put(obj)
+            arr.put(JSONObject().apply {
+                put("title", entry.title)
+                put("url", entry.url)
+            })
         }
         val prefs = context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit().putString(PREF_BROWSER_BOOKMARKS, arr.toString()).apply()
@@ -106,10 +132,6 @@ object FloatingMiniApps {
         return getBrowserBookmarks(context).any { it.url.equals(cleanUrl, ignoreCase = true) }
     }
 
-    /**
-     * Toggles a URL in the Floating Browser bookmark list.
-     * Returns true if added, false if removed.
-     */
     fun toggleBrowserBookmark(context: Context, title: String, url: String): Boolean {
         val cleanUrl = url.trim()
         if (cleanUrl.isEmpty()) return false
@@ -134,9 +156,95 @@ object FloatingMiniApps {
         saveBrowserBookmarks(context, updated)
     }
 
+    // --- History Persistence ---
+    fun getBrowserHistory(context: Context): List<HistoryEntry> {
+        val prefs = context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
+        val raw = prefs.getString(PREF_BROWSER_HISTORY, null).orEmpty()
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            val result = ArrayList<HistoryEntry>(arr.length())
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val url = obj.optString("url").trim()
+                if (url.isEmpty()) continue
+                val title = obj.optString("title").trim().ifEmpty { url }
+                val ts = obj.optLong("ts", 0L)
+                result.add(HistoryEntry(title = title, url = url, timestamp = ts))
+            }
+            result
+        }.getOrElse { emptyList() }
+    }
+
+    fun addBrowserHistory(context: Context, title: String, url: String) {
+        val cleanUrl = url.trim()
+        if (cleanUrl.isEmpty() || cleanUrl == "about:blank") return
+        val current = getBrowserHistory(context).filterNot { it.url.equals(cleanUrl, ignoreCase = true) }.toMutableList()
+        current.add(0, HistoryEntry(title = title.trim().ifEmpty { cleanUrl }, url = cleanUrl, timestamp = System.currentTimeMillis()))
+        val trimmed = current.take(40)
+        val arr = JSONArray()
+        trimmed.forEach { entry ->
+            arr.put(JSONObject().apply {
+                put("title", entry.title)
+                put("url", entry.url)
+                put("ts", entry.timestamp)
+            })
+        }
+        val prefs = context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(PREF_BROWSER_HISTORY, arr.toString()).apply()
+    }
+
+    fun clearBrowserHistory(context: Context) {
+        context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().remove(PREF_BROWSER_HISTORY).apply()
+    }
+
+    // --- Downloads Persistence ---
+    fun getBrowserDownloads(context: Context): List<DownloadEntry> {
+        val prefs = context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
+        val raw = prefs.getString(PREF_BROWSER_DOWNLOADS, null).orEmpty()
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            val result = ArrayList<DownloadEntry>(arr.length())
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val url = obj.optString("url").trim()
+                if (url.isEmpty()) continue
+                val fileName = obj.optString("name").trim().ifEmpty { "download" }
+                val ts = obj.optLong("ts", 0L)
+                result.add(DownloadEntry(fileName = fileName, url = url, timestamp = ts))
+            }
+            result
+        }.getOrElse { emptyList() }
+    }
+
+    fun addBrowserDownload(context: Context, fileName: String, url: String) {
+        val cleanUrl = url.trim()
+        if (cleanUrl.isEmpty()) return
+        val current = getBrowserDownloads(context).toMutableList()
+        current.add(0, DownloadEntry(fileName = fileName.trim().ifEmpty { "file" }, url = cleanUrl, timestamp = System.currentTimeMillis()))
+        val trimmed = current.take(30)
+        val arr = JSONArray()
+        trimmed.forEach { entry ->
+            arr.put(JSONObject().apply {
+                put("name", entry.fileName)
+                put("url", entry.url)
+                put("ts", entry.timestamp)
+            })
+        }
+        val prefs = context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(PREF_BROWSER_DOWNLOADS, arr.toString()).apply()
+    }
+
+    fun clearBrowserDownloads(context: Context) {
+        context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().remove(PREF_BROWSER_DOWNLOADS).apply()
+    }
+
     private class KeepAliveWebView(context: Context) : WebView(context) {
         override fun onWindowVisibilityChanged(visibility: Int) {
-            // Keep WebView active even when minimized to bubble for background YouTube playback
+            // Keep WebView active even when minimized to bubble for background audio/playback
             super.onWindowVisibilityChanged(View.VISIBLE)
         }
     }
@@ -160,6 +268,108 @@ object FloatingMiniApps {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
+    private fun configureWebViewCommon(
+        context: Context,
+        webView: WebView,
+        desktopMode: Boolean
+    ) {
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            @Suppress("DEPRECATION")
+            databaseEnabled = true
+            mediaPlaybackRequiresUserGesture = false
+            allowFileAccess = false
+            allowContentAccess = true
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            builtInZoomControls = true
+            displayZoomControls = false
+            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            userAgentString = if (desktopMode) DESKTOP_USER_AGENT else MOBILE_USER_AGENT
+        }
+        runCatching {
+            val cm = CookieManager.getInstance()
+            cm.setAcceptCookie(true)
+            cm.setAcceptThirdPartyCookies(webView, true)
+            cm.flush()
+        }
+        webView.setDownloadListener { url, _, contentDisposition, mimeType, _ ->
+            val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
+            addBrowserDownload(context, fileName, url)
+            runCatching {
+                val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
+                val req = DownloadManager.Request(Uri.parse(url)).apply {
+                    setTitle(fileName)
+                    setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+                }
+                dm?.enqueue(req)
+            }
+            Toast.makeText(context, "Downloading $fileName", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun grantWebPermissionsIfPermitted(context: Context, request: PermissionRequest) {
+        val granted = ArrayList<String>()
+        val hasCamera = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        val hasMic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        request.resources.forEach { res ->
+            when (res) {
+                PermissionRequest.RESOURCE_VIDEO_CAPTURE -> if (hasCamera) granted.add(res)
+                PermissionRequest.RESOURCE_AUDIO_CAPTURE -> if (hasMic) granted.add(res)
+                PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID -> granted.add(res)
+            }
+        }
+        if (granted.isNotEmpty()) {
+            request.grant(granted.toTypedArray())
+        } else {
+            request.deny()
+        }
+    }
+
+    private fun handleWebFileChooser(
+        context: Context,
+        filePathCallback: ValueCallback<Array<Uri>>?,
+        fileChooserParams: WebChromeClient.FileChooserParams?
+    ): Boolean {
+        if (filePathCallback == null) return false
+        val stagedUri = pendingBrowserUploadImageUri
+        if (stagedUri != null) {
+            pendingBrowserUploadImageUri = null
+            filePathCallback.onReceiveValue(arrayOf(stagedUri))
+            return true
+        }
+        ViewerPickerActivity.pendingWebFileCallback?.onReceiveValue(null)
+        ViewerPickerActivity.pendingWebFileCallback = filePathCallback
+        val acceptTypes = fileChooserParams?.acceptTypes
+            ?.filter { it.isNotBlank() }
+            ?.toTypedArray()
+        val pickerIntent = Intent(context, ViewerPickerActivity::class.java).apply {
+            putExtra(ViewerPickerActivity.EXTRA_PICK_MODE, ViewerPickerActivity.MODE_WEB_FILE_CHOOSER)
+            if (acceptTypes != null && acceptTypes.isNotEmpty()) {
+                putExtra(ViewerPickerActivity.EXTRA_ACCEPT_MIME_TYPES, acceptTypes)
+            }
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return runCatching {
+            context.startActivity(pickerIntent)
+            true
+        }.getOrElse {
+            ViewerPickerActivity.pendingWebFileCallback?.onReceiveValue(null)
+            ViewerPickerActivity.pendingWebFileCallback = null
+            false
+        }
+    }
+
+    /**
+     * Opens the clean, clutter-free Floating Browser with Hamburger (☰) Menu drawer:
+     * Back, Forward, Reload, + New Tab, ★ Bookmark, 📑 Bookmarks, 🕒 History, ⬇ Downloads,
+     * 📋 Copy / Paste, Desktop/Mobile View toggle, and Window Opacity slider.
+     */
+    @SuppressLint("SetJavaScriptEnabled")
     fun openFloatingBrowser(
         context: Context,
         manager: FloatingWindowManager,
@@ -181,10 +391,11 @@ object FloatingMiniApps {
         ) { managed ->
             val container = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(context, 6f), dp(context, 6f), dp(context, 6f), dp(context, 6f))
+                setPadding(dp(context, 4f), dp(context, 4f), dp(context, 4f), dp(context, 4f))
             }
 
-            // Tab state: each tab holds its WebView + current URL/title
+            var isDesktopMode = false
+
             val webHost = FrameLayout(context).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
@@ -198,6 +409,7 @@ object FloatingMiniApps {
             }
             val tabsScroll = HorizontalScrollView(context).apply {
                 isHorizontalScrollBarEnabled = false
+                visibility = View.GONE // Hidden when only 1 tab so main view remains 100% spacious
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -215,60 +427,114 @@ object FloatingMiniApps {
                 textSize = 12f
                 isSingleLine = true
                 imeOptions = EditorInfo.IME_ACTION_GO
-                setPadding(dp(context, 8f), dp(context, 6f), dp(context, 8f), dp(context, 6f))
+                setPadding(dp(context, 10f), dp(context, 6f), dp(context, 10f), dp(context, 6f))
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
-                    cornerRadius = dp(context, 8f).toFloat()
+                    cornerRadius = dp(context, 10f).toFloat()
                     setColor(Color.parseColor("#1E293B"))
                 }
                 layoutParams = LinearLayout.LayoutParams(0, dp(context, 34f), 1f).apply {
-                    marginStart = dp(context, 4f)
                     marginEnd = dp(context, 4f)
                 }
             }
 
-            data class BrowserTab(var title: String, val webView: WebView, var lastUrl: String = "")
-            val tabs = ArrayList<BrowserTab>()
-            var activeTabIdx = 0
-
-            val bookmarksListContainer = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-            }
-            val bookmarksScroll = ScrollView(context).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    dp(context, 160f)
-                )
-                addView(bookmarksListContainer)
-            }
-            val bookmarksSheet = LinearLayout(context).apply {
-                tag = "fw_browser_bookmarks_sheet"
-                orientation = LinearLayout.VERTICAL
-                visibility = View.GONE
-                setPadding(dp(context, 8f), dp(context, 6f), dp(context, 8f), dp(context, 6f))
+            val btnGo = TextView(context).apply {
+                tag = "fw_browser_go"
+                text = "Go"
+                textSize = 12f
+                setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setTextColor(Color.BLACK)
+                minWidth = dp(context, 36f)
+                minHeight = dp(context, 34f)
+                setPadding(dp(context, 10f), 0, dp(context, 10f), 0)
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
                     cornerRadius = dp(context, 10f).toFloat()
-                    setColor(Color.parseColor("#0F172A"))
-                    setStroke(1, accentColor)
+                    setColor(accentColor)
                 }
+            }
+
+            val urlBar = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply {
                     bottomMargin = dp(context, 4f)
                 }
-                addView(TextView(context).apply {
-                    text = "Bookmarks"
+                addView(etUrl)
+                addView(btnGo)
+            }
+
+            data class BrowserTab(var title: String, val webView: WebView, var lastUrl: String = "")
+            val tabs = ArrayList<BrowserTab>()
+            var activeTabIdx = 0
+
+            // Reusable collapsible panel for Bookmarks, History, or Downloads
+            fun buildOverlaySheet(sheetTag: String, titleText: String): Pair<LinearLayout, LinearLayout> {
+                val listCol = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                }
+                val scroll = ScrollView(context).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        dp(context, 170f)
+                    )
+                    addView(listCol)
+                }
+                val sheetHeader = LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(0, 0, 0, dp(context, 4f))
+                }
+                sheetHeader.addView(TextView(context).apply {
+                    text = titleText
                     textSize = 12f
                     setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
                     setTextColor(accentColor)
-                    setPadding(0, 0, 0, dp(context, 4f))
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 })
-                addView(bookmarksScroll)
+                val sheet = LinearLayout(context).apply {
+                    tag = sheetTag
+                    orientation = LinearLayout.VERTICAL
+                    visibility = View.GONE
+                    setPadding(dp(context, 8f), dp(context, 6f), dp(context, 8f), dp(context, 6f))
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = dp(context, 10f).toFloat()
+                        setColor(Color.parseColor("#0F172A"))
+                        setStroke(1, accentColor)
+                    }
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        bottomMargin = dp(context, 4f)
+                    }
+                }
+                sheetHeader.addView(TextView(context).apply {
+                    text = "✕"
+                    textSize = 13f
+                    setTextColor(Color.parseColor("#94A3B8"))
+                    setPadding(dp(context, 8f), dp(context, 2f), dp(context, 4f), dp(context, 2f))
+                    setOnClickListener { sheet.visibility = View.GONE }
+                })
+                sheet.addView(sheetHeader)
+                sheet.addView(scroll)
+                return sheet to listCol
             }
 
-            lateinit var btnBookmarkStar: TextView
+            val (bookmarksSheet, bookmarksListContainer) = buildOverlaySheet("fw_browser_bookmarks_sheet", "★ Bookmarks")
+            val (historySheet, historyListContainer) = buildOverlaySheet("fw_browser_history_sheet", "🕒 History")
+            val (downloadsSheet, downloadsListContainer) = buildOverlaySheet("fw_browser_downloads_sheet", "⬇ Downloads")
+
+            fun hideAllSheets() {
+                bookmarksSheet.visibility = View.GONE
+                historySheet.visibility = View.GONE
+                downloadsSheet.visibility = View.GONE
+            }
 
             fun activeCurrentUrl(): String {
                 val activeTab = tabs.getOrNull(activeTabIdx)
@@ -278,12 +544,7 @@ object FloatingMiniApps {
                 return wvUrl ?: rememberedUrl ?: fieldUrl ?: ""
             }
 
-            fun refreshBookmarkStar() {
-                val currentUrl = activeCurrentUrl()
-                val bookmarked = isBookmarked(context, currentUrl)
-                btnBookmarkStar.text = if (bookmarked) "★" else "☆"
-                btnBookmarkStar.setTextColor(if (bookmarked) Color.parseColor("#FBBF24") else Color.WHITE)
-            }
+            lateinit var refreshMenuItems: () -> Unit
 
             fun loadUrlInActiveTab(rawUrl: String) {
                 val dest = normalizeBrowserInput(rawUrl)
@@ -291,7 +552,8 @@ object FloatingMiniApps {
                 activeTab.lastUrl = dest
                 etUrl.setText(dest)
                 activeTab.webView.loadUrl(dest)
-                refreshBookmarkStar()
+                addBrowserHistory(context, activeTab.title, dest)
+                refreshMenuItems()
             }
 
             fun renderBookmarksSheet() {
@@ -323,14 +585,14 @@ object FloatingMiniApps {
                         ).apply {
                             bottomMargin = dp(context, 4f)
                         }
-                    }
-                    val textCol = LinearLayout(context).apply {
-                        orientation = LinearLayout.VERTICAL
-                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                         setOnClickListener {
                             loadUrlInActiveTab(entry.url)
                             bookmarksSheet.visibility = View.GONE
                         }
+                    }
+                    val textCol = LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                     }
                     textCol.addView(TextView(context).apply {
                         text = entry.title
@@ -347,7 +609,6 @@ object FloatingMiniApps {
                         maxLines = 1
                         ellipsize = TextUtils.TruncateAt.END
                     })
-
                     val btnDel = TextView(context).apply {
                         tag = "fw_browser_bookmark_delete_$idx"
                         text = "✕"
@@ -359,7 +620,7 @@ object FloatingMiniApps {
                         contentDescription = "Delete bookmark ${entry.title}"
                         setOnClickListener {
                             removeBrowserBookmark(context, entry.url)
-                            refreshBookmarkStar()
+                            refreshMenuItems()
                             renderBookmarksSheet()
                         }
                     }
@@ -369,7 +630,147 @@ object FloatingMiniApps {
                 }
             }
 
-            fun renderTabsStrip() {
+            fun renderHistorySheet() {
+                historyListContainer.removeAllViews()
+                val items = getBrowserHistory(context)
+                if (items.isEmpty()) {
+                    historyListContainer.addView(TextView(context).apply {
+                        tag = "fw_browser_history_empty"
+                        text = "No browsing history yet."
+                        textSize = 11.5f
+                        setTextColor(Color.parseColor("#94A3B8"))
+                        setPadding(dp(context, 6f), dp(context, 8f), dp(context, 6f), dp(context, 8f))
+                    })
+                    return
+                }
+                items.forEachIndexed { idx, entry ->
+                    val row = LinearLayout(context).apply {
+                        tag = "fw_browser_history_row_$idx"
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(context, 8f), dp(context, 6f), dp(context, 8f), dp(context, 6f))
+                        background = GradientDrawable().apply {
+                            cornerRadius = dp(context, 8f).toFloat()
+                            setColor(Color.parseColor("#1E293B"))
+                        }
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            bottomMargin = dp(context, 4f)
+                        }
+                        setOnClickListener {
+                            loadUrlInActiveTab(entry.url)
+                            historySheet.visibility = View.GONE
+                        }
+                    }
+                    row.addView(TextView(context).apply {
+                        text = entry.title
+                        textSize = 11.5f
+                        setTextColor(Color.WHITE)
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                    })
+                    row.addView(TextView(context).apply {
+                        text = entry.url
+                        textSize = 10f
+                        setTextColor(Color.parseColor("#94A3B8"))
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                    })
+                    historyListContainer.addView(row)
+                }
+            }
+
+            fun renderDownloadsSheet() {
+                downloadsListContainer.removeAllViews()
+                val items = getBrowserDownloads(context)
+                if (items.isEmpty()) {
+                    downloadsListContainer.addView(TextView(context).apply {
+                        tag = "fw_browser_downloads_empty"
+                        text = "No downloads recorded yet."
+                        textSize = 11.5f
+                        setTextColor(Color.parseColor("#94A3B8"))
+                        setPadding(dp(context, 6f), dp(context, 8f), dp(context, 6f), dp(context, 8f))
+                    })
+                    return
+                }
+                items.forEachIndexed { idx, entry ->
+                    val row = LinearLayout(context).apply {
+                        tag = "fw_browser_download_row_$idx"
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(context, 8f), dp(context, 6f), dp(context, 8f), dp(context, 6f))
+                        background = GradientDrawable().apply {
+                            cornerRadius = dp(context, 8f).toFloat()
+                            setColor(Color.parseColor("#1E293B"))
+                        }
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            bottomMargin = dp(context, 4f)
+                        }
+                    }
+                    row.addView(TextView(context).apply {
+                        text = "⬇ ${entry.fileName}"
+                        textSize = 11.5f
+                        setTextColor(Color.WHITE)
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                    })
+                    row.addView(TextView(context).apply {
+                        text = entry.url
+                        textSize = 10f
+                        setTextColor(Color.parseColor("#94A3B8"))
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                    })
+                    downloadsListContainer.addView(row)
+                }
+            }
+
+            lateinit var renderTabsStrip: () -> Unit
+
+            fun openNewBrowserTab(url: String = "https://www.google.com") {
+                val newIdx = tabs.size
+                val wv = createBrowserWebView(
+                    context = context,
+                    etUrl = etUrl,
+                    desktopMode = isDesktopMode,
+                    onTitleChanged = { title ->
+                        if (newIdx < tabs.size) {
+                            tabs[newIdx].title = title.ifBlank { "Tab ${newIdx + 1}" }
+                            renderTabsStrip()
+                        }
+                    },
+                    onUrlFinished = { finishedUrl ->
+                        if (newIdx < tabs.size) {
+                            tabs[newIdx].lastUrl = finishedUrl
+                            addBrowserHistory(context, tabs[newIdx].title, finishedUrl)
+                        }
+                        if (newIdx == activeTabIdx) refreshMenuItems()
+                    }
+                )
+                tabs.add(BrowserTab("Tab ${newIdx + 1}", wv, url))
+                webHost.addView(
+                    wv,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+                )
+                activeTabIdx = newIdx
+                tabs.forEachIndexed { j, t ->
+                    t.webView.visibility = if (j == activeTabIdx) View.VISIBLE else View.GONE
+                }
+                wv.loadUrl(url)
+                etUrl.setText(url)
+                tabsScroll.visibility = if (tabs.size > 1) View.VISIBLE else View.GONE
+                renderTabsStrip()
+                refreshMenuItems()
+            }
+
+            renderTabsStrip = {
+                tabsScroll.visibility = if (tabs.size > 1) View.VISIBLE else View.GONE
                 tabsStrip.removeAllViews()
                 tabs.forEachIndexed { idx, tab ->
                     val pill = TextView(context).apply {
@@ -396,14 +797,14 @@ object FloatingMiniApps {
                                 t.webView.visibility = if (j == activeTabIdx) View.VISIBLE else View.GONE
                             }
                             etUrl.setText(tabs[activeTabIdx].webView.url ?: tabs[activeTabIdx].lastUrl)
-                            refreshBookmarkStar()
+                            refreshMenuItems()
                             renderTabsStrip()
                         }
                     }
                     tabsStrip.addView(pill)
                 }
-                val btnNewTab = TextView(context).apply {
-                    tag = "fw_browser_new_tab"
+                val btnNewTabPill = TextView(context).apply {
+                    tag = "fw_browser_new_tab_pill"
                     text = "+ Tab"
                     textSize = 10.5f
                     setTextColor(accentColor)
@@ -414,114 +815,121 @@ object FloatingMiniApps {
                         setColor(Color.parseColor("#1E293B"))
                         setStroke(1, accentColor)
                     }
+                    setOnClickListener { openNewBrowserTab() }
                 }
-                tabsStrip.addView(btnNewTab)
-                btnNewTab.setOnClickListener {
-                    val newIdx = tabs.size
-                    val wv = createBrowserWebView(
-                        context = context,
-                        etUrl = etUrl,
-                        onTitleChanged = { title ->
-                            if (newIdx < tabs.size) {
-                                tabs[newIdx].title = title.ifBlank { "Tab ${newIdx + 1}" }
-                                renderTabsStrip()
+                tabsStrip.addView(btnNewTabPill)
+            }
+
+            var browserMenuInitialized = false
+            refreshMenuItems = {
+                val isBookmarkedNow = isBookmarked(context, activeCurrentUrl())
+                val starLabel = if (isBookmarkedNow) "★ Bookmarked" else "☆ Bookmark Page"
+                val starColor = if (isBookmarkedNow) Color.parseColor("#FBBF24") else Color.parseColor("#F8FAFC")
+                val modeLabel = if (isDesktopMode) "📱 Mobile View" else "🖥 Desktop View"
+                if (browserMenuInitialized) {
+                    managed.updateMenuItemLabel("fw_browser_bookmark_star", starLabel, starColor)
+                    managed.updateMenuItemLabel("fw_browser_mode_toggle", modeLabel, accentColor)
+                } else {
+                    browserMenuInitialized = true
+                    managed.setMenuItems(
+                        listOf(
+                            FloatingWindowManager.WindowMenuItem("back", "← Go back", "fw_browser_back") {
+                                val wv = tabs.getOrNull(activeTabIdx)?.webView
+                                if (wv?.canGoBack() == true) wv.goBack()
+                            },
+                            FloatingWindowManager.WindowMenuItem("forward", "→ Go forward", "fw_browser_forward") {
+                                val wv = tabs.getOrNull(activeTabIdx)?.webView
+                                if (wv?.canGoForward() == true) wv.goForward()
+                            },
+                            FloatingWindowManager.WindowMenuItem("reload", "↻ Reload", "fw_browser_reload") {
+                                tabs.getOrNull(activeTabIdx)?.webView?.reload()
+                            },
+                            FloatingWindowManager.WindowMenuItem("new_tab", "+ New tab", "fw_browser_new_tab") {
+                                openNewBrowserTab()
+                            },
+                            FloatingWindowManager.WindowMenuItem(
+                                id = "bookmark_star",
+                                label = starLabel,
+                                tag = "fw_browser_bookmark_star",
+                                closeOnTap = false,
+                                textColor = starColor
+                            ) {
+                                val activeTab = tabs.getOrNull(activeTabIdx)
+                                val url = activeCurrentUrl()
+                                if (url.isNotBlank()) {
+                                    val pageTitle = activeTab?.webView?.title?.takeIf { it.isNotBlank() }
+                                        ?: activeTab?.title?.takeIf { it.isNotBlank() }
+                                        ?: url
+                                    val added = toggleBrowserBookmark(context, pageTitle, url)
+                                    refreshMenuItems()
+                                    if (bookmarksSheet.visibility == View.VISIBLE) renderBookmarksSheet()
+                                    val msgRes = if (added) R.string.bookmark_added else R.string.bookmark_removed
+                                    Toast.makeText(context, context.getString(msgRes), Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            FloatingWindowManager.WindowMenuItem("bookmarks", "★ Bookmarks", "fw_browser_bookmarks_list") {
+                                if (bookmarksSheet.visibility == View.VISIBLE) {
+                                    bookmarksSheet.visibility = View.GONE
+                                } else {
+                                    hideAllSheets()
+                                    renderBookmarksSheet()
+                                    bookmarksSheet.visibility = View.VISIBLE
+                                }
+                            },
+                            FloatingWindowManager.WindowMenuItem("history", "🕒 History", "fw_browser_history_btn") {
+                                if (historySheet.visibility == View.VISIBLE) {
+                                    historySheet.visibility = View.GONE
+                                } else {
+                                    hideAllSheets()
+                                    renderHistorySheet()
+                                    historySheet.visibility = View.VISIBLE
+                                }
+                            },
+                            FloatingWindowManager.WindowMenuItem("downloads", "⬇ Downloads", "fw_browser_downloads_btn") {
+                                if (downloadsSheet.visibility == View.VISIBLE) {
+                                    downloadsSheet.visibility = View.GONE
+                                } else {
+                                    hideAllSheets()
+                                    renderDownloadsSheet()
+                                    downloadsSheet.visibility = View.VISIBLE
+                                }
+                            },
+                            FloatingWindowManager.WindowMenuItem("copy_url", "📋 Copy URL", "fw_browser_copy_url") {
+                                val url = activeCurrentUrl()
+                                if (url.isNotBlank()) {
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    cm.setPrimaryClip(ClipData.newPlainText("URL", url))
+                                    Toast.makeText(context, "URL copied", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            FloatingWindowManager.WindowMenuItem("paste_go", "📋 Paste & Go", "fw_browser_paste_go") {
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                val clipText = cm.primaryClip?.getItemAt(0)?.text?.toString()?.trim().orEmpty()
+                                if (clipText.isNotEmpty()) {
+                                    loadUrlInActiveTab(clipText)
+                                } else {
+                                    Toast.makeText(context, "Clipboard is empty", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            FloatingWindowManager.WindowMenuItem(
+                                id = "desktop_mode",
+                                label = modeLabel,
+                                tag = "fw_browser_mode_toggle",
+                                textColor = accentColor
+                            ) {
+                                isDesktopMode = !isDesktopMode
+                                tabs.forEach { tab ->
+                                    tab.webView.settings.userAgentString = if (isDesktopMode) DESKTOP_USER_AGENT else MOBILE_USER_AGENT
+                                }
+                                tabs.getOrNull(activeTabIdx)?.webView?.reload()
+                                refreshMenuItems()
                             }
-                        },
-                        onUrlFinished = { finishedUrl ->
-                            if (newIdx < tabs.size) {
-                                tabs[newIdx].lastUrl = finishedUrl
-                            }
-                            if (newIdx == activeTabIdx) refreshBookmarkStar()
-                        }
-                    )
-                    tabs.add(BrowserTab("Tab ${newIdx + 1}", wv, "https://www.google.com"))
-                    webHost.addView(
-                        wv,
-                        FrameLayout.LayoutParams(
-                            FrameLayout.LayoutParams.MATCH_PARENT,
-                            FrameLayout.LayoutParams.MATCH_PARENT
                         )
                     )
-                    activeTabIdx = newIdx
-                    tabs.forEachIndexed { j, t ->
-                        t.webView.visibility = if (j == activeTabIdx) View.VISIBLE else View.GONE
-                    }
-                    wv.loadUrl("https://www.google.com")
-                    etUrl.setText("https://www.google.com")
-                    refreshBookmarkStar()
-                    renderTabsStrip()
                 }
             }
 
-            fun makeNavBtn(label: String, btnTag: String, desc: String, onClick: () -> Unit): TextView {
-                return TextView(context).apply {
-                    tag = btnTag
-                    text = label
-                    textSize = 13f
-                    gravity = Gravity.CENTER
-                    setTextColor(Color.WHITE)
-                    contentDescription = desc
-                    minWidth = dp(context, 28f)
-                    minHeight = dp(context, 34f)
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.RECTANGLE
-                        cornerRadius = dp(context, 6f).toFloat()
-                        setColor(Color.parseColor("#1E293B"))
-                    }
-                    setOnClickListener { onClick() }
-                    layoutParams = LinearLayout.LayoutParams(dp(context, 28f), dp(context, 34f)).apply {
-                        marginEnd = dp(context, 2f)
-                    }
-                }
-            }
-
-            val navBar = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    bottomMargin = dp(context, 4f)
-                }
-            }
-
-            val btnBack = makeNavBtn("◀", "fw_browser_back", "Back") {
-                val wv = tabs.getOrNull(activeTabIdx)?.webView
-                if (wv?.canGoBack() == true) wv.goBack()
-            }
-            val btnForward = makeNavBtn("▶", "fw_browser_forward", "Forward") {
-                val wv = tabs.getOrNull(activeTabIdx)?.webView
-                if (wv?.canGoForward() == true) wv.goForward()
-            }
-            btnBookmarkStar = makeNavBtn("☆", "fw_browser_bookmark_star", "Toggle bookmark") {
-                val activeTab = tabs.getOrNull(activeTabIdx)
-                val url = activeCurrentUrl()
-                if (url.isNotBlank()) {
-                    val pageTitle = activeTab?.webView?.title?.takeIf { it.isNotBlank() }
-                        ?: activeTab?.title?.takeIf { it.isNotBlank() }
-                        ?: url
-                    val added = toggleBrowserBookmark(context, pageTitle, url)
-                    refreshBookmarkStar()
-                    if (bookmarksSheet.visibility == View.VISIBLE) {
-                        renderBookmarksSheet()
-                    }
-                    val msgRes = if (added) R.string.bookmark_added else R.string.bookmark_removed
-                    Toast.makeText(context, context.getString(msgRes), Toast.LENGTH_SHORT).show()
-                }
-            }
-            val btnBookmarksList = makeNavBtn("📑", "fw_browser_bookmarks_list", "Bookmarks list") {
-                if (bookmarksSheet.visibility == View.VISIBLE) {
-                    bookmarksSheet.visibility = View.GONE
-                } else {
-                    renderBookmarksSheet()
-                    bookmarksSheet.visibility = View.VISIBLE
-                }
-            }
-            val btnGo = makeNavBtn("Go", "fw_browser_go", "Navigate to URL") {
-                loadUrlInActiveTab(etUrl.text?.toString().orEmpty())
-            }
-
+            btnGo.setOnClickListener { loadUrlInActiveTab(etUrl.text?.toString().orEmpty()) }
             etUrl.setOnEditorActionListener { _, actionId, event ->
                 if (actionId == EditorInfo.IME_ACTION_GO ||
                     actionId == EditorInfo.IME_ACTION_DONE ||
@@ -534,18 +942,12 @@ object FloatingMiniApps {
                 }
             }
 
-            navBar.addView(btnBack)
-            navBar.addView(btnForward)
-            navBar.addView(etUrl)
-            navBar.addView(btnBookmarkStar)
-            navBar.addView(btnBookmarksList)
-            navBar.addView(btnGo)
-
             // Initial Tab
             val startUrl = normalizeBrowserInput(initialUrl)
             val firstWebView = createBrowserWebView(
                 context = context,
                 etUrl = etUrl,
+                desktopMode = isDesktopMode,
                 onTitleChanged = { title ->
                     if (tabs.isNotEmpty()) {
                         tabs[0].title = title.ifBlank { "Google" }
@@ -555,8 +957,9 @@ object FloatingMiniApps {
                 onUrlFinished = { finishedUrl ->
                     if (tabs.isNotEmpty()) {
                         tabs[0].lastUrl = finishedUrl
+                        addBrowserHistory(context, tabs[0].title, finishedUrl)
                     }
-                    if (activeTabIdx == 0) refreshBookmarkStar()
+                    if (activeTabIdx == 0) refreshMenuItems()
                 }
             )
             tabs.add(BrowserTab("Tab 1", firstWebView, startUrl))
@@ -569,20 +972,23 @@ object FloatingMiniApps {
             )
             firstWebView.loadUrl(startUrl)
             etUrl.setText(startUrl)
-            refreshBookmarkStar()
+            addBrowserHistory(context, "Tab 1", startUrl)
             renderTabsStrip()
+            refreshMenuItems()
 
             browserNavigators[managed.rootView] = { nextUrl, imgUri ->
                 if (imgUri != null) {
                     pendingBrowserUploadImageUri = imgUri
                 }
-                bookmarksSheet.visibility = View.GONE
+                hideAllSheets()
                 loadUrlInActiveTab(nextUrl)
             }
 
-            container.addView(navBar)
+            container.addView(urlBar)
             container.addView(tabsScroll)
             container.addView(bookmarksSheet)
+            container.addView(historySheet)
+            container.addView(downloadsSheet)
             container.addView(webHost)
 
             val cleanup: () -> Unit = {
@@ -605,6 +1011,180 @@ object FloatingMiniApps {
         return managedWin
     }
 
+    /**
+     * Opens popular social & communication apps (WhatsApp, Instagram, Facebook, Telegram, Gmail)
+     * directly inside SmartDot's own resizable Floating WebView window with persistent cookies/session,
+     * file-upload & camera/mic support, clutter-free full-bleed center WebView, and Left ☰ Menu!
+     */
+    @SuppressLint("SetJavaScriptEnabled")
+    fun openFloatingSocialApp(
+        context: Context,
+        manager: FloatingWindowManager,
+        accentColor: Int,
+        appId: String
+    ): FloatingWindowManager.ManagedWindow? {
+        data class SocialSpec(
+            val windowId: String,
+            val title: String,
+            val url: String,
+            val iconRes: Int,
+            val defaultDesktop: Boolean
+        )
+        val spec = when (appId) {
+            "whatsapp" -> SocialSpec(
+                windowId = "floating_whatsapp",
+                title = context.getString(R.string.floating_window_title_whatsapp),
+                url = "https://web.whatsapp.com",
+                iconRes = R.drawable.ic_radial_whatsapp,
+                defaultDesktop = true // Desktop Chrome UA required for WhatsApp Web login & session
+            )
+            "instagram" -> SocialSpec(
+                windowId = "floating_instagram",
+                title = context.getString(R.string.floating_window_title_instagram),
+                url = "https://www.instagram.com",
+                iconRes = R.drawable.ic_floating_window,
+                defaultDesktop = false
+            )
+            "facebook" -> SocialSpec(
+                windowId = "floating_facebook",
+                title = context.getString(R.string.floating_window_title_facebook),
+                url = "https://m.facebook.com",
+                iconRes = R.drawable.ic_floating_window,
+                defaultDesktop = false
+            )
+            "telegram" -> SocialSpec(
+                windowId = "floating_telegram",
+                title = context.getString(R.string.floating_window_title_telegram),
+                url = "https://web.telegram.org",
+                iconRes = R.drawable.ic_floating_window,
+                defaultDesktop = false
+            )
+            else -> SocialSpec(
+                windowId = "floating_gmail",
+                title = context.getString(R.string.floating_window_title_gmail),
+                url = "https://mail.google.com",
+                iconRes = android.R.drawable.ic_dialog_email,
+                defaultDesktop = false
+            )
+        }
+
+        return manager.openOrFocusWindow(
+            windowId = spec.windowId,
+            title = spec.title,
+            accentColor = accentColor,
+            iconRes = spec.iconRes,
+            requiresTextInput = true
+        ) { managed ->
+            var isDesktopMode = spec.defaultDesktop
+            var lastKnownUrl = spec.url
+
+            val webView = KeepAliveWebView(context).apply {
+                tag = "fw_social_webview_$appId"
+                configureWebViewCommon(context, this, desktopMode = isDesktopMode)
+                webViewClient = object : WebViewClient() {
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        super.onPageFinished(view, url)
+                        if (!url.isNullOrBlank()) {
+                            lastKnownUrl = url
+                            addBrowserHistory(context, view?.title ?: spec.title, url)
+                        }
+                        runCatching { CookieManager.getInstance().flush() }
+                    }
+                }
+                webChromeClient = object : WebChromeClient() {
+                    override fun onShowFileChooser(
+                        webView: WebView?,
+                        filePathCallback: ValueCallback<Array<Uri>>?,
+                        fileChooserParams: FileChooserParams?
+                    ): Boolean = handleWebFileChooser(context, filePathCallback, fileChooserParams)
+
+                    override fun onPermissionRequest(request: PermissionRequest?) {
+                        if (request != null) grantWebPermissionsIfPermitted(context, request)
+                    }
+                }
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            }
+
+            lateinit var refreshSocialMenu: () -> Unit
+            var socialMenuInitialized = false
+            refreshSocialMenu = {
+                val bookmarked = isBookmarked(context, lastKnownUrl)
+                val starLabel = if (bookmarked) "★ Bookmarked" else "☆ Bookmark Page"
+                val modeLabel = if (isDesktopMode) "📱 Mobile View" else "🖥 Desktop View"
+                if (socialMenuInitialized) {
+                    managed.updateMenuItemLabel("fw_social_bookmark_$appId", starLabel)
+                    managed.updateMenuItemLabel("fw_social_mode_toggle_$appId", modeLabel, accentColor)
+                } else {
+                    socialMenuInitialized = true
+                    managed.setMenuItems(
+                        listOf(
+                            FloatingWindowManager.WindowMenuItem("back", "← Go back", "fw_social_back_$appId") {
+                                if (webView.canGoBack()) webView.goBack()
+                            },
+                            FloatingWindowManager.WindowMenuItem("forward", "→ Go forward", "fw_social_forward_$appId") {
+                                if (webView.canGoForward()) webView.goForward()
+                            },
+                            FloatingWindowManager.WindowMenuItem("reload", "↻ Reload", "fw_social_reload_$appId") {
+                                webView.reload()
+                            },
+                            FloatingWindowManager.WindowMenuItem(
+                                id = "bookmark",
+                                label = starLabel,
+                                tag = "fw_social_bookmark_$appId",
+                                closeOnTap = false
+                            ) {
+                                val title = webView.title?.takeIf { it.isNotBlank() } ?: spec.title
+                                toggleBrowserBookmark(context, title, lastKnownUrl)
+                                refreshSocialMenu()
+                            },
+                            FloatingWindowManager.WindowMenuItem("copy_url", "📋 Copy URL", "fw_social_copy_url_$appId") {
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                cm.setPrimaryClip(ClipData.newPlainText("URL", webView.url ?: lastKnownUrl))
+                                Toast.makeText(context, "URL copied", Toast.LENGTH_SHORT).show()
+                            },
+                            FloatingWindowManager.WindowMenuItem(
+                                id = "desktop_mode",
+                                label = modeLabel,
+                                tag = "fw_social_mode_toggle_$appId",
+                                textColor = accentColor
+                            ) {
+                                isDesktopMode = !isDesktopMode
+                                webView.settings.userAgentString = if (isDesktopMode) DESKTOP_USER_AGENT else MOBILE_USER_AGENT
+                                webView.reload()
+                                refreshSocialMenu()
+                            }
+                        )
+                    )
+                }
+            }
+            refreshSocialMenu()
+
+            webView.loadUrl(spec.url)
+
+            val cleanup: () -> Unit = {
+                ViewerPickerActivity.pendingWebFileCallback?.onReceiveValue(null)
+                ViewerPickerActivity.pendingWebFileCallback = null
+                runCatching { CookieManager.getInstance().flush() }
+                runCatching {
+                    webView.stopLoading()
+                    webView.destroy()
+                }
+            }
+            webView to cleanup
+        }
+    }
+
+    fun openFloatingMediaFiles(
+        context: Context,
+        manager: FloatingWindowManager,
+        accentColor: Int
+    ): FloatingWindowManager.ManagedWindow? {
+        return FloatingMediaFilesHelper.openFloatingMediaFiles(context, manager, accentColor)
+    }
+
     fun openGoogleAiModeInBrowser(
         context: Context,
         manager: FloatingWindowManager,
@@ -614,17 +1194,24 @@ object FloatingMiniApps {
         cutoutBitmap: Bitmap? = null
     ): FloatingWindowManager.ManagedWindow? {
         val cleanQuestion = question.trim()
-        val combinedClipboard = SelectionToolbarHelper.combineQuestionWithText(cleanQuestion, query)
-        if (combinedClipboard.isNotEmpty()) {
+        val imageUri = cutoutBitmap?.let { bmp ->
+            SelectionToolbarHelper.writeCutoutToCacheUri(context, bmp, fileName = "cutout.png")
+        }
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (imageUri != null) {
             runCatching {
-                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                cm?.setPrimaryClip(ClipData.newPlainText("SmartDot AI Query", combinedClipboard))
+                cm?.setPrimaryClip(ClipData.newUri(context.contentResolver, "Cutout Image", imageUri))
+            }
+        } else {
+            val combinedClipboard = SelectionToolbarHelper.combineQuestionWithText(cleanQuestion, query)
+            if (combinedClipboard.isNotEmpty()) {
+                runCatching {
+                    cm?.setPrimaryClip(ClipData.newPlainText("SmartDot AI Query", combinedClipboard))
+                }
             }
         }
-        val imageUri = cutoutBitmap?.let { bmp ->
-            SelectionToolbarHelper.writeCutoutToCacheUri(context, bmp)
-        }
-        val url = SelectionToolbarHelper.buildGoogleAiModeUrl(query, cleanQuestion)
+        val effectiveQuery = if (imageUri != null) "" else query
+        val url = SelectionToolbarHelper.buildGoogleAiModeUrl(effectiveQuery, cleanQuestion)
         return openFloatingBrowser(
             context = context,
             manager = manager,
@@ -644,17 +1231,24 @@ object FloatingMiniApps {
         cutoutBitmap: Bitmap? = null
     ): FloatingWindowManager.ManagedWindow? {
         val cleanQuestion = question.trim()
-        val combinedClipboard = SelectionToolbarHelper.combineQuestionWithText(cleanQuestion, text)
-        if (combinedClipboard.isNotEmpty()) {
+        val imageUri = cutoutBitmap?.let { bmp ->
+            SelectionToolbarHelper.writeCutoutToCacheUri(context, bmp, fileName = "cutout.png")
+        }
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        if (imageUri != null) {
             runCatching {
-                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                cm?.setPrimaryClip(ClipData.newPlainText("SmartDot AI Query", combinedClipboard))
+                cm?.setPrimaryClip(ClipData.newUri(context.contentResolver, "Cutout Image", imageUri))
+            }
+        } else {
+            val combinedClipboard = SelectionToolbarHelper.combineQuestionWithText(cleanQuestion, text)
+            if (combinedClipboard.isNotEmpty()) {
+                runCatching {
+                    cm?.setPrimaryClip(ClipData.newPlainText("SmartDot AI Query", combinedClipboard))
+                }
             }
         }
-        val imageUri = cutoutBitmap?.let { bmp ->
-            SelectionToolbarHelper.writeCutoutToCacheUri(context, bmp)
-        }
-        val url = SelectionToolbarHelper.buildChatGptUrl(text, cleanQuestion)
+        val effectiveText = if (imageUri != null) "" else text
+        val url = SelectionToolbarHelper.buildChatGptUrl(effectiveText, cleanQuestion)
         return openFloatingBrowser(
             context = context,
             manager = manager,
@@ -665,27 +1259,47 @@ object FloatingMiniApps {
         )
     }
 
+    internal fun getAutoUploadTriggerScript(): String = """
+        (function() {
+            if (window.__smartDotUploadTriggered) return 'already_triggered';
+            var inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+            var imgInput = inputs.find(function(i) {
+                var acc = (i.getAttribute('accept') || '').toLowerCase();
+                return acc.indexOf('image') !== -1 || acc === '' || acc.indexOf('*') !== -1;
+            }) || inputs[0];
+            if (imgInput) {
+                window.__smartDotUploadTriggered = true;
+                imgInput.click();
+                return 'clicked_input';
+            }
+            var triggers = document.querySelectorAll(
+                'button[aria-label*="image" i], button[aria-label*="upload" i], button[aria-label*="photo" i], button[aria-label*="attach" i], [data-testid*="attach" i], [data-testid*="upload" i]'
+            );
+            if (triggers.length > 0) {
+                window.__smartDotUploadTriggered = true;
+                triggers[0].click();
+                setTimeout(function() {
+                    var laterInputs = document.querySelectorAll('input[type="file"]');
+                    if (laterInputs.length > 0) {
+                        laterInputs[0].click();
+                    }
+                }, 350);
+                return 'clicked_trigger';
+            }
+            return 'none';
+        })();
+    """.trimIndent()
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun createBrowserWebView(
         context: Context,
         etUrl: EditText,
+        desktopMode: Boolean = false,
         onTitleChanged: (String) -> Unit,
         onUrlFinished: (String) -> Unit = {}
     ): WebView {
         return WebView(context).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.allowFileAccess = false
-            settings.allowContentAccess = true
-            settings.useWideViewPort = true
-            settings.loadWithOverviewMode = true
-            settings.builtInZoomControls = true
-            settings.displayZoomControls = false
-            runCatching {
-                val cm = CookieManager.getInstance()
-                cm.setAcceptCookie(true)
-                cm.setAcceptThirdPartyCookies(this, true)
-            }
+            configureWebViewCommon(context, this, desktopMode = desktopMode)
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
@@ -694,6 +1308,21 @@ object FloatingMiniApps {
                         onUrlFinished(url)
                     }
                     onTitleChanged(view?.title.orEmpty())
+                    runCatching { CookieManager.getInstance().flush() }
+                    if (pendingBrowserUploadImageUri != null && view != null) {
+                        val js = getAutoUploadTriggerScript()
+                        view.evaluateJavascript(js, null)
+                        view.postDelayed({
+                            if (pendingBrowserUploadImageUri != null) {
+                                view.evaluateJavascript(js, null)
+                            }
+                        }, 600L)
+                        view.postDelayed({
+                            if (pendingBrowserUploadImageUri != null) {
+                                view.evaluateJavascript(js, null)
+                            }
+                        }, 1500L)
+                    }
                 }
             }
             webChromeClient = object : WebChromeClient() {
@@ -701,43 +1330,23 @@ object FloatingMiniApps {
                     if (!title.isNullOrBlank()) onTitleChanged(title)
                 }
 
+                override fun onPermissionRequest(request: PermissionRequest?) {
+                    if (request != null) grantWebPermissionsIfPermitted(context, request)
+                }
+
                 override fun onShowFileChooser(
                     webView: WebView?,
                     filePathCallback: ValueCallback<Array<Uri>>?,
                     fileChooserParams: FileChooserParams?
-                ): Boolean {
-                    if (filePathCallback == null) return false
-                    val stagedUri = pendingBrowserUploadImageUri
-                    if (stagedUri != null) {
-                        pendingBrowserUploadImageUri = null
-                        filePathCallback.onReceiveValue(arrayOf(stagedUri))
-                        return true
-                    }
-                    ViewerPickerActivity.pendingWebFileCallback?.onReceiveValue(null)
-                    ViewerPickerActivity.pendingWebFileCallback = filePathCallback
-                    val acceptTypes = fileChooserParams?.acceptTypes
-                        ?.filter { it.isNotBlank() }
-                        ?.toTypedArray()
-                    val pickerIntent = Intent(context, ViewerPickerActivity::class.java).apply {
-                        putExtra(ViewerPickerActivity.EXTRA_PICK_MODE, ViewerPickerActivity.MODE_WEB_FILE_CHOOSER)
-                        if (acceptTypes != null && acceptTypes.isNotEmpty()) {
-                            putExtra(ViewerPickerActivity.EXTRA_ACCEPT_MIME_TYPES, acceptTypes)
-                        }
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    return runCatching {
-                        context.startActivity(pickerIntent)
-                        true
-                    }.getOrElse {
-                        ViewerPickerActivity.pendingWebFileCallback?.onReceiveValue(null)
-                        ViewerPickerActivity.pendingWebFileCallback = null
-                        false
-                    }
-                }
+                ): Boolean = handleWebFileChooser(context, filePathCallback, fileChooserParams)
             }
         }
     }
 
+    /**
+     * Clean clutter-free Floating YouTube with full-bleed WebView, background playback when minimized,
+     * and Left Hamburger (☰) Menu for Back, Forward, Reload, Desktop/Mobile View, and Opacity Slider.
+     */
     @SuppressLint("SetJavaScriptEnabled")
     fun openFloatingYouTube(
         context: Context,
@@ -750,104 +1359,67 @@ object FloatingMiniApps {
             accentColor = accentColor,
             iconRes = android.R.drawable.ic_menu_slideshow,
             requiresTextInput = true
-        ) { _ ->
-            val container = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(context, 4f), dp(context, 4f), dp(context, 4f), dp(context, 4f))
-            }
-
+        ) { managed ->
             var isDesktopMode = false
-            val mobileUa = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-            val desktopUa = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-
             val webView = KeepAliveWebView(context).apply {
                 tag = "fw_youtube_webview"
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                settings.mediaPlaybackRequiresUserGesture = false
-                settings.allowFileAccess = false
-                settings.userAgentString = mobileUa
+                configureWebViewCommon(context, this, desktopMode = false)
                 webViewClient = WebViewClient()
                 webChromeClient = WebChromeClient()
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    0,
-                    1f
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
                 )
             }
 
-            val topControls = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    bottomMargin = dp(context, 4f)
-                }
-            }
-
-            val btnBack = TextView(context).apply {
-                tag = "fw_youtube_back"
-                text = "◀ Back"
-                textSize = 11f
-                setTextColor(Color.WHITE)
-                setPadding(dp(context, 8f), dp(context, 4f), dp(context, 8f), dp(context, 4f))
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(context, 8f).toFloat()
-                    setColor(Color.parseColor("#1E293B"))
-                }
-                setOnClickListener { if (webView.canGoBack()) webView.goBack() }
-            }
-
-            val btnMode = TextView(context).apply {
-                tag = "fw_youtube_mode_toggle"
-                text = "Mode: Mobile"
-                textSize = 11f
-                setTextColor(accentColor)
-                setPadding(dp(context, 10f), dp(context, 4f), dp(context, 10f), dp(context, 4f))
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(context, 8f).toFloat()
-                    setColor(Color.parseColor("#1E293B"))
-                    setStroke(1, accentColor)
-                }
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    marginStart = dp(context, 6f)
-                }
-            }
-            btnMode.setOnClickListener {
-                isDesktopMode = !isDesktopMode
-                if (isDesktopMode) {
-                    btnMode.text = "Mode: Desktop"
-                    webView.settings.userAgentString = desktopUa
-                    webView.settings.useWideViewPort = true
-                    webView.loadUrl("https://www.youtube.com")
+            lateinit var refreshYtMenu: () -> Unit
+            var ytMenuInitialized = false
+            refreshYtMenu = {
+                val modeLabel = if (isDesktopMode) "Mode: Desktop" else "Mode: Mobile"
+                if (ytMenuInitialized) {
+                    managed.updateMenuItemLabel("fw_youtube_mode_toggle", modeLabel, accentColor)
                 } else {
-                    btnMode.text = "Mode: Mobile"
-                    webView.settings.userAgentString = mobileUa
-                    webView.loadUrl("https://m.youtube.com")
+                    ytMenuInitialized = true
+                    managed.setMenuItems(
+                        listOf(
+                            FloatingWindowManager.WindowMenuItem("back", "← Go back", "fw_youtube_back") {
+                                if (webView.canGoBack()) webView.goBack()
+                            },
+                            FloatingWindowManager.WindowMenuItem("forward", "→ Go forward", "fw_youtube_forward") {
+                                if (webView.canGoForward()) webView.goForward()
+                            },
+                            FloatingWindowManager.WindowMenuItem("reload", "↻ Reload", "fw_youtube_reload") {
+                                webView.reload()
+                            },
+                            FloatingWindowManager.WindowMenuItem("copy_url", "📋 Copy URL", "fw_youtube_copy_url") {
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                cm.setPrimaryClip(ClipData.newPlainText("YouTube URL", webView.url ?: "https://m.youtube.com"))
+                                Toast.makeText(context, "URL copied", Toast.LENGTH_SHORT).show()
+                            },
+                            FloatingWindowManager.WindowMenuItem(
+                                id = "mode_toggle",
+                                label = modeLabel,
+                                tag = "fw_youtube_mode_toggle",
+                                textColor = accentColor
+                            ) {
+                                isDesktopMode = !isDesktopMode
+                                if (isDesktopMode) {
+                                    webView.settings.userAgentString = DESKTOP_USER_AGENT
+                                    webView.settings.useWideViewPort = true
+                                    webView.loadUrl("https://www.youtube.com")
+                                } else {
+                                    webView.settings.userAgentString = MOBILE_USER_AGENT
+                                    webView.loadUrl("https://m.youtube.com")
+                                }
+                                refreshYtMenu()
+                            }
+                        )
+                    )
                 }
             }
-
-            val tvBgStatus = TextView(context).apply {
-                text = "BG Audio Ready"
-                textSize = 10f
-                setTextColor(Color.parseColor("#94A3B8"))
-                gravity = Gravity.END
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-
-            topControls.addView(btnBack)
-            topControls.addView(btnMode)
-            topControls.addView(tvBgStatus)
+            refreshYtMenu()
 
             webView.loadUrl("https://m.youtube.com")
-
-            container.addView(topControls)
-            container.addView(webView)
 
             val cleanup: () -> Unit = {
                 runCatching {
@@ -855,7 +1427,7 @@ object FloatingMiniApps {
                     webView.destroy()
                 }
             }
-            container to cleanup
+            webView to cleanup
         }
     }
 
@@ -871,7 +1443,7 @@ object FloatingMiniApps {
             accentColor = accentColor,
             iconRes = R.drawable.ic_tab_notes,
             requiresTextInput = true
-        ) { _ ->
+        ) { managed ->
             val container = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(context, 8f), dp(context, 8f), dp(context, 8f), dp(context, 8f))
@@ -1001,6 +1573,23 @@ object FloatingMiniApps {
 
             val notesJob = Job(serviceScope.coroutineContext[Job])
             val windowScope = CoroutineScope(Dispatchers.Main + notesJob)
+
+            managed.setMenuItems(
+                listOf(
+                    FloatingWindowManager.WindowMenuItem("new_note", "+ New Note", "fw_notes_menu_new") {
+                        clearEditMode()
+                        etNote.requestFocus()
+                    },
+                    FloatingWindowManager.WindowMenuItem("paste_note", "📋 Paste to Note", "fw_notes_menu_paste") {
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = cm.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+                        if (clip.isNotBlank()) {
+                            val current = etNote.text?.toString().orEmpty()
+                            etNote.setText(if (current.isBlank()) clip else "$current\n$clip")
+                        }
+                    }
+                )
+            )
 
             btnSave.setOnClickListener {
                 val titleTxt = etTitle.text?.toString()?.trim().orEmpty()
@@ -1144,7 +1733,7 @@ object FloatingMiniApps {
             accentColor = accentColor,
             iconRes = R.drawable.ic_tab_calc,
             requiresTextInput = false
-        ) { _ ->
+        ) { managed ->
             val container = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(context, 8f), dp(context, 8f), dp(context, 8f), dp(context, 8f))
@@ -1192,6 +1781,20 @@ object FloatingMiniApps {
                 val eval = CalculatorEvaluator.evaluateLivePreview(normalized)
                 tvPreview.text = eval?.let { "= $it" }.orEmpty()
             }
+
+            managed.setMenuItems(
+                listOf(
+                    FloatingWindowManager.WindowMenuItem("copy_calc", "📋 Copy Result") {
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("Calculator", tvExpr.text.toString()))
+                        Toast.makeText(context, "Copied result", Toast.LENGTH_SHORT).show()
+                    },
+                    FloatingWindowManager.WindowMenuItem("clear_calc", "⌫ Clear All") {
+                        expr = ""
+                        refreshDisplay()
+                    }
+                )
+            )
 
             val rows = listOf(
                 listOf("C", "⌫", "%", "÷"),
@@ -1275,7 +1878,7 @@ object FloatingMiniApps {
             accentColor = accentColor,
             iconRes = R.drawable.ic_tab_translate,
             requiresTextInput = true
-        ) { _ ->
+        ) { managed ->
             val container = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(context, 8f), dp(context, 8f), dp(context, 8f), dp(context, 8f))
@@ -1430,6 +2033,19 @@ object FloatingMiniApps {
             actionBar.addView(btnCopy)
             actionBar.addView(btnSpeak)
 
+            managed.setMenuItems(
+                listOf(
+                    FloatingWindowManager.WindowMenuItem("paste_src", "📋 Paste Source Text") {
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = cm.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+                        if (clip.isNotBlank()) etSource.setText(clip)
+                    },
+                    FloatingWindowManager.WindowMenuItem("copy_out", "📋 Copy Translation") {
+                        btnCopy.performClick()
+                    }
+                )
+            )
+
             btnTranslate.setOnClickListener {
                 val input = etSource.text?.toString()?.trim().orEmpty()
                 if (input.isEmpty()) {
@@ -1475,7 +2091,7 @@ object FloatingMiniApps {
             accentColor = accentColor,
             iconRes = android.R.drawable.ic_menu_gallery,
             requiresTextInput = false
-        ) { _ ->
+        ) { managed ->
             val container = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(context, 8f), dp(context, 8f), dp(context, 8f), dp(context, 8f))
@@ -1504,9 +2120,8 @@ object FloatingMiniApps {
                 }
             }
 
-            val imageView = ImageView(context).apply {
+            val imageView = FloatingMediaFilesHelper.PinchZoomImageView(context).apply {
                 tag = "fw_viewer_image"
-                scaleType = ImageView.ScaleType.FIT_CENTER
                 visibility = View.GONE
                 layoutParams = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
@@ -1547,6 +2162,7 @@ object FloatingMiniApps {
             fun loadUriIntoViewer(uri: Uri, isImage: Boolean) {
                 val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull().orEmpty()
                 if (isImage || mime.startsWith("image/")) {
+                    imageView.resetZoom()
                     val bmp = runCatching {
                         context.contentResolver.openInputStream(uri)?.use { stream ->
                             BitmapFactory.decodeStream(stream)
@@ -1623,6 +2239,20 @@ object FloatingMiniApps {
                 }
             }
 
+            managed.setMenuItems(
+                listOf(
+                    FloatingWindowManager.WindowMenuItem("pick_img", "🖼 Pick Image (Photo Picker)") {
+                        btnPickImage.performClick()
+                    },
+                    FloatingWindowManager.WindowMenuItem("open_file", "📂 Open Document (SAF)") {
+                        btnPickFile.performClick()
+                    },
+                    FloatingWindowManager.WindowMenuItem("open_media", "🎵 Open Full Media & Files") {
+                        openFloatingMediaFiles(context, manager, accentColor)
+                    }
+                )
+            )
+
             topBtns.addView(btnPickImage)
             topBtns.addView(btnPickFile)
 
@@ -1639,8 +2269,7 @@ object FloatingMiniApps {
 
     /**
      * Opens official Gemini, ChatGPT, or Google AI Mode web interfaces inside a movable &
-     * resizable FloatingWindowManager overlay with Desktop/Mobile User-Agent toggle and
-     * zero-permission WebChromeClient file/image upload support.
+     * resizable FloatingWindowManager overlay with full-bleed center WebView and Left ☰ Menu.
      */
     @SuppressLint("SetJavaScriptEnabled")
     fun openFloatingAiWebWindow(
@@ -1673,162 +2302,82 @@ object FloatingMiniApps {
             accentColor = accentColor,
             iconRes = iconRes,
             requiresTextInput = true
-        ) { _ ->
-            val container = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(context, 4f), dp(context, 4f), dp(context, 4f), dp(context, 4f))
-            }
-
+        ) { managed ->
             var isDesktopMode = false
-            val mobileUa =
-                "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-            val desktopUa =
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-
             val webView = WebView(context).apply {
                 tag = "fw_ai_webview_$aiModeId"
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                settings.allowFileAccess = false
-                settings.allowContentAccess = true
-                settings.useWideViewPort = true
-                settings.loadWithOverviewMode = true
-                settings.builtInZoomControls = true
-                settings.displayZoomControls = false
-                settings.userAgentString = mobileUa
-                runCatching {
-                    val cm = CookieManager.getInstance()
-                    cm.setAcceptCookie(true)
-                    cm.setAcceptThirdPartyCookies(this, true)
-                }
+                configureWebViewCommon(context, this, desktopMode = false)
                 webViewClient = WebViewClient()
                 webChromeClient = object : WebChromeClient() {
                     override fun onShowFileChooser(
                         webView: WebView?,
                         filePathCallback: ValueCallback<Array<Uri>>?,
                         fileChooserParams: FileChooserParams?
-                    ): Boolean {
-                        if (filePathCallback == null) return false
-                        ViewerPickerActivity.pendingWebFileCallback?.onReceiveValue(null)
-                        ViewerPickerActivity.pendingWebFileCallback = filePathCallback
-                        val acceptTypes = fileChooserParams?.acceptTypes
-                            ?.filter { it.isNotBlank() }
-                            ?.toTypedArray()
-                        val pickerIntent = Intent(context, ViewerPickerActivity::class.java).apply {
-                            putExtra(ViewerPickerActivity.EXTRA_PICK_MODE, ViewerPickerActivity.MODE_WEB_FILE_CHOOSER)
-                            if (acceptTypes != null && acceptTypes.isNotEmpty()) {
-                                putExtra(ViewerPickerActivity.EXTRA_ACCEPT_MIME_TYPES, acceptTypes)
-                            }
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        return runCatching {
-                            context.startActivity(pickerIntent)
-                            true
-                        }.getOrElse {
-                            ViewerPickerActivity.pendingWebFileCallback?.onReceiveValue(null)
-                            ViewerPickerActivity.pendingWebFileCallback = null
-                            false
-                        }
+                    ): Boolean = handleWebFileChooser(context, filePathCallback, fileChooserParams)
+
+                    override fun onPermissionRequest(request: PermissionRequest?) {
+                        if (request != null) grantWebPermissionsIfPermitted(context, request)
                     }
                 }
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    0,
-                    1f
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
                 )
             }
 
-            val topControls = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    bottomMargin = dp(context, 4f)
-                }
-            }
-
-            val btnBack = TextView(context).apply {
-                tag = "fw_ai_back_$aiModeId"
-                text = "◀ Back"
-                textSize = 11f
-                setTextColor(Color.WHITE)
-                setPadding(dp(context, 8f), dp(context, 4f), dp(context, 8f), dp(context, 4f))
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(context, 8f).toFloat()
-                    setColor(Color.parseColor("#1E293B"))
-                }
-                setOnClickListener { if (webView.canGoBack()) webView.goBack() }
-            }
-
-            val btnReload = TextView(context).apply {
-                tag = "fw_ai_reload_$aiModeId"
-                text = "↻ Reload"
-                textSize = 11f
-                setTextColor(Color.WHITE)
-                setPadding(dp(context, 8f), dp(context, 4f), dp(context, 8f), dp(context, 4f))
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(context, 8f).toFloat()
-                    setColor(Color.parseColor("#1E293B"))
-                }
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    marginStart = dp(context, 6f)
-                }
-                setOnClickListener { webView.reload() }
-            }
-
-            val btnMode = TextView(context).apply {
-                tag = "fw_ai_mode_toggle_$aiModeId"
-                text = "Mode: Mobile"
-                textSize = 11f
-                setTextColor(accentColor)
-                setPadding(dp(context, 10f), dp(context, 4f), dp(context, 10f), dp(context, 4f))
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(context, 8f).toFloat()
-                    setColor(Color.parseColor("#1E293B"))
-                    setStroke(1, accentColor)
-                }
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    marginStart = dp(context, 6f)
-                }
-            }
-            btnMode.setOnClickListener {
-                isDesktopMode = !isDesktopMode
-                if (isDesktopMode) {
-                    btnMode.text = "Mode: Desktop"
-                    webView.settings.userAgentString = desktopUa
+            lateinit var refreshAiMenu: () -> Unit
+            var aiMenuInitialized = false
+            refreshAiMenu = {
+                val modeLabel = if (isDesktopMode) "Mode: Desktop" else "Mode: Mobile"
+                if (aiMenuInitialized) {
+                    managed.updateMenuItemLabel("fw_ai_mode_toggle_$aiModeId", modeLabel, accentColor)
                 } else {
-                    btnMode.text = "Mode: Mobile"
-                    webView.settings.userAgentString = mobileUa
+                    aiMenuInitialized = true
+                    managed.setMenuItems(
+                        listOf(
+                            FloatingWindowManager.WindowMenuItem("back", "← Go back", "fw_ai_back_$aiModeId") {
+                                if (webView.canGoBack()) webView.goBack()
+                            },
+                            FloatingWindowManager.WindowMenuItem("forward", "→ Go forward", "fw_ai_forward_$aiModeId") {
+                                if (webView.canGoForward()) webView.goForward()
+                            },
+                            FloatingWindowManager.WindowMenuItem("reload", "↻ Reload", "fw_ai_reload_$aiModeId") {
+                                webView.reload()
+                            },
+                            FloatingWindowManager.WindowMenuItem("copy_url", "📋 Copy URL", "fw_ai_copy_$aiModeId") {
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                cm.setPrimaryClip(ClipData.newPlainText("URL", webView.url ?: targetUrl))
+                                Toast.makeText(context, "URL copied", Toast.LENGTH_SHORT).show()
+                            },
+                            FloatingWindowManager.WindowMenuItem(
+                                id = "mode_toggle",
+                                label = modeLabel,
+                                tag = "fw_ai_mode_toggle_$aiModeId",
+                                textColor = accentColor
+                            ) {
+                                isDesktopMode = !isDesktopMode
+                                webView.settings.userAgentString = if (isDesktopMode) DESKTOP_USER_AGENT else MOBILE_USER_AGENT
+                                webView.reload()
+                                refreshAiMenu()
+                            }
+                        )
+                    )
                 }
-                webView.reload()
             }
-
-            topControls.addView(btnBack)
-            topControls.addView(btnReload)
-            topControls.addView(btnMode)
+            refreshAiMenu()
 
             webView.loadUrl(targetUrl)
-
-            container.addView(topControls)
-            container.addView(webView)
 
             val cleanup: () -> Unit = {
                 ViewerPickerActivity.pendingWebFileCallback?.onReceiveValue(null)
                 ViewerPickerActivity.pendingWebFileCallback = null
+                runCatching { CookieManager.getInstance().flush() }
                 runCatching {
                     webView.stopLoading()
                     webView.destroy()
                 }
             }
-            container to cleanup
+            webView to cleanup
         }
     }
 }

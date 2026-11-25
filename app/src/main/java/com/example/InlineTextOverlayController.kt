@@ -344,6 +344,8 @@ class InlineTextOverlayController(
         val btnWordSend = root.findViewById<ImageButton>(R.id.btn_word_ai_send)
         val wordBrowserAiRow = root.findViewById<LinearLayout>(R.id.inline_word_browser_ai_row)
         val etWordBrowserAiQuestion = root.findViewById<EditText>(R.id.et_word_browser_ai_question)
+        val btnWordBrowserPreset1 = root.findViewById<ImageButton>(R.id.btn_word_browser_preset_1)
+        val btnWordBrowserPreset2 = root.findViewById<ImageButton>(R.id.btn_word_browser_preset_2)
         val btnWordBrowserAiSend = root.findViewById<ImageButton>(R.id.btn_word_browser_ai_send)
         val wordTranslateBubble = root.findViewById<LinearLayout>(R.id.inline_word_translate_bubble)
         val tvWordTranslated = root.findViewById<TextView>(R.id.tv_inline_word_translated_text)
@@ -360,6 +362,8 @@ class InlineTextOverlayController(
         val btnCutoutClose = root.findViewById<ImageButton>(R.id.btn_cutout_close)
         val cutoutBrowserAiRow = root.findViewById<LinearLayout>(R.id.inline_cutout_browser_ai_row)
         val etCutoutBrowserAiQuestion = root.findViewById<EditText>(R.id.et_cutout_browser_ai_question)
+        val btnCutoutBrowserPreset1 = root.findViewById<ImageButton>(R.id.btn_cutout_browser_preset_1)
+        val btnCutoutBrowserPreset2 = root.findViewById<ImageButton>(R.id.btn_cutout_browser_preset_2)
         val btnCutoutBrowserAiSend = root.findViewById<ImageButton>(R.id.btn_cutout_browser_ai_send)
 
         selectionView = selView
@@ -489,13 +493,22 @@ class InlineTextOverlayController(
             btn2.setColorFilter(if (enabled) Color.parseColor("#34D399") else Color.parseColor("#94A3B8"), PorterDuff.Mode.SRC_IN)
         }
         stylePresetButtons(btnWordPreset1, btnWordPreset2, enabled = true)
+        stylePresetButtons(btnWordBrowserPreset1, btnWordBrowserPreset2, enabled = true)
         stylePresetButtons(btnCutoutPreset1, btnCutoutPreset2, enabled = true)
+        stylePresetButtons(btnCutoutBrowserPreset1, btnCutoutBrowserPreset2, enabled = true)
 
         etWordQuestion.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             override fun afterTextChanged(s: Editable?) {
                 stylePresetButtons(btnWordPreset1, btnWordPreset2, enabled = s.isNullOrBlank())
+            }
+        })
+        etWordBrowserAiQuestion.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                stylePresetButtons(btnWordBrowserPreset1, btnWordBrowserPreset2, enabled = s.isNullOrBlank())
             }
         })
         etCutoutQuestion.addTextChangedListener(object : TextWatcher {
@@ -505,15 +518,25 @@ class InlineTextOverlayController(
                 stylePresetButtons(btnCutoutPreset1, btnCutoutPreset2, enabled = s.isNullOrBlank())
             }
         })
+        etCutoutBrowserAiQuestion.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                stylePresetButtons(btnCutoutBrowserPreset1, btnCutoutBrowserPreset2, enabled = s.isNullOrBlank())
+            }
+        })
 
+        val showQuestionBoxes = SelectionToolbarHelper.isShowQuestionBoxesEnabled(context)
         val normalizedOrder = normalizeToolbarOrder(toolbarOrder)
 
         // Populate Text Selection Icon-Only Grid (only visible icons, up to 5 per row)
         var wordCopyBtnRef: ImageButton? = null
         wordRow1.removeAllViews()
         wordRow2.removeAllViews()
-        wordQuestionRow.visibility = if (mode == OverlayMode.COPY) View.VISIBLE else View.GONE
-        wordBrowserAiRow.visibility = if (mode == OverlayMode.COPY) View.VISIBLE else View.GONE
+        wordQuestionRow.visibility = if (mode == OverlayMode.COPY && showQuestionBoxes) View.VISIBLE else View.GONE
+        wordBrowserAiRow.visibility = if (mode == OverlayMode.COPY && showQuestionBoxes) View.VISIBLE else View.GONE
+        cutoutQuestionRow.visibility = if (showQuestionBoxes) View.VISIBLE else View.GONE
+        cutoutBrowserAiRow.visibility = if (showQuestionBoxes) View.VISIBLE else View.GONE
 
         val wordActionsToRender = if (mode == OverlayMode.COPY) {
             normalizedOrder
@@ -624,6 +647,24 @@ class InlineTextOverlayController(
             val handler = onWordBrowserAiClicked ?: onGoogleAiModeTextClicked
             handler?.invoke(selected, question)
             dismissCb?.invoke()
+        }
+        fun fireWordBrowserPreset(presetText: String) {
+            val selected = activeCopyableText.trim()
+            if (selected.isNotEmpty() || presetText.isNotBlank()) {
+                val dismissCb = activeDismissCallback
+                dismissInternal()
+                val handler = onWordBrowserAiClicked ?: onGoogleAiModeTextClicked
+                handler?.invoke(selected, presetText.trim())
+                dismissCb?.invoke()
+            }
+        }
+        btnWordBrowserPreset1.setOnClickListener {
+            if (!btnWordBrowserPreset1.isEnabled || !etWordBrowserAiQuestion.text.isNullOrBlank()) return@setOnClickListener
+            fireWordBrowserPreset(SelectionToolbarHelper.getQuickPrompt1(context))
+        }
+        btnWordBrowserPreset2.setOnClickListener {
+            if (!btnWordBrowserPreset2.isEnabled || !etWordBrowserAiQuestion.text.isNullOrBlank()) return@setOnClickListener
+            fireWordBrowserPreset(SelectionToolbarHelper.getQuickPrompt2(context))
         }
         btnWordBrowserAiSend.setOnClickListener { submitWordBrowserAi() }
         etWordBrowserAiQuestion.setOnEditorActionListener { _, actionId, _ ->
@@ -739,6 +780,24 @@ class InlineTextOverlayController(
             val handler = onCutoutBrowserAiClicked ?: onCutoutGoogleAiModeClicked
             handler?.invoke(box, overlapping, w, h, question)
             onDismiss()
+        }
+        fun fireCutoutBrowserPreset(presetText: String) {
+            val box = currentCutoutRect ?: selView.getActiveCutoutRect() ?: return
+            val overlapping = selView.getWordsInsideCutout()
+            val w = selView.width
+            val h = selView.height
+            dismissInternal()
+            val handler = onCutoutBrowserAiClicked ?: onCutoutGoogleAiModeClicked
+            handler?.invoke(box, overlapping, w, h, presetText.trim())
+            onDismiss()
+        }
+        btnCutoutBrowserPreset1.setOnClickListener {
+            if (!btnCutoutBrowserPreset1.isEnabled || !etCutoutBrowserAiQuestion.text.isNullOrBlank()) return@setOnClickListener
+            fireCutoutBrowserPreset(SelectionToolbarHelper.getQuickPrompt1(context))
+        }
+        btnCutoutBrowserPreset2.setOnClickListener {
+            if (!btnCutoutBrowserPreset2.isEnabled || !etCutoutBrowserAiQuestion.text.isNullOrBlank()) return@setOnClickListener
+            fireCutoutBrowserPreset(SelectionToolbarHelper.getQuickPrompt2(context))
         }
         btnCutoutBrowserAiSend.setOnClickListener { submitCutoutBrowserAi() }
         etCutoutBrowserAiQuestion.setOnEditorActionListener { _, actionId, _ ->

@@ -255,6 +255,26 @@
                 android:textSize="12sp" />
 
             <ImageButton
+                android:id="@+id/btn_word_browser_preset_1"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/quick_preset_1_desc"
+                android:padding="7dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_tab_translate" />
+
+            <ImageButton
+                android:id="@+id/btn_word_browser_preset_2"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/quick_preset_2_desc"
+                android:padding="7dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_preset_meaning" />
+
+            <ImageButton
                 android:id="@+id/btn_word_browser_ai_send"
                 android:layout_width="38dp"
                 android:layout_height="38dp"
@@ -340,76 +360,79 @@
             android:orientation="horizontal" />
 
         <LinearLayout
-            android:id="@+id/inline_cutout_question_row"
+            android:id="@+id/inline_cutout_bottom_strip"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
             android:gravity="center_vertical"
-            android:minWidth="220dp"
-            android:orientation="horizontal"
-            android:paddingStart="8dp"
-            android:paddingTop="2dp"
-            android:paddingEnd="4dp"
-            android:paddingBottom="2dp">
+            android:orientation="horizontal">
 
-            <EditText
-                android:id="@+id/et_cutout_ai_question"
+            <LinearLayout
+                android:id="@+id/inline_cutout_question_row"
                 android:layout_width="0dp"
-                android:layout_height="38dp"
+                android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:background="@android:color/transparent"
-                android:hint="Ask about this text/image..."
-                android:imeOptions="actionSend"
-                android:inputType="textCapSentences"
-                android:maxLines="1"
-                android:paddingStart="4dp"
+                android:gravity="center_vertical"
+                android:minWidth="200dp"
+                android:orientation="horizontal"
+                android:paddingStart="8dp"
+                android:paddingTop="2dp"
                 android:paddingEnd="4dp"
-                android:singleLine="true"
-                android:textColor="#F8FAFC"
-                android:textColorHint="#94A3B8"
-                android:textSize="12sp" />
+                android:paddingBottom="2dp">
 
-            <ImageButton
-                android:id="@+id/btn_cutout_preset_1"
-                android:layout_width="36dp"
-                android:layout_height="36dp"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:contentDescription="@string/quick_preset_1_desc"
-                android:padding="7dp"
-                android:scaleType="centerInside"
-                android:src="@drawable/ic_tab_translate" />
+                <EditText
+                    android:id="@+id/et_cutout_ai_question"
+                    android:layout_width="0dp"
+                    android:layout_height="38dp"
+                    android:layout_weight="1"
+                    android:background="@android:color/transparent"
+                    android:hint="Ask about this text/image..."
+                    android:imeOptions="actionSend"
+                    android:inputType="textCapSentences"
+                    android:maxLines="1"
+                    android:paddingStart="4dp"
+                    android:paddingEnd="4dp"
+                    android:singleLine="true"
+                    android:textColor="#F8FAFC"
+                    android:textColorHint="#94A3B8"
+                    android:textSize="12sp" />
 
-            <ImageButton
-                android:id="@+id/btn_cutout_preset_2"
-                android:layout_width="36dp"
-                android:layout_height="36dp"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:contentDescription="@string/quick_preset_2_desc"
-                android:padding="7dp"
-                android:scaleType="centerInside"
-                android:src="@drawable/ic_preset_meaning" />
+                <ImageButton
+                    android:id="@+id/btn_cutout_preset_1"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/quick_preset_1_desc"
+                    android:padding="7dp"
+                    android:scaleType="centerInside"
+                    android:src="@drawable/ic_tab_translate" />
 
-            <ImageButton
-                android:id="@+id/btn_cutout_ai_send"
-                android:layout_width="38dp"
-                android:layout_height="38dp"
-                android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Send question to AI"
-                android:padding="8dp"
-                android:scaleType="centerInside"
-                android:src="@android:drawable/ic_menu_send" />
+                <ImageButton
+                    android:id="@+id/btn_cutout_preset_2"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/quick_preset_2_desc"
+                    android:padding="7dp"
+                    android:scaleType="centerInside"
+                    android:src="@drawable/ic_preset_meaning" />
 
-            <View
-                android:layout_width="1dp"
-                android:layout_height="22dp"
-                android:layout_marginStart="2dp"
-                android:layout_marginEnd="2dp"
-                android:background="#475569" />
+                <ImageButton
+                    android:id="@+id/btn_cutout_ai_send"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Send question to AI"
+                    android:padding="8dp"
+                    android:scaleType="centerInside"
+                    android:src="@android:drawable/ic_menu_send" />
+            </LinearLayout>
 
             <ImageButton
                 android:id="@+id/btn_cutout_close"
                 android:layout_width="38dp"
                 android:layout_height="38dp"
+                android:layout_marginStart="4dp"
                 android:background="?android:attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Close Cutout Box"
                 android:padding="9dp"
@@ -446,6 +469,26 @@
                 android:textColor="#F8FAFC"
                 android:textColorHint="#94A3B8"
                 android:textSize="12sp" />
+
+            <ImageButton
+                android:id="@+id/btn_cutout_browser_preset_1"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/quick_preset_1_desc"
+                android:padding="7dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_tab_translate" />
+
+            <ImageButton
+                android:id="@+id/btn_cutout_browser_preset_2"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/quick_preset_2_desc"
+                android:padding="7dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_preset_meaning" />
 
             <ImageButton
                 android:id="@+id/btn_cutout_browser_ai_send"

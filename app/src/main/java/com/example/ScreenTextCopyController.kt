@@ -588,13 +588,10 @@ class ScreenTextCopyController(
         question: String = ""
     ) {
         val cleanQuestion = question.trim()
-        if (cleanQuestion.isNotEmpty()) {
-            copyQuestionToClipboardIfPresent(cleanQuestion)
-        }
-        val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
         val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
         try {
-            openAiInFloatingBrowser("google_ai_mode", fallbackText, cleanQuestion, cropped)
+            // Never convert cutout image to OCR text for Google AI Mode — upload the actual cutout bitmap
+            openAiInFloatingBrowser("google_ai_mode", "", cleanQuestion, cropped)
         } finally {
             runCatching { if (cropped != null && !cropped.isRecycled) cropped.recycle() }
         }
@@ -636,13 +633,10 @@ class ScreenTextCopyController(
         question: String = ""
     ) {
         val cleanQuestion = question.trim()
-        if (cleanQuestion.isNotEmpty()) {
-            copyQuestionToClipboardIfPresent(cleanQuestion)
-        }
-        val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
         val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
         try {
-            openAiInFloatingBrowser("chatgpt", fallbackText, cleanQuestion, cropped)
+            // Never convert cutout image to OCR text for ChatGPT — upload the actual cutout bitmap
+            openAiInFloatingBrowser("chatgpt", "", cleanQuestion, cropped)
         } finally {
             runCatching { if (cropped != null && !cropped.isRecycled) cropped.recycle() }
         }

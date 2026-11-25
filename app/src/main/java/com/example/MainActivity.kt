@@ -1454,6 +1454,13 @@ fun SmartDotScreen(
         // 4. Smart Hardware, AI Assistant Key & Persistence Card
         var shakeTorchEnabled by remember { mutableStateOf(prefs.getBoolean(FloatingService.PREF_SHAKE_TORCH_ENABLED, false)) }
         var shakeSensitivity by remember { mutableStateOf(prefs.getFloat(FloatingService.PREF_SHAKE_SENSITIVITY, 16f).coerceIn(12f, 26f)) }
+        var backTapDataEnabled by remember { mutableStateOf(prefs.getBoolean(FloatingService.PREF_BACK_TAP_DATA_ENABLED, false)) }
+        var backTapSensitivity by remember {
+            mutableStateOf(
+                prefs.getFloat(FloatingService.PREF_BACK_TAP_SENSITIVITY, BackTapDetector.DEFAULT_SENSITIVITY)
+                    .coerceIn(BackTapDetector.MIN_SENSITIVITY, BackTapDetector.MAX_SENSITIVITY)
+            )
+        }
         var geminiApiKeyInput by remember { mutableStateOf(prefs.getString(AiAssistantHelper.PREF_GEMINI_API_KEY, "") ?: "") }
         val accentParseColor = Color(android.graphics.Color.parseColor(dotColor))
 
@@ -1561,6 +1568,94 @@ fun SmartDotScreen(
                 ) {
                     Text(text = "Gentle (12)", style = MaterialTheme.typography.labelSmall, color = Color(0xFF64748B))
                     Text(text = "Hard (26)", style = MaterialTheme.typography.labelSmall, color = Color(0xFF64748B))
+                }
+
+                HorizontalDivider(color = Color(0xFF334155), thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
+
+                // Double-Tap Back of Phone for Mobile Data ON/OFF
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text(
+                            text = "Double-Tap Back of Phone for Data ON/OFF",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFF8FAFC)
+                        )
+                        Text(
+                            text = "Double-tap the back of your phone to toggle Mobile Data (zero vibration)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+                    Switch(
+                        checked = backTapDataEnabled,
+                        onCheckedChange = { checked ->
+                            backTapDataEnabled = checked
+                            prefs.edit().putBoolean(FloatingService.PREF_BACK_TAP_DATA_ENABLED, checked).apply()
+                            updateServiceStyle()
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Black,
+                            checkedTrackColor = accentParseColor
+                        ),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("switch_back_tap_data")
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                val backTapSensitivityLabel = when {
+                    backTapSensitivity <= 6.2f -> "Sensitive (${String.format("%.1f", backTapSensitivity)})"
+                    backTapSensitivity >= 10.8f -> "Firm (${String.format("%.1f", backTapSensitivity)})"
+                    else -> "Balanced (${String.format("%.1f", backTapSensitivity)})"
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Back-Tap Sensitivity",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF94A3B8)
+                    )
+                    Text(
+                        text = backTapSensitivityLabel,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = accentParseColor,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Slider(
+                    value = backTapSensitivity,
+                    onValueChange = {
+                        backTapSensitivity = it.coerceIn(BackTapDetector.MIN_SENSITIVITY, BackTapDetector.MAX_SENSITIVITY)
+                    },
+                    onValueChangeFinished = {
+                        prefs.edit().putFloat(FloatingService.PREF_BACK_TAP_SENSITIVITY, backTapSensitivity).apply()
+                        updateServiceStyle()
+                    },
+                    valueRange = BackTapDetector.MIN_SENSITIVITY..BackTapDetector.MAX_SENSITIVITY,
+                    modifier = Modifier.testTag("slider_back_tap_sensitivity"),
+                    colors = SliderDefaults.colors(
+                        thumbColor = accentParseColor,
+                        activeTrackColor = accentParseColor,
+                        inactiveTrackColor = Color(0xFF475569)
+                    )
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(text = "Sensitive (4)", style = MaterialTheme.typography.labelSmall, color = Color(0xFF64748B))
+                    Text(text = "Firm (14)", style = MaterialTheme.typography.labelSmall, color = Color(0xFF64748B))
                 }
 
                 HorizontalDivider(color = Color(0xFF334155), thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
@@ -2113,6 +2208,47 @@ fun SmartDotScreen(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
+                var showQuestionBoxes by remember {
+                    mutableStateOf(SelectionToolbarHelper.isShowQuestionBoxesEnabled(prefs))
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                        Text(
+                            text = "Show Question Boxes",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFF8FAFC)
+                        )
+                        Text(
+                            text = "Display quick-ask text boxes below the 11-icon selection & cutout toolbar",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+                    Switch(
+                        checked = showQuestionBoxes,
+                        onCheckedChange = { checked ->
+                            showQuestionBoxes = checked
+                            SelectionToolbarHelper.setShowQuestionBoxesEnabled(prefs, checked)
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Black,
+                            checkedTrackColor = parsedAccentColor
+                        ),
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("switch_show_question_boxes")
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
                 var quickPrompt1 by remember {
                     mutableStateOf(SelectionToolbarHelper.getQuickPrompt1(prefs))
                 }
@@ -2171,6 +2307,34 @@ fun SmartDotScreen(
                         .fillMaxWidth()
                         .testTag("input_quick_prompt_2")
                 )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Button(
+                    onClick = {
+                        SelectionToolbarHelper.saveQuickPrompt1(prefs, quickPrompt1)
+                        SelectionToolbarHelper.saveQuickPrompt2(prefs, quickPrompt2)
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.quick_prompts_saved),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = parsedAccentColor,
+                        contentColor = Color.Black
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp)
+                        .testTag("btn_save_quick_prompts")
+                ) {
+                    Text(
+                        text = "Save Preset Prompts",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
 

@@ -504,6 +504,53 @@ class SmartDotAccessibilityService : AccessibilityService() {
         return null
     }
 
+    /**
+     * Reads the current URL bar text from an active browser window (Chrome, Firefox, Brave, Edge)
+     * so tapping Floating Window while browsing opens that same URL in SmartDot's Floating Browser.
+     */
+    fun extractActiveBrowserUrl(): String? {
+        val root = runCatching { safeRootInActiveWindow() }.getOrNull() ?: return null
+        return try {
+            findBrowserUrlRecursive(root, depth = 0)
+        } finally {
+            @Suppress("DEPRECATION")
+            runCatching { root.recycle() }
+        }
+    }
+
+    private fun findBrowserUrlRecursive(node: AccessibilityNodeInfo, depth: Int): String? {
+        if (depth > 16) return null
+        val viewId = runCatching { node.viewIdResourceName?.lowercase().orEmpty() }.getOrDefault("")
+        val text = runCatching { node.text?.toString()?.trim().orEmpty() }.getOrDefault("")
+        val isUrlField = viewId.contains("url_bar") ||
+            viewId.contains("location_bar") ||
+            viewId.contains("address_bar") ||
+            viewId.contains("url_field") ||
+            viewId.contains("search_box_text")
+        if (text.isNotEmpty()) {
+            if (text.startsWith("http://", ignoreCase = true) ||
+                text.startsWith("https://", ignoreCase = true)
+            ) {
+                return text
+            }
+            if (isUrlField && !text.contains(' ') && text.contains('.')) {
+                return "https://$text"
+            }
+        }
+        val count = node.childCount
+        for (i in 0 until count) {
+            val child = runCatching { node.getChild(i) }.getOrNull() ?: continue
+            try {
+                val found = findBrowserUrlRecursive(child, depth + 1)
+                if (found != null) return found
+            } finally {
+                @Suppress("DEPRECATION")
+                runCatching { child.recycle() }
+            }
+        }
+        return null
+    }
+
     companion object {
         private const val TAG = "SmartDotAccessibility"
         private const val ROW_SORT_TOLERANCE_PX = 24

@@ -37,6 +37,22 @@ class ViewerPickerActivity : ComponentActivity() {
         deliverResult(uri, isImage = mime.startsWith("image/"))
     }
 
+    private val openFolderLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri ->
+        if (treeUri != null) {
+            runCatching {
+                contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            pendingFolderCallback?.invoke(treeUri)
+        }
+        pendingFolderCallback = null
+        finish()
+    }
+
     private val webFileChooserLauncher = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
@@ -50,6 +66,8 @@ class ViewerPickerActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         when (intent.getStringExtra(EXTRA_PICK_MODE) ?: MODE_IMAGE) {
             MODE_FILE -> openFileLauncher.launch(arrayOf("*/*"))
+            MODE_MEDIA -> openFileLauncher.launch(arrayOf("image/*", "video/*", "audio/*", "*/*"))
+            MODE_FOLDER -> openFolderLauncher.launch(null)
             MODE_WEB_FILE_CHOOSER -> {
                 val acceptTypes = intent.getStringArrayExtra(EXTRA_ACCEPT_MIME_TYPES)
                     ?.filter { it.isNotBlank() }
@@ -77,10 +95,15 @@ class ViewerPickerActivity : ComponentActivity() {
         const val EXTRA_ACCEPT_MIME_TYPES = "extra_accept_mime_types"
         const val MODE_IMAGE = "image"
         const val MODE_FILE = "file"
+        const val MODE_MEDIA = "media"
+        const val MODE_FOLDER = "folder"
         const val MODE_WEB_FILE_CHOOSER = "web_file_chooser"
 
         @Volatile
         internal var pendingCallback: ((Uri, Boolean) -> Unit)? = null
+
+        @Volatile
+        internal var pendingFolderCallback: ((Uri) -> Unit)? = null
 
         @Volatile
         internal var pendingWebFileCallback: ValueCallback<Array<Uri>>? = null

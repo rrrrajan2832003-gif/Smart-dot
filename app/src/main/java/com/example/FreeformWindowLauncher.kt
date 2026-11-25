@@ -3,14 +3,25 @@ package com.example
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import java.net.URLEncoder
 
 /**
- * Resolves full-screen app launches, web fallback URLs, and Realme Smart Sidebar triggers
- * without showing any disruptive Freeform or Developer Options dialogs.
+ * Resolves full-screen app launches, SmartDot Floating Window package mappings,
+ * and Realme Smart Sidebar triggers without relying on broken OS Freeform mode.
  */
 object FreeformWindowLauncher {
 
     private const val TAG = "FreeformLauncher"
+
+    sealed class FloatingAppTarget {
+        data class SocialWeb(val appId: String) : FloatingAppTarget()
+        data class Browser(val url: String) : FloatingAppTarget()
+        data class AiWeb(val aiModeId: String) : FloatingAppTarget()
+        object YouTube : FloatingAppTarget()
+        object Notes : FloatingAppTarget()
+        object Calculator : FloatingAppTarget()
+        object MediaFiles : FloatingAppTarget()
+    }
 
     fun launchFullscreen(
         context: Context,
@@ -30,17 +41,89 @@ object FreeformWindowLauncher {
     }
 
     /**
-     * Resolves a web URL fallback for popular apps.
+     * Resolves a web URL fallback / mapping for popular apps.
      */
     fun webFallbackUrlForPackage(packageName: String): String? {
         return when (packageName) {
-            "com.google.android.youtube" -> "https://m.youtube.com"
-            "com.android.chrome", "com.google.android.googlequicksearchbox" -> "https://www.google.com"
+            "com.google.android.youtube",
+            "com.vanced.android.youtube",
+            "app.revanced.android.youtube" -> "https://m.youtube.com"
+            "com.android.chrome",
+            "com.chrome.beta",
+            "com.chrome.dev",
+            "org.mozilla.firefox",
+            "com.brave.browser",
+            "com.microsoft.emmx",
+            "com.google.android.googlequicksearchbox" -> "https://www.google.com"
             "com.google.android.apps.bard" -> "https://gemini.google.com/app"
             "com.openai.chatgpt" -> "https://chatgpt.com/"
-            "com.whatsapp" -> "https://web.whatsapp.com/"
+            "com.whatsapp",
+            "com.whatsapp.w4b" -> "https://web.whatsapp.com/"
+            "com.instagram.android",
+            "com.instagram.lite" -> "https://www.instagram.com/"
+            "com.facebook.katana",
+            "com.facebook.lite",
+            "com.facebook.orca" -> "https://m.facebook.com/"
+            "org.telegram.messenger",
+            "org.telegram.messenger.web" -> "https://web.telegram.org/"
             "com.google.android.gm" -> "https://mail.google.com/"
             else -> null
+        }
+    }
+
+    /**
+     * Maps any active foreground Android package into SmartDot's own resizable Floating Window
+     * equivalent, bypassing broken Android/Realme system Freeform windowing.
+     */
+    fun resolveFloatingTargetForPackage(
+        packageName: String,
+        appLabel: String? = null,
+        detectedBrowserUrl: String? = null
+    ): FloatingAppTarget {
+        val pkg = packageName.trim()
+        return when (pkg) {
+            "com.whatsapp", "com.whatsapp.w4b" -> FloatingAppTarget.SocialWeb("whatsapp")
+            "com.instagram.android", "com.instagram.lite" -> FloatingAppTarget.SocialWeb("instagram")
+            "com.facebook.katana", "com.facebook.lite", "com.facebook.orca" -> FloatingAppTarget.SocialWeb("facebook")
+            "org.telegram.messenger", "org.telegram.messenger.web" -> FloatingAppTarget.SocialWeb("telegram")
+            "com.google.android.gm" -> FloatingAppTarget.SocialWeb("gmail")
+            "com.google.android.youtube",
+            "com.vanced.android.youtube",
+            "app.revanced.android.youtube" -> FloatingAppTarget.YouTube
+            "com.google.android.apps.bard" -> FloatingAppTarget.AiWeb("gemini")
+            "com.openai.chatgpt" -> FloatingAppTarget.AiWeb("chatgpt")
+            "com.google.android.keep",
+            "com.google.android.apps.notes",
+            "com.coloros.note" -> FloatingAppTarget.Notes
+            "com.google.android.calculator",
+            "com.android.calculator2",
+            "com.sec.android.app.popupcalculator",
+            "com.miui.calculator",
+            "com.coloros.calculator",
+            "com.oplus.calculator" -> FloatingAppTarget.Calculator
+            "com.google.android.apps.photos",
+            "com.google.android.apps.nbu.files",
+            "com.coloros.gallery3d",
+            "com.coloros.filemanager" -> FloatingAppTarget.MediaFiles
+            "com.android.chrome",
+            "com.chrome.beta",
+            "com.chrome.dev",
+            "org.mozilla.firefox",
+            "com.brave.browser",
+            "com.microsoft.emmx",
+            "com.opera.browser" -> {
+                val url = detectedBrowserUrl?.takeIf { it.isNotBlank() } ?: "https://www.google.com"
+                FloatingAppTarget.Browser(url)
+            }
+            "com.google.android.googlequicksearchbox" -> {
+                val url = detectedBrowserUrl?.takeIf { it.isNotBlank() } ?: "https://www.google.com"
+                FloatingAppTarget.Browser(url)
+            }
+            else -> {
+                val cleanLabel = appLabel?.trim().takeUnless { it.isNullOrBlank() } ?: pkg.substringAfterLast('.')
+                val encoded = runCatching { URLEncoder.encode(cleanLabel, "UTF-8") }.getOrDefault(cleanLabel)
+                FloatingAppTarget.Browser("https://www.google.com/search?q=$encoded")
+            }
         }
     }
 

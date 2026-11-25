@@ -76,11 +76,11 @@ class ScreenTranslateTest {
 
     @Test
     fun `ScreenTranslateHelper translateNodesBulk translates visible nodes with deduplication`() {
-        var translateCalls = 0
+        val translateCalls = java.util.concurrent.atomic.AtomicInteger(0)
         val helper = ScreenTranslateHelper(
             identifyLanguageFn = { "en" },
             translateBlockFn = { _, dst, text, _ ->
-                translateCalls++
+                translateCalls.incrementAndGet()
                 when {
                     dst == TranslateLanguage.HINDI && text == "Home" -> "होम"
                     dst == TranslateLanguage.HINDI && text == "Settings" -> "सेटिंग्स"
@@ -101,7 +101,7 @@ class ScreenTranslateTest {
         assertEquals("होम", translated[0].result.translatedText)
         assertEquals("सेटिंग्स", translated[1].result.translatedText)
         assertEquals("होम", translated[2].result.translatedText)
-        assertEquals(2, translateCalls)
+        assertEquals(2, translateCalls.get())
 
         helper.close()
     }

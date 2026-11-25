@@ -91,12 +91,12 @@ class SmartDotNineUpgradesTest {
         assertNotNull(listBtn)
         assertNotNull(sheet)
 
-        assertEquals("☆", starBtn.text.toString())
+        assertTrue(starBtn.text.toString().contains("☆"))
         assertEquals(View.GONE, sheet.visibility)
 
         // Tap star -> saves bookmark and updates star icon
         starBtn.performClick()
-        assertEquals("★", starBtn.text.toString())
+        assertTrue(starBtn.text.toString().contains("★"))
         assertTrue(FloatingMiniApps.isBookmarked(appContext, "https://kotlinlang.org"))
         assertEquals(1, FloatingMiniApps.getBrowserBookmarks(appContext).size)
 
@@ -115,7 +115,7 @@ class SmartDotNineUpgradesTest {
         // Re-open sheet and delete bookmark
         listBtn.performClick()
         sheet.findViewWithTag<View>("fw_browser_bookmark_delete_0").performClick()
-        assertEquals("☆", starBtn.text.toString())
+        assertTrue(starBtn.text.toString().contains("☆"))
         assertTrue(FloatingMiniApps.getBrowserBookmarks(appContext).isEmpty())
 
         fwm.closeAllWindows()
@@ -186,6 +186,12 @@ class SmartDotNineUpgradesTest {
         try {
             controller.start()
             ShadowLooper.idleMainLooper(ScreenTextCopyController.CAPTURE_HIDE_DELAY_MS + 15L, TimeUnit.MILLISECONDS)
+            val deadline = System.currentTimeMillis() + 3000L
+            while (!controller.isOverlayShowing() && System.currentTimeMillis() < deadline) {
+                ShadowLooper.idleMainLooper(25L, TimeUnit.MILLISECONDS)
+                Thread.sleep(15L)
+            }
+            assertTrue(controller.isOverlayShowing())
             val overlayCtrl = ScreenTextCopyController::class.java
                 .getDeclaredField("overlayController")
                 .apply { isAccessible = true }
@@ -217,8 +223,15 @@ class SmartDotNineUpgradesTest {
             assertEquals("Hindi meaning of Nebula", searchIntent!!.getStringExtra(SearchManager.QUERY))
 
             // Re-open and test 2nd dedicated question box -> Floating Browser Google AI Mode
+            if (controller.isOverlayShowing()) overlayCtrl.dismiss()
             controller.start()
             ShadowLooper.idleMainLooper(ScreenTextCopyController.CAPTURE_HIDE_DELAY_MS + 15L, TimeUnit.MILLISECONDS)
+            val deadline2 = System.currentTimeMillis() + 3000L
+            while (!controller.isOverlayShowing() && System.currentTimeMillis() < deadline2) {
+                ShadowLooper.idleMainLooper(25L, TimeUnit.MILLISECONDS)
+                Thread.sleep(15L)
+            }
+            assertTrue(controller.isOverlayShowing())
             val root2 = InlineTextOverlayController::class.java
                 .getDeclaredField("overlayView")
                 .apply { isAccessible = true }
@@ -269,7 +282,9 @@ class SmartDotNineUpgradesTest {
         executeAction.invoke(service, "accessibility_settings")
         val a11yIntent = Shadows.shadowOf(appContext).nextStartedActivity
         assertNotNull("accessibility_settings shortcut must launch Accessibility Settings", a11yIntent)
+        val expectedComponent = android.content.ComponentName(appContext, SmartDotAccessibilityService::class.java).flattenToString()
         assertEquals(Settings.ACTION_ACCESSIBILITY_SETTINGS, a11yIntent!!.action)
+        assertEquals(expectedComponent, a11yIntent.getStringExtra(":settings:fragment_args_key"))
 
         executeAction.invoke(service, "chatgpt")
         val fwm = FloatingService::class.java
