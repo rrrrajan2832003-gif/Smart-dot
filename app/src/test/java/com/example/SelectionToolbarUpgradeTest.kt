@@ -125,6 +125,7 @@ class SelectionToolbarUpgradeTest {
         registerPackageResolveInfo(shadowPm, SelectionToolbarHelper.CHATGPT_PACKAGE, "com.openai.ShareActivity", Intent.ACTION_SEND, mimeType = "text/plain")
 
         var fullTranslateTriggered = false
+        val floatingAiCalls = mutableListOf<Triple<String, String, String>>()
         val screenBitmap = Bitmap.createBitmap(1080, 2400, Bitmap.Config.ARGB_8888)
         val ocrHelper = ScreenOcrHelper(
             customOcrRunner = {
@@ -147,7 +148,11 @@ class SelectionToolbarUpgradeTest {
             nodeExtractor = { emptyList() },
             ocrHelperFactory = { ocrHelper },
             screenBitmapCapturer = { cb -> cb(screenBitmap) },
-            onFullScreenTranslateRequested = { fullTranslateTriggered = true }
+            onFullScreenTranslateRequested = { fullTranslateTriggered = true },
+            customFloatingAiBrowserLauncher = { providerId, textOrQuery, question, _ ->
+                floatingAiCalls.add(Triple(providerId, textOrQuery, question))
+                true
+            }
         )
 
         // Start overlay & tap "Orbit"
@@ -178,16 +183,20 @@ class SelectionToolbarUpgradeTest {
         assertNotNull(btnWordSend)
         assertEquals("Ask about this text/image...", etWordQuestion.hint?.toString())
 
-        // Google AI Mode -> udm=50 targeted at Google App (zero chooser)
+        // Google AI Mode -> opens inside Floating Browser with udm=50 URL
+        floatingAiCalls.clear()
         tapWordNode0(root)
         root.findViewById<ImageButton>(R.id.btn_inline_word_ai_mode).performClick()
         ShadowLooper.idleMainLooper()
-        val aiIntent = Shadows.shadowOf(appContext).nextStartedActivity
-        assertEquals(Intent.ACTION_VIEW, aiIntent.action)
-        assertEquals("https://www.google.com/search?udm=50&q=Orbit", aiIntent.dataString)
-        assertEquals(SelectionToolbarHelper.GOOGLE_APP_PACKAGE, aiIntent.`package`)
+        assertEquals(1, floatingAiCalls.size)
+        assertEquals(Triple("google_ai_mode", "Orbit", ""), floatingAiCalls.last())
+        assertEquals(
+            "https://www.google.com/search?udm=50&q=Orbit",
+            SelectionToolbarHelper.buildGoogleAiModeUrl("Orbit")
+        )
 
-        // Direct AI Question Box + Send -> combines question + selected text directly into Google AI Mode
+        // Direct AI Question Box + Send -> combines question + selected text into Floating Browser Google AI Mode
+        floatingAiCalls.clear()
         controller.start()
         waitUntilOverlayVisible(controller)
         root = getOverlayRoot(overlayCtrl)
@@ -196,10 +205,9 @@ class SelectionToolbarUpgradeTest {
         root.findViewById<EditText>(R.id.et_word_ai_question).setText("Explain simply")
         root.findViewById<ImageButton>(R.id.btn_word_ai_send).performClick()
         ShadowLooper.idleMainLooper()
-        val aiQuestionIntent = Shadows.shadowOf(appContext).nextStartedActivity
-        assertEquals(Intent.ACTION_VIEW, aiQuestionIntent.action)
-        assertTrue(aiQuestionIntent.dataString?.contains("udm=50") == true)
-        assertTrue(aiQuestionIntent.dataString?.contains("Explain+simply+Orbit") == true)
+        assertEquals(1, floatingAiCalls.size)
+        assertEquals(Triple("google_ai_mode", "Orbit", "Explain simply"), floatingAiCalls.last())
+        assertTrue(SelectionToolbarHelper.buildGoogleAiModeUrl("Orbit", "Explain simply").contains("Explain+simply+Orbit"))
 
         // Gemini with Question Box -> com.google.android.apps.bard with text/plain directly (no chooser)
         controller.start()
@@ -215,7 +223,8 @@ class SelectionToolbarUpgradeTest {
         assertEquals(SelectionToolbarHelper.GEMINI_PACKAGE, geminiIntent.`package`)
         assertEquals("Define this\n\nOrbit", geminiIntent.getStringExtra(Intent.EXTRA_TEXT))
 
-        // ChatGPT -> com.openai.chatgpt with text/plain directly (no chooser)
+        // ChatGPT -> opens inside Floating Browser (not external app/Chrome)
+        floatingAiCalls.clear()
         controller.start()
         waitUntilOverlayVisible(controller)
         root = getOverlayRoot(overlayCtrl)
@@ -224,10 +233,9 @@ class SelectionToolbarUpgradeTest {
         root.findViewById<EditText>(R.id.et_word_ai_question).setText("")
         root.findViewById<ImageButton>(R.id.btn_inline_word_chatgpt).performClick()
         ShadowLooper.idleMainLooper()
-        val gptIntent = Shadows.shadowOf(appContext).nextStartedActivity
-        assertEquals(Intent.ACTION_SEND, gptIntent.action)
-        assertEquals(SelectionToolbarHelper.CHATGPT_PACKAGE, gptIntent.`package`)
-        assertEquals("Orbit", gptIntent.getStringExtra(Intent.EXTRA_TEXT))
+        assertEquals(1, floatingAiCalls.size)
+        assertEquals(Triple("chatgpt", "Orbit", ""), floatingAiCalls.last())
+        assertEquals("https://chatgpt.com/?q=Orbit", SelectionToolbarHelper.buildChatGptUrl("Orbit"))
 
         // Share -> Android Intent.ACTION_CHOOSER
         controller.start()
@@ -301,6 +309,7 @@ class SelectionToolbarUpgradeTest {
             onlineTranslateFn = { _, _ -> null }
         )
 
+        val cutoutAiCalls = mutableListOf<Triple<String, String, Bitmap?>>()
         val controller = ScreenTextCopyController(
             context = appContext,
             serviceScope = scope,
@@ -314,7 +323,11 @@ class SelectionToolbarUpgradeTest {
             screenBitmapCapturer = { cb -> cb(screenBitmap) },
             translateHelperFactory = { translateHelper },
             customSpeakHandler = { spokenFromCutout = it },
-            customShareImageHandler = { bmp -> sharedCutoutBitmapSize = bmp.width to bmp.height }
+            customShareImageHandler = { bmp -> sharedCutoutBitmapSize = bmp.width to bmp.height },
+            customFloatingAiBrowserLauncher = { providerId, textOrQuery, question, bmp ->
+                cutoutAiCalls.add(Triple(providerId, "$textOrQuery|$question", bmp))
+                true
+            }
         )
 
         controller.start()
@@ -390,8 +403,8 @@ class SelectionToolbarUpgradeTest {
         assertEquals(SelectionToolbarHelper.GEMINI_PACKAGE, geminiImgIntent.`package`)
         assertEquals("What is in this cutout?", geminiImgIntent.getStringExtra(Intent.EXTRA_TEXT))
 
-        // 5) Cutout Question Box Send -> sends directly to Google AI Mode without ACTION_CHOOSER
-        registerPackageResolveInfo(shadowPm, SelectionToolbarHelper.GOOGLE_APP_PACKAGE, "com.google.LensActivity", Intent.ACTION_SEND, mimeType = "image/png")
+        // 5) Cutout Question Box Send -> opens inside Floating Browser Google AI Mode with cropped cutout bitmap
+        cutoutAiCalls.clear()
         controller.start()
         waitUntilOverlayVisible(controller)
         root = getOverlayRoot(overlayCtrl)
@@ -400,10 +413,10 @@ class SelectionToolbarUpgradeTest {
         root.findViewById<EditText>(R.id.et_cutout_ai_question).setText("Identify object")
         root.findViewById<ImageButton>(R.id.btn_cutout_ai_send).performClick()
         ShadowLooper.idleMainLooper()
-        val cutoutAiSendIntent = Shadows.shadowOf(appContext).nextStartedActivity
-        assertEquals(Intent.ACTION_SEND, cutoutAiSendIntent.action)
-        assertEquals(SelectionToolbarHelper.GOOGLE_APP_PACKAGE, cutoutAiSendIntent.`package`)
-        assertEquals("Identify object", cutoutAiSendIntent.getStringExtra(Intent.EXTRA_TEXT))
+        assertEquals(1, cutoutAiCalls.size)
+        assertEquals("google_ai_mode", cutoutAiCalls.last().first)
+        assertTrue(cutoutAiCalls.last().second.contains("Identify object"))
+        assertNotNull("Cutout bitmap must be forwarded to Floating Browser upload handler", cutoutAiCalls.last().third)
 
         controller.release()
         scope.cancel()

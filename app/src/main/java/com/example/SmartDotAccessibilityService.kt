@@ -158,6 +158,10 @@ class SmartDotAccessibilityService : AccessibilityService() {
      * that the caller must recycle after ML Kit OCR finishes, or null if unsupported/failed.
      */
     fun captureScreenBitmapInMemory(onCaptured: (Bitmap?) -> Unit) {
+        screenshotBitmapTestHook?.let { hook ->
+            onCaptured(hook())
+            return
+        }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             onCaptured(null)
             return
@@ -219,6 +223,7 @@ class SmartDotAccessibilityService : AccessibilityService() {
     internal var splitModeCheckTestHook: (() -> Boolean)? = null
     internal var autoScrollTestHook: ((Int) -> Boolean)? = null
     internal var autoClickTestHook: ((Float, Float) -> Boolean)? = null
+    internal var screenshotBitmapTestHook: (() -> Bitmap?)? = null
 
     /**
      * Dispatches a single-point tap gesture at screen coordinates (x, y) on API 24+ for Auto-Clicker.

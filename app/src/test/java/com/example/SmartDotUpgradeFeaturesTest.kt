@@ -279,34 +279,33 @@ class SmartDotUpgradeFeaturesTest {
             .apply { isAccessible = true }
 
         val shadowApp = Shadows.shadowOf(appContext)
-        val shellCommands = mutableListOf<String>()
-        PrivilegedToggleHelper.shizukuShellTestHook = { cmd ->
-            shellCommands.add(cmd)
+        val a11yService = Robolectric.setupService(SmartDotAccessibilityService::class.java)
+        val globalActions = mutableListOf<Int>()
+        a11yService.performGlobalActionTestHook = { act ->
+            globalActions.add(act)
             true
         }
-        PrivilegedToggleHelper.mobileDataStateTestHook = { false }
+        SmartDotAccessibilityService.setInstanceForTest(a11yService)
         try {
             executeAction.invoke(service, "bluetooth")
-            assertTrue(shellCommands.any { it.startsWith("svc bluetooth") })
-            assertNull("Bluetooth must toggle silently without Settings Panel", shadowApp.nextStartedActivity)
-
             executeAction.invoke(service, "mobile_data")
-            assertTrue(shellCommands.contains("svc data enable"))
-            assertNull("Mobile Data must toggle silently without Settings Panel", shadowApp.nextStartedActivity)
-
             executeAction.invoke(service, "wifi")
-            assertTrue(shellCommands.any { it.startsWith("svc wifi") })
-            assertNull("Wi-Fi must toggle silently without Settings Panel", shadowApp.nextStartedActivity)
+            assertTrue(
+                "Wi-Fi / Mobile Data / Bluetooth should use Accessibility QuickTile toggle when service is active",
+                globalActions.contains(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS)
+            )
+            assertNull("Accessibility QuickTile toggle must not launch Settings fallback", shadowApp.nextStartedActivity)
+
+            // When Accessibility is unavailable, safely falls back to connectivity Settings intent
+            SmartDotAccessibilityService.setInstanceForTest(null)
+            executeAction.invoke(service, "wifi")
+            assertEquals(Settings.ACTION_WIFI_SETTINGS, shadowApp.nextStartedActivity?.action)
+            executeAction.invoke(service, "bluetooth")
+            assertEquals(Settings.ACTION_BLUETOOTH_SETTINGS, shadowApp.nextStartedActivity?.action)
         } finally {
-            PrivilegedToggleHelper.shizukuShellTestHook = null
+            SmartDotAccessibilityService.setInstanceForTest(null)
             PrivilegedToggleHelper.mobileDataStateTestHook = null
         }
-
-        // Unprivileged fallback still must NEVER open BT/Wi-Fi/Mobile Data Settings Panels
-        executeAction.invoke(service, "bluetooth")
-        assertNull(shadowApp.nextStartedActivity)
-        executeAction.invoke(service, "wifi")
-        assertNull(shadowApp.nextStartedActivity)
 
         Settings.System.putInt(appContext.contentResolver, Settings.System.ACCELEROMETER_ROTATION, 0)
         executeAction.invoke(service, "auto_rotate")

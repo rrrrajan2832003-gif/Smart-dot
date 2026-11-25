@@ -54,7 +54,7 @@ class SmartDotFeaturesTest {
 
     @After
     fun tearDown() {
-        PrivilegedToggleHelper.shizukuShellTestHook = null
+        SmartDotAccessibilityService.setInstanceForTest(null)
         ShadowSettings.setCanDrawOverlays(false)
     }
 
@@ -201,20 +201,22 @@ class SmartDotFeaturesTest {
         assertNotNull("Swipe Up -> Voice Assistant should start activity", voiceIntent)
         assertEquals(Intent.ACTION_ASSIST, voiceIntent.action)
 
-        // Swipe Down-Left on locked Edge Sidebar -> toggles Wi-Fi silently in background without changing sidebar y or opening Settings
-        val wifiCommands = mutableListOf<String>()
-        PrivilegedToggleHelper.shizukuShellTestHook = { cmd ->
-            wifiCommands.add(cmd)
+        // Swipe Down-Left on locked Edge Sidebar -> invokes Accessibility Quick-Tile Wi-Fi toggle without changing sidebar y
+        val a11yService = Robolectric.setupService(SmartDotAccessibilityService::class.java)
+        val globalActions = mutableListOf<Int>()
+        a11yService.performGlobalActionTestHook = { act ->
+            globalActions.add(act)
             true
         }
+        SmartDotAccessibilityService.setInstanceForTest(a11yService)
+
         dispatchRawDragGesture(sidebar, startX = 1060f, startY = 400f, endX = 880f, endY = 580f)
         assertEquals(initialSidebarY, sidebarParams.y)
-        assertTrue("Swipe Down-Left -> Wi-Fi should toggle silently via svc wifi", wifiCommands.any { it.startsWith("svc wifi") })
-        assertNull(
-            "Direct silent Wi-Fi toggle must NOT open Settings Panel",
-            Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
+        assertTrue(
+            "Swipe Down-Left -> Wi-Fi should trigger Quick Settings tile automation via AccessibilityService",
+            globalActions.contains(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS)
         )
-        PrivilegedToggleHelper.shizukuShellTestHook = null
+        SmartDotAccessibilityService.setInstanceForTest(null)
 
         // Unlock position -> dragging dot updates saved coordinates
         prefs.edit().putBoolean("dot_position_locked", false).commit()

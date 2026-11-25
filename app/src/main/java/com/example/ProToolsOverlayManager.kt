@@ -60,25 +60,34 @@ class ProToolsOverlayManager(
         }
     }
 
-    // 3. Auto-Clicker
-    private var autoClickerTargetView: View? = null
-    private var autoClickerTargetParams: WindowManager.LayoutParams? = null
+    // 3. Multi-Point Sequential Auto-Clicker (1, 2, 3, 4...)
+    data class AutoClickerTarget(
+        val number: Int,
+        val view: FrameLayout,
+        val labelView: TextView,
+        val params: WindowManager.LayoutParams
+    )
+
+    private val autoClickerTargets = ArrayList<AutoClickerTarget>()
     private var autoClickerBarView: View? = null
     private var autoClickerBarParams: WindowManager.LayoutParams? = null
+    private var autoClickerAccentColor: Int = Color.parseColor("#00E5FF")
     private var autoClickerPlaying = false
+    private var autoClickerStepIdx = 0
     private val autoClickerIntervalsMs = longArrayOf(100L, 250L, 500L, 1000L, 1500L, 2000L)
     private var autoClickerIntervalIdx = 2 // 500ms default
     private val autoClickerRunnable = object : Runnable {
         override fun run() {
-            if (!autoClickerPlaying || autoClickerTargetView == null || shieldHidden) return
-            val targetLp = autoClickerTargetParams
-            val targetView = autoClickerTargetView
+            if (!autoClickerPlaying || autoClickerTargets.isEmpty() || shieldHidden) return
             val service = SmartDotAccessibilityService.instance
-            if (targetLp != null && targetView != null && service != null && !SmartDotAccessibilityService.isUserPaused) {
-                val targetW = targetView.width.takeIf { it > 0 } ?: dp(48f)
-                val targetH = targetView.height.takeIf { it > 0 } ?: dp(48f)
-                val tapX = targetLp.x + (targetW / 2f)
-                val tapY = targetLp.y + (targetH / 2f)
+            val currentIdx = autoClickerStepIdx % autoClickerTargets.size
+            val target = autoClickerTargets[currentIdx]
+            autoClickerStepIdx = (currentIdx + 1) % autoClickerTargets.size
+            if (service != null && !SmartDotAccessibilityService.isUserPaused) {
+                val targetW = target.view.width.takeIf { it > 0 } ?: dp(48f)
+                val targetH = target.view.height.takeIf { it > 0 } ?: dp(48f)
+                val tapX = target.params.x + (targetW / 2f)
+                val tapY = target.params.y + (targetH / 2f)
                 service.performTapAt(tapX, tapY)
             }
             mainHandler.postDelayed(this, getAutoClickerIntervalMs())
@@ -89,9 +98,11 @@ class ProToolsOverlayManager(
 
     fun isBlackScreenActive(): Boolean = blackScreenView != null
     fun isAutoScrollerActive(): Boolean = scrollerView != null
-    fun isAutoClickerActive(): Boolean = autoClickerTargetView != null
+    fun isAutoClickerActive(): Boolean = autoClickerTargets.isNotEmpty()
     fun isAutoClickerPlaying(): Boolean = autoClickerPlaying
     fun getAutoClickerIntervalMs(): Long = autoClickerIntervalsMs[autoClickerIntervalIdx]
+    fun getAutoClickerTargetCount(): Int = autoClickerTargets.size
+    fun getAutoClickerTargets(): List<AutoClickerTarget> = autoClickerTargets.toList()
 
     fun toggleBlackScreenMode() {
         if (blackScreenView != null) {
@@ -334,7 +345,7 @@ class ProToolsOverlayManager(
     }
 
     fun toggleAutoClicker(accentColor: Int = Color.parseColor("#00E5FF")) {
-        if (autoClickerTargetView != null) {
+        if (autoClickerTargets.isNotEmpty() || autoClickerBarView != null) {
             hideAutoClicker()
         } else {
             showAutoClicker(accentColor)
@@ -342,8 +353,100 @@ class ProToolsOverlayManager(
     }
 
     @SuppressLint("ClickableViewAccessibility")
+    fun addAutoClickerTarget(accentColor: Int = autoClickerAccentColor): AutoClickerTarget? {
+        val number = autoClickerTargets.size + 1
+        val metrics = context.resources.displayMetrics
+        val targetSizePx = dp(48f)
+        val centerX = ((metrics.widthPixels - targetSizePx) / 2).coerceAtLeast(16)
+        val centerY = ((metrics.heightPixels - targetSizePx) / 2).coerceAtLeast(64)
+        val offsetStep = dp(54f)
+        val staggerIndex = (number - 1) % 6
+        val maxX = (metrics.widthPixels - targetSizePx - 8).coerceAtLeast(16)
+        val maxY = (metrics.heightPixels - targetSizePx - 32).coerceAtLeast(64)
+        val initialTargetX = (centerX + ((staggerIndex % 2) * offsetStep) - offsetStep / 2).coerceIn(16, maxX)
+        val initialTargetY = (centerY + ((staggerIndex - 1) * offsetStep)).coerceIn(64, maxY)
+
+        val targetRing = FrameLayout(context).apply {
+            tag = "pro_auto_clicker_target_$number"
+            contentDescription = "Auto-Clicker Tap Target $number"
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#660F172A"))
+                setStroke(dp(2.5f).coerceAtLeast(2), accentColor)
+            }
+            elevation = dp(12f).toFloat()
+            alpha = if (autoClickerPlaying) 0.65f else 1.0f
+        }
+        val numberLabel = TextView(context).apply {
+            tag = "pro_auto_clicker_label_$number"
+            text = number.toString()
+            textSize = 16f
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(accentColor)
+            gravity = Gravity.CENTER
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+        targetRing.addView(numberLabel)
+
+        var baseFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        if (autoClickerPlaying) {
+            baseFlags = baseFlags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        }
+        val targetLp = WindowManager.LayoutParams(
+            targetSizePx,
+            targetSizePx,
+            initialTargetX,
+            initialTargetY,
+            overlayWindowType(),
+            baseFlags,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+        }
+
+        targetRing.setOnTouchListener(
+            createDragTouchListener(targetRing, targetLp, clampW = targetSizePx, clampH = targetSizePx)
+        )
+
+        val added = runCatching {
+            windowManager.addView(targetRing, targetLp)
+            if (shieldHidden) targetRing.visibility = View.GONE
+            true
+        }.getOrElse { e ->
+            Log.e(TAG, "Failed adding Auto-Clicker target #$number", e)
+            false
+        }
+        if (!added) return null
+
+        val target = AutoClickerTarget(
+            number = number,
+            view = targetRing,
+            labelView = numberLabel,
+            params = targetLp
+        )
+        autoClickerTargets.add(target)
+        return target
+    }
+
+    fun removeLastAutoClickerTarget(): Boolean {
+        if (autoClickerTargets.size <= 1) return false
+        val removed = autoClickerTargets.removeAt(autoClickerTargets.lastIndex)
+        runCatching { windowManager.removeView(removed.view) }
+        if (autoClickerTargets.isNotEmpty()) {
+            autoClickerStepIdx %= autoClickerTargets.size
+        } else {
+            autoClickerStepIdx = 0
+        }
+        return true
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
     fun showAutoClicker(accentColor: Int = Color.parseColor("#00E5FF")) {
-        if (autoClickerTargetView != null) return
+        if (autoClickerTargets.isNotEmpty() || autoClickerBarView != null) return
         if (SmartDotAccessibilityService.instance == null) {
             Toast.makeText(
                 context,
@@ -353,48 +456,11 @@ class ProToolsOverlayManager(
             return
         }
 
-        val metrics = context.resources.displayMetrics
-        val targetSizePx = dp(48f)
-        val initialTargetX = ((metrics.widthPixels - targetSizePx) / 2).coerceAtLeast(16)
-        val initialTargetY = ((metrics.heightPixels - targetSizePx) / 2).coerceAtLeast(64)
+        autoClickerAccentColor = accentColor
+        autoClickerStepIdx = 0
+        autoClickerPlaying = false
 
-        val targetRing = FrameLayout(context).apply {
-            tag = "pro_auto_clicker_target"
-            contentDescription = "Auto-Clicker Tap Target"
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#440F172A"))
-                setStroke(dp(2.5f).coerceAtLeast(2), accentColor)
-            }
-            elevation = dp(12f).toFloat()
-        }
-        val crosshairLabel = TextView(context).apply {
-            text = "+"
-            textSize = 20f
-            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-            setTextColor(accentColor)
-            gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
-                FrameLayout.LayoutParams.MATCH_PARENT
-            )
-        }
-        targetRing.addView(crosshairLabel)
-
-        val targetLp = WindowManager.LayoutParams(
-            targetSizePx,
-            targetSizePx,
-            initialTargetX,
-            initialTargetY,
-            overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-        }
-
-        targetRing.setOnTouchListener(createDragTouchListener(targetRing, targetLp, clampW = targetSizePx, clampH = targetSizePx))
+        val firstTarget = addAutoClickerTarget(accentColor) ?: return
 
         val bar = LinearLayout(context).apply {
             tag = "pro_auto_clicker_bar"
@@ -416,13 +482,59 @@ class ProToolsOverlayManager(
             gravity = Gravity.CENTER
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
             setTextColor(Color.BLACK)
-            minWidth = dp(48f)
+            minWidth = dp(42f)
             minHeight = dp(36f)
-            setPadding(dp(12f), dp(6f), dp(12f), dp(6f))
+            setPadding(dp(10f), dp(6f), dp(10f), dp(6f))
             contentDescription = "Play or Pause Auto-Clicker"
             background = GradientDrawable().apply {
                 cornerRadius = dp(16f).toFloat()
                 setColor(accentColor)
+            }
+        }
+
+        val btnAddPoint = TextView(context).apply {
+            tag = "pro_auto_clicker_add"
+            text = "+"
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            minWidth = dp(36f)
+            minHeight = dp(36f)
+            setPadding(dp(8f), dp(4f), dp(8f), dp(4f))
+            contentDescription = "Add Tap Point"
+            background = GradientDrawable().apply {
+                cornerRadius = dp(14f).toFloat()
+                setColor(Color.parseColor("#1E293B"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginStart = dp(6f)
+            }
+        }
+
+        val btnRemovePoint = TextView(context).apply {
+            tag = "pro_auto_clicker_remove"
+            text = "-"
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+            minWidth = dp(36f)
+            minHeight = dp(36f)
+            setPadding(dp(8f), dp(4f), dp(8f), dp(4f))
+            contentDescription = "Remove Last Tap Point"
+            background = GradientDrawable().apply {
+                cornerRadius = dp(14f).toFloat()
+                setColor(Color.parseColor("#1E293B"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                marginStart = dp(4f)
             }
         }
 
@@ -455,7 +567,7 @@ class ProToolsOverlayManager(
             gravity = Gravity.CENTER
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
             setTextColor(Color.parseColor("#EF4444"))
-            minWidth = dp(38f)
+            minWidth = dp(36f)
             minHeight = dp(36f)
             setPadding(dp(8f), dp(6f), dp(8f), dp(6f))
             contentDescription = "Close Auto-Clicker"
@@ -467,27 +579,38 @@ class ProToolsOverlayManager(
             }
         }
 
-        fun updateTargetPassThrough(playing: Boolean) {
-            if (playing) {
-                targetLp.flags = targetLp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                targetRing.alpha = 0.65f
-            } else {
-                targetLp.flags = targetLp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-                targetRing.alpha = 1.0f
+        fun updateTargetsPassThrough(playing: Boolean) {
+            autoClickerTargets.forEach { target ->
+                if (playing) {
+                    target.params.flags = target.params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                    target.view.alpha = 0.65f
+                } else {
+                    target.params.flags = target.params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+                    target.view.alpha = 1.0f
+                }
+                runCatching { windowManager.updateViewLayout(target.view, target.params) }
             }
-            runCatching { windowManager.updateViewLayout(targetRing, targetLp) }
         }
 
         btnPlayPause.setOnClickListener {
             autoClickerPlaying = !autoClickerPlaying
             mainHandler.removeCallbacks(autoClickerRunnable)
-            updateTargetPassThrough(autoClickerPlaying)
+            updateTargetsPassThrough(autoClickerPlaying)
             if (autoClickerPlaying) {
+                autoClickerStepIdx = 0
                 btnPlayPause.text = "⏸"
                 mainHandler.post(autoClickerRunnable)
             } else {
                 btnPlayPause.text = "▶"
             }
+        }
+
+        btnAddPoint.setOnClickListener {
+            addAutoClickerTarget(accentColor)
+        }
+
+        btnRemovePoint.setOnClickListener {
+            removeLastAutoClickerTarget()
         }
 
         btnSpeed.setOnClickListener {
@@ -498,6 +621,8 @@ class ProToolsOverlayManager(
         btnClose.setOnClickListener { hideAutoClicker() }
 
         bar.addView(btnPlayPause)
+        bar.addView(btnAddPoint)
+        bar.addView(btnRemovePoint)
         bar.addView(btnSpeed)
         bar.addView(btnClose)
 
@@ -517,35 +642,32 @@ class ProToolsOverlayManager(
         bar.setOnTouchListener(createDragTouchListener(bar, barLp))
 
         runCatching {
-            windowManager.addView(targetRing, targetLp)
             windowManager.addView(bar, barLp)
-            autoClickerTargetView = targetRing
-            autoClickerTargetParams = targetLp
             autoClickerBarView = bar
             autoClickerBarParams = barLp
-            autoClickerPlaying = false
             if (shieldHidden) {
-                targetRing.visibility = View.GONE
+                firstTarget.view.visibility = View.GONE
                 bar.visibility = View.GONE
             }
         }.onFailure { e ->
-            Log.e(TAG, "Failed adding Auto-Clicker overlay", e)
-            runCatching { windowManager.removeView(targetRing) }
+            Log.e(TAG, "Failed adding Auto-Clicker bar overlay", e)
+            runCatching { windowManager.removeView(firstTarget.view) }
             runCatching { windowManager.removeView(bar) }
-            autoClickerTargetView = null
+            autoClickerTargets.clear()
             autoClickerBarView = null
-            autoClickerTargetParams = null
             autoClickerBarParams = null
         }
     }
 
     fun hideAutoClicker() {
         autoClickerPlaying = false
+        autoClickerStepIdx = 0
         mainHandler.removeCallbacks(autoClickerRunnable)
-        autoClickerTargetView?.let { v -> runCatching { windowManager.removeView(v) } }
+        autoClickerTargets.forEach { target ->
+            runCatching { windowManager.removeView(target.view) }
+        }
+        autoClickerTargets.clear()
         autoClickerBarView?.let { v -> runCatching { windowManager.removeView(v) } }
-        autoClickerTargetView = null
-        autoClickerTargetParams = null
         autoClickerBarView = null
         autoClickerBarParams = null
     }
@@ -555,14 +677,14 @@ class ProToolsOverlayManager(
         val vis = if (hidden) View.GONE else View.VISIBLE
         blackScreenView?.visibility = vis
         scrollerView?.visibility = vis
-        autoClickerTargetView?.visibility = vis
+        autoClickerTargets.forEach { it.view.visibility = vis }
         autoClickerBarView?.visibility = vis
         if (hidden) {
             mainHandler.removeCallbacks(scrollerRunnable)
             mainHandler.removeCallbacks(autoClickerRunnable)
         } else {
             if (scrollerPlaying && scrollerView != null) mainHandler.post(scrollerRunnable)
-            if (autoClickerPlaying && autoClickerTargetView != null) mainHandler.post(autoClickerRunnable)
+            if (autoClickerPlaying && autoClickerTargets.isNotEmpty()) mainHandler.post(autoClickerRunnable)
         }
     }
 

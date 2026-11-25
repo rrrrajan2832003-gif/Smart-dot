@@ -276,20 +276,21 @@ class SmartDotFinalUpgradesTest {
             receiverInfo.metaData.getInt("android.appwidget.provider")
         )
 
-        val shellCommands = mutableListOf<String>()
-        PrivilegedToggleHelper.shizukuShellTestHook = { cmd ->
-            shellCommands.add(cmd)
+        val a11yService = Robolectric.setupService(SmartDotAccessibilityService::class.java)
+        val globalActions = mutableListOf<Int>()
+        a11yService.performGlobalActionTestHook = { act ->
+            globalActions.add(act)
             true
         }
-        PrivilegedToggleHelper.mobileDataStateTestHook = { false }
+        SmartDotAccessibilityService.setInstanceForTest(a11yService)
         try {
             val widget = DataToggleWidget()
             widget.onReceive(appContext, Intent(DataToggleWidget.ACTION_WIDGET_TOGGLE_DATA))
-            assertTrue(shellCommands.contains("svc data enable"))
+            assertTrue(globalActions.contains(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS))
             val launchedIntent = Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
-            assertNull("Widget must never open Settings Panel on tap", launchedIntent)
+            assertNull("Accessibility quick-tile tap must not open Settings Activity immediately", launchedIntent)
         } finally {
-            PrivilegedToggleHelper.shizukuShellTestHook = null
+            SmartDotAccessibilityService.setInstanceForTest(null)
             PrivilegedToggleHelper.mobileDataStateTestHook = null
         }
     }

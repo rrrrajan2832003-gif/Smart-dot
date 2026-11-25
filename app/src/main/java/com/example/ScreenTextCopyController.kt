@@ -49,7 +49,8 @@ class ScreenTextCopyController(
         SelectionToolbarHelper.getVisibleToolbarOrder(context)
     },
     private val customShareTextHandler: ((String) -> Unit)? = null,
-    private val customShareImageHandler: ((Bitmap) -> Unit)? = null
+    private val customShareImageHandler: ((Bitmap) -> Unit)? = null,
+    private val customFloatingAiBrowserLauncher: ((providerId: String, textOrQuery: String, question: String, cutoutBitmap: Bitmap?) -> Boolean)? = null
 ) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -62,7 +63,6 @@ class ScreenTextCopyController(
 
     private var retainedScreenBitmap: Bitmap? = null
     private var isActive = false
-    private var pendingCircleToSearchBarMode = false
     private var ocrRequestToken: Long = 0L
 
     @Volatile
@@ -86,14 +86,9 @@ class ScreenTextCopyController(
         return translateHelper ?: translateHelperFactory().also { translateHelper = it }
     }
 
-    @JvmOverloads
-    fun start(circleToSearchBarMode: Boolean = false) {
+    fun start() {
         if (isActive || isOverlayShowing()) {
-            if (circleToSearchBarMode && isOverlayShowing()) {
-                overlayController?.showCircleToSearchBottomBar()
-            } else {
-                Toast.makeText(context, "Screen Text Copy is already active.", Toast.LENGTH_SHORT).show()
-            }
+            Toast.makeText(context, "Screen Text Copy is already active.", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -112,7 +107,6 @@ class ScreenTextCopyController(
         }
 
         isActive = true
-        pendingCircleToSearchBarMode = circleToSearchBarMode
         dismissActivePopup()
         setHostOverlaysVisible(false)
 
@@ -264,7 +258,6 @@ class ScreenTextCopyController(
             onDismiss = {
                 ocrRequestToken++
                 isActive = false
-                pendingCircleToSearchBarMode = false
                 releaseRetainedBitmap()
                 stopSpeaking()
                 setHostOverlaysVisible(true)
@@ -292,13 +285,13 @@ class ScreenTextCopyController(
             },
             toolbarOrder = getToolbarOrder(),
             onGoogleAiModeTextClicked = { query, question ->
-                SelectionToolbarHelper.launchGoogleAiModeText(context, query, question)
+                openAiInFloatingBrowser("google_ai_mode", query, question, cutoutBitmap = null)
             },
             onGeminiTextClicked = { text, question ->
                 SelectionToolbarHelper.launchGeminiText(context, text, question)
             },
             onChatGptTextClicked = { text, question ->
-                SelectionToolbarHelper.launchChatGptText(context, text, question)
+                openAiInFloatingBrowser("chatgpt", text, question, cutoutBitmap = null)
             },
             onShareTextClicked = { text ->
                 shareSelectedText(text)
@@ -333,8 +326,31 @@ class ScreenTextCopyController(
             onCutoutLensClicked = { boxRect, viewW, viewH ->
                 launchLensOnCutout(boxRect, viewW, viewH)
             },
-            showCircleToSearchBar = pendingCircleToSearchBarMode
+            onWordBrowserAiClicked = { query, question ->
+                openAiInFloatingBrowser("google_ai_mode", query, question, cutoutBitmap = null)
+            },
+            onCutoutBrowserAiClicked = { boxRect, overlappingNodes, viewW, viewH, question ->
+                launchGoogleAiModeCutout(boxRect, overlappingNodes, viewW, viewH, question)
+            }
         )
+    }
+
+    private fun openAiInFloatingBrowser(
+        providerId: String,
+        textOrQuery: String,
+        question: String,
+        cutoutBitmap: Bitmap?
+    ) {
+        val customHandled = customFloatingAiBrowserLauncher?.invoke(providerId, textOrQuery, question, cutoutBitmap) == true
+        if (customHandled) return
+        val wm = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return
+        val fwm = FloatingWindowManager(context, wm)
+        val accent = runCatching { getAccentColor() }.getOrDefault(Color.parseColor("#00E5FF"))
+        if (providerId == "chatgpt") {
+            FloatingMiniApps.openChatGptInBrowser(context, fwm, accent, textOrQuery, question, cutoutBitmap)
+        } else {
+            FloatingMiniApps.openGoogleAiModeInBrowser(context, fwm, accent, textOrQuery, question, cutoutBitmap)
+        }
     }
 
     private fun switchToFullScreenTranslate() {
@@ -489,19 +505,11 @@ class ScreenTextCopyController(
     }
 
     private fun launchLensOnFullScreen() {
-        // Circle-to-Search style: try native Lens overlay or reveal our Circle-to-Search bottom bar
-        // with in-place Screen Translate (never upload the full-screen image).
-        if (SelectionToolbarHelper.launchNativeGoogleLens(context)) {
-            ocrRequestToken++
-            isActive = false
-            pendingCircleToSearchBarMode = false
-            releaseRetainedBitmap()
-            stopSpeaking()
-            overlayController?.dismiss()
-            setHostOverlaysVisible(true)
+        val bmp = retainedScreenBitmap?.takeIf { !it.isRecycled }
+        if (bmp != null) {
+            SelectionToolbarHelper.launchGoogleLensImage(context, bmp)
         } else {
-            pendingCircleToSearchBarMode = true
-            overlayController?.showCircleToSearchBottomBar()
+            SelectionToolbarHelper.launchNativeGoogleLens(context)
         }
     }
 
@@ -585,22 +593,10 @@ class ScreenTextCopyController(
         }
         val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
         val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
-        if (cropped != null) {
-            try {
-                if (cleanQuestion.isBlank() && customVisualSearchLauncher?.invoke(cropped) == true) {
-                    return
-                }
-                SelectionToolbarHelper.launchGoogleAiModeImage(context, cropped, cleanQuestion, fallbackText)
-            } finally {
-                runCatching { if (!cropped.isRecycled) cropped.recycle() }
-            }
-            return
-        }
-        val combined = SelectionToolbarHelper.combineQuestionForAiSearch(cleanQuestion, fallbackText)
-        if (combined.isNotEmpty()) {
-            SelectionToolbarHelper.launchGoogleAiModeText(context, fallbackText, cleanQuestion)
-        } else {
-            Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
+        try {
+            openAiInFloatingBrowser("google_ai_mode", fallbackText, cleanQuestion, cropped)
+        } finally {
+            runCatching { if (cropped != null && !cropped.isRecycled) cropped.recycle() }
         }
     }
 
@@ -643,20 +639,12 @@ class ScreenTextCopyController(
         if (cleanQuestion.isNotEmpty()) {
             copyQuestionToClipboardIfPresent(cleanQuestion)
         }
-        val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
-        if (cropped != null) {
-            try {
-                SelectionToolbarHelper.launchChatGptImage(context, cropped, cleanQuestion)
-            } finally {
-                runCatching { if (!cropped.isRecycled) cropped.recycle() }
-            }
-            return
-        }
         val fallbackText = overlappingNodes.joinToString(" ") { it.text }.trim()
-        if (fallbackText.isNotEmpty() || cleanQuestion.isNotEmpty()) {
-            SelectionToolbarHelper.launchChatGptText(context, fallbackText, cleanQuestion)
-        } else {
-            Toast.makeText(context, context.getString(R.string.cutout_save_failed), Toast.LENGTH_SHORT).show()
+        val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
+        try {
+            openAiInFloatingBrowser("chatgpt", fallbackText, cleanQuestion, cropped)
+        } finally {
+            runCatching { if (cropped != null && !cropped.isRecycled) cropped.recycle() }
         }
     }
 
@@ -831,7 +819,6 @@ class ScreenTextCopyController(
         translateHelper?.close()
         translateHelper = null
         isActive = false
-        pendingCircleToSearchBarMode = false
     }
 
     companion object {

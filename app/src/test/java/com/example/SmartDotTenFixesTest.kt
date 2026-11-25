@@ -69,16 +69,12 @@ class SmartDotTenFixesTest {
             .clear()
             .commit()
         SmartDotAccessibilityService.setInstanceForTest(null)
-        PrivilegedToggleHelper.shizukuShellTestHook = null
-        PrivilegedToggleHelper.rootShellTestHook = null
         PrivilegedToggleHelper.mobileDataStateTestHook = null
         ShadowToast.reset()
     }
 
     @After
     fun tearDown() {
-        PrivilegedToggleHelper.shizukuShellTestHook = null
-        PrivilegedToggleHelper.rootShellTestHook = null
         PrivilegedToggleHelper.mobileDataStateTestHook = null
         SmartDotAccessibilityService.setInstanceForTest(null)
     }
@@ -284,7 +280,7 @@ class SmartDotTenFixesTest {
         assertTrue(intent.dataString!!.contains("https://www.google.com/search?udm=50"))
         assertTrue(intent.dataString!!.contains("explain+briefly+black+holes"))
 
-        // Also test FloatingService executeAction("google_ai_mode") opens floating resizable AI WebView window
+        // Also test FloatingService executeAction("google_ai_mode") opens inside Floating Browser
         val service = Robolectric.buildService(FloatingService::class.java)
             .create()
             .startCommand(0, 1)
@@ -300,7 +296,8 @@ class SmartDotTenFixesTest {
             .getDeclaredField("floatingWindowManager")
             .apply { isAccessible = true }
         val fwm = fwmField.get(service) as FloatingWindowManager
-        assertTrue(fwm.hasWindow("floating_ai_google_ai_mode"))
+        assertTrue(fwm.hasWindow("floating_browser"))
+        assertNull("google_ai_mode must open in Floating Browser without launching external Chrome", Shadows.shadowOf(appContext).nextStartedActivity)
         fwm.closeAllWindows()
         service.stopSelf()
     }
@@ -580,7 +577,7 @@ class SmartDotTenFixesTest {
     // -------------------------------------------------------------
 
     @Test
-    fun `PrivilegedToggleHelper toggles hardware silently without Quick Settings shade and DataToggleWidget is compact icon-only`() {
+    fun `DataToggleWidget uses Accessibility QuickTile without Settings when active and PrivilegedToggleHelper toggles native Auto-Rotate and Brightness`() {
         val dispatchedGlobalActions = mutableListOf<Int>()
         val a11yService = Robolectric.buildService(SmartDotAccessibilityService::class.java).create().get()
         a11yService.performGlobalActionTestHook = { action ->
@@ -588,13 +585,6 @@ class SmartDotTenFixesTest {
             true
         }
         SmartDotAccessibilityService.setInstanceForTest(a11yService)
-
-        val shellCommands = mutableListOf<String>()
-        PrivilegedToggleHelper.shizukuShellTestHook = { cmd ->
-            shellCommands.add(cmd)
-            true
-        }
-        PrivilegedToggleHelper.mobileDataStateTestHook = { false }
 
         // Test 1x1 compact widget layout (single icon inside squircle FrameLayout, zero TextView crowding)
         val widgetView = LayoutInflater.from(appContext).inflate(R.layout.widget_data_toggle, null)
@@ -604,31 +594,20 @@ class SmartDotTenFixesTest {
         assertFalse(icon.contentDescription.isNullOrBlank())
         assertFalse("Compact 1x1 widget must contain zero crowded TextViews", containsTextView(widgetView as ViewGroup))
 
-        // Tapping widget calls silent Mobile Data toggle (`svc data enable`) with ZERO QS/Panel UI
-        ShadowToast.reset()
+        // Tapping widget when Accessibility is active calls built-in QuickTile toggle without opening Settings
         DataToggleWidget.handleWidgetTap(appContext)
-        assertEquals("Mobile Data ON", ShadowToast.getTextOfLatestToast())
+        assertTrue(dispatchedGlobalActions.contains(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS))
         assertNull(
-            "Silent widget toggle must not open fallback Settings Panel activity",
+            "Accessibility quick-tile widget tap must not immediately open Settings Activity",
             Shadows.shadowOf(appContext).nextStartedActivity
         )
-        assertTrue(shellCommands.contains("svc data enable"))
-        assertFalse(
-            "Silent toggle must NEVER pull down GLOBAL_ACTION_QUICK_SETTINGS",
-            dispatchedGlobalActions.contains(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS)
-        )
 
-        // Wi-Fi & Bluetooth silent shell execution
-        @Suppress("DEPRECATION")
-        val wifiManager = appContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
-        @Suppress("DEPRECATION")
-        wifiManager.setWifiEnabled(false)
-        assertEquals(true, PrivilegedToggleHelper.toggleSilently(appContext, QuickTileTarget.WIFI))
-        assertTrue(shellCommands.contains("svc wifi enable"))
-        assertEquals(true, PrivilegedToggleHelper.toggleSilently(appContext, QuickTileTarget.BLUETOOTH))
-        assertTrue(shellCommands.contains("svc bluetooth enable"))
+        // When Accessibility is off, safely falls back to Data Settings intent
+        SmartDotAccessibilityService.setInstanceForTest(null)
+        DataToggleWidget.handleWidgetTap(appContext)
+        assertNotNull(Shadows.shadowOf(appContext).nextStartedActivity)
 
-        // Auto-Rotate & Brightness silent writes
+        // Auto-Rotate & Brightness native system writes
         Shadows.shadowOf(appContext).grantPermissions(android.Manifest.permission.WRITE_SETTINGS)
         val appOps = appContext.getSystemService(Context.APP_OPS_SERVICE) as android.app.AppOpsManager
         Shadows.shadowOf(appOps).setMode(
@@ -646,11 +625,6 @@ class SmartDotTenFixesTest {
         assertEquals(135, raised)
         val lowered = PrivilegedToggleHelper.adjustBrightnessByStep(appContext, -35)
         assertEquals(100, lowered)
-
-        assertTrue(
-            "Zero GLOBAL_ACTION_QUICK_SETTINGS calls allowed during silent hardware toggles",
-            dispatchedGlobalActions.isEmpty()
-        )
     }
 
     private fun containsTextView(group: ViewGroup): Boolean {

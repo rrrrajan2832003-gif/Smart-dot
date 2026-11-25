@@ -194,14 +194,24 @@
                 android:textSize="12sp" />
 
             <ImageButton
-                android:id="@+id/btn_word_quick_translate"
-                android:layout_width="38dp"
-                android:layout_height="38dp"
+                android:id="@+id/btn_word_preset_1"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
                 android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:contentDescription="@string/quick_translate_chip_desc"
-                android:padding="8dp"
+                android:contentDescription="@string/quick_preset_1_desc"
+                android:padding="7dp"
                 android:scaleType="centerInside"
                 android:src="@drawable/ic_tab_translate" />
+
+            <ImageButton
+                android:id="@+id/btn_word_preset_2"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/quick_preset_2_desc"
+                android:padding="7dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_preset_meaning" />
 
             <ImageButton
                 android:id="@+id/btn_word_ai_send"
@@ -209,6 +219,47 @@
                 android:layout_height="38dp"
                 android:background="?android:attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Send question to AI"
+                android:padding="8dp"
+                android:scaleType="centerInside"
+                android:src="@android:drawable/ic_menu_send" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/inline_word_browser_ai_row"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="5dp"
+            android:gravity="center_vertical"
+            android:minWidth="210dp"
+            android:orientation="horizontal"
+            android:paddingStart="8dp"
+            android:paddingTop="2dp"
+            android:paddingEnd="4dp"
+            android:paddingBottom="2dp">
+
+            <EditText
+                android:id="@+id/et_word_browser_ai_question"
+                android:layout_width="0dp"
+                android:layout_height="38dp"
+                android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:hint="@string/floating_ai_question_hint"
+                android:imeOptions="actionSend"
+                android:inputType="textCapSentences"
+                android:maxLines="1"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:singleLine="true"
+                android:textColor="#F8FAFC"
+                android:textColorHint="#94A3B8"
+                android:textSize="12sp" />
+
+            <ImageButton
+                android:id="@+id/btn_word_browser_ai_send"
+                android:layout_width="38dp"
+                android:layout_height="38dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Ask directly in Floating Google AI"
                 android:padding="8dp"
                 android:scaleType="centerInside"
                 android:src="@android:drawable/ic_menu_send" />
@@ -319,14 +370,24 @@
                 android:textSize="12sp" />
 
             <ImageButton
-                android:id="@+id/btn_cutout_quick_translate"
-                android:layout_width="38dp"
-                android:layout_height="38dp"
+                android:id="@+id/btn_cutout_preset_1"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
                 android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:contentDescription="@string/quick_translate_chip_desc"
-                android:padding="8dp"
+                android:contentDescription="@string/quick_preset_1_desc"
+                android:padding="7dp"
                 android:scaleType="centerInside"
                 android:src="@drawable/ic_tab_translate" />
+
+            <ImageButton
+                android:id="@+id/btn_cutout_preset_2"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/quick_preset_2_desc"
+                android:padding="7dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_preset_meaning" />
 
             <ImageButton
                 android:id="@+id/btn_cutout_ai_send"
@@ -355,67 +416,47 @@
                 android:scaleType="centerInside"
                 android:src="@drawable/ic_app_close" />
         </LinearLayout>
-    </LinearLayout>
 
-    <!-- Circle-to-Search Style Bottom Bar for Google Lens Shortcut (with In-Place Screen Translate on Right) -->
-    <LinearLayout
-        android:id="@+id/circle_to_search_bottom_bar"
-        android:layout_width="wrap_content"
-        android:layout_height="52dp"
-        android:layout_gravity="bottom|center_horizontal"
-        android:layout_marginStart="16dp"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="28dp"
-        android:elevation="12dp"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingStart="8dp"
-        android:paddingEnd="8dp"
-        android:visibility="gone">
-
-        <ImageButton
-            android:id="@+id/btn_circle_search_native_lens"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/circle_search_native_lens_desc"
-            android:padding="12dp"
-            android:scaleType="centerInside"
-            android:src="@drawable/ic_toolbar_lens" />
-
-        <TextView
-            android:id="@+id/tv_circle_search_prompt"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:id="@+id/inline_cutout_browser_ai_row"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:maxWidth="200dp"
-            android:paddingStart="4dp"
-            android:paddingEnd="6dp"
-            android:text="@string/circle_search_hint"
-            android:textColor="#E2E8F0"
-            android:textSize="12sp"
-            android:textStyle="bold" />
+            android:layout_marginTop="5dp"
+            android:gravity="center_vertical"
+            android:minWidth="220dp"
+            android:orientation="horizontal"
+            android:paddingStart="8dp"
+            android:paddingTop="2dp"
+            android:paddingEnd="4dp"
+            android:paddingBottom="2dp">
 
-        <ImageButton
-            android:id="@+id/btn_circle_search_translate"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/circle_search_translate_desc"
-            android:padding="11dp"
-            android:scaleType="centerInside"
-            android:src="@drawable/ic_tab_translate" />
+            <EditText
+                android:id="@+id/et_cutout_browser_ai_question"
+                android:layout_width="0dp"
+                android:layout_height="38dp"
+                android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:hint="@string/floating_ai_question_hint"
+                android:imeOptions="actionSend"
+                android:inputType="textCapSentences"
+                android:maxLines="1"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:singleLine="true"
+                android:textColor="#F8FAFC"
+                android:textColorHint="#94A3B8"
+                android:textSize="12sp" />
 
-        <ImageButton
-            android:id="@+id/btn_circle_search_close"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="@string/screen_copy_close"
-            android:padding="13dp"
-            android:scaleType="centerInside"
-            android:src="@drawable/ic_app_close" />
+            <ImageButton
+                android:id="@+id/btn_cutout_browser_ai_send"
+                android:layout_width="38dp"
+                android:layout_height="38dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Ask directly in Floating Google AI"
+                android:padding="8dp"
+                android:scaleType="centerInside"
+                android:src="@android:drawable/ic_menu_send" />
+        </LinearLayout>
     </LinearLayout>
 
 </com.example.InlineOverlayRootLayout>

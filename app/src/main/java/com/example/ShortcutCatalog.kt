@@ -35,7 +35,8 @@ val ACTION_LIST = listOf(
     AvailableAction("google_ai_mode", "Google AI Mode", "System Shortcuts", "Launch Google AI Mode inside floating window"),
     AvailableAction("gemini", "Gemini AI", "System Shortcuts", "Open Google Gemini inside floating browser window"),
     AvailableAction("chatgpt", "ChatGPT", "System Shortcuts", "Open OpenAI ChatGPT inside floating browser window"),
-    AvailableAction("google_lens", "Google Lens", "System Shortcuts", "Circle-to-Search overlay with instant in-place screen Translate"),
+    AvailableAction("google_lens", "Google Lens", "System Shortcuts", "Capture screen and open directly in Google Lens"),
+    AvailableAction("accessibility_settings", "Accessibility Settings", "System Shortcuts", "Open Android Accessibility Settings in 1 tap"),
     AvailableAction("black_screen_mode", "Black Screen Pocket Mode", "System Shortcuts", "Turn screen OLED black while keeping audio playing (double-tap unlock)"),
     AvailableAction("auto_scroller", "Hands-Free Auto-Scroller", "System Shortcuts", "Smooth automatic screen scroller with Play/Pause and 1x-3x speed"),
     AvailableAction("auto_clicker", "Auto-Clicker", "System Shortcuts", "Draggable tap target ring with Play/Pause & 100ms-2000ms interval"),
@@ -109,6 +110,7 @@ fun resolveShortcutShortLabel(actionId: String): String {
         "gemini" -> "Gemini"
         "chatgpt" -> "ChatGPT"
         "google_lens" -> "Lens"
+        "accessibility_settings" -> "Accessibility"
         "black_screen_mode" -> "Pocket Mode"
         "auto_scroller" -> "Auto Scroll"
         "auto_clicker" -> "Auto Click"

@@ -291,20 +291,26 @@ class SmartDotExtendedFeaturesTest {
         assertNotNull(scheduled)
         controller.destroy()
 
-        // DataToggleWidget tap toggles Mobile Data silently without opening connectivity Settings Panel
-        val shellCommands = mutableListOf<String>()
-        PrivilegedToggleHelper.shizukuShellTestHook = { cmd ->
-            shellCommands.add(cmd)
+        // DataToggleWidget tap uses built-in Accessibility Quick-Tile toggle when active, and falls back to Data Settings when Accessibility is off
+        val a11yService = Robolectric.setupService(SmartDotAccessibilityService::class.java)
+        val globalActions = mutableListOf<Int>()
+        a11yService.performGlobalActionTestHook = { act ->
+            globalActions.add(act)
             true
         }
-        PrivilegedToggleHelper.mobileDataStateTestHook = { false }
+        SmartDotAccessibilityService.setInstanceForTest(a11yService)
         try {
             val widget = DataToggleWidget()
             widget.onReceive(appContext, Intent(DataToggleWidget.ACTION_WIDGET_TOGGLE_DATA))
-            assertTrue(shellCommands.contains("svc data enable"))
+            assertTrue(globalActions.contains(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS))
             assertNull(Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity)
+
+            SmartDotAccessibilityService.setInstanceForTest(null)
+            widget.onReceive(appContext, Intent(DataToggleWidget.ACTION_WIDGET_TOGGLE_DATA))
+            val fallback = Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
+            assertNotNull(fallback)
         } finally {
-            PrivilegedToggleHelper.shizukuShellTestHook = null
+            SmartDotAccessibilityService.setInstanceForTest(null)
             PrivilegedToggleHelper.mobileDataStateTestHook = null
         }
     }

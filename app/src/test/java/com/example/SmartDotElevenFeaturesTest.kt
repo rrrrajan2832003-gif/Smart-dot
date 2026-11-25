@@ -88,8 +88,6 @@ class SmartDotElevenFeaturesTest {
         SmartDotAccessibilityService.isShieldActive = false
         SmartDotAccessibilityService.onShieldStateChangedListener = null
         SmartDotAccessibilityService.setInstanceForTest(null)
-        PrivilegedToggleHelper.shizukuShellTestHook = null
-        PrivilegedToggleHelper.rootShellTestHook = null
         PrivilegedToggleHelper.mobileDataStateTestHook = null
         clearFileProviderCache()
     }
@@ -100,8 +98,6 @@ class SmartDotElevenFeaturesTest {
         SmartDotAccessibilityService.isShieldActive = false
         SmartDotAccessibilityService.onShieldStateChangedListener = null
         SmartDotAccessibilityService.setInstanceForTest(null)
-        PrivilegedToggleHelper.shizukuShellTestHook = null
-        PrivilegedToggleHelper.rootShellTestHook = null
         PrivilegedToggleHelper.mobileDataStateTestHook = null
         clearFileProviderCache()
     }
@@ -152,9 +148,9 @@ class SmartDotElevenFeaturesTest {
         shadowPm.addResolveInfoForIntent(filter, resolveInfo)
     }
 
-    // Feature 0: Quick "Translate" chip in Question Box + TextWatcher dim/disable
+    // Feature 0: Two Editable Quick Preset Icon Buttons in Question Box + TextWatcher dim/disable
     @Test
-    fun `Feature 0 - Quick Translate chip is enabled when empty, dims when typing, and searches Translate to Hindi-English`() {
+    fun `Feature 0 - Two Preset Icon Buttons work when empty, dim when typing, and prepend configured Hindi prompts`() {
         registerResolveActivity(Intent.ACTION_WEB_SEARCH, SelectionToolbarHelper.GOOGLE_APP_PACKAGE)
 
         val scope = CoroutineScope(Dispatchers.Main + Job())
@@ -204,45 +200,75 @@ class SmartDotElevenFeaturesTest {
             root.layout(0, 0, 1080, 2400)
 
             val etWordQuestion = root.findViewById<EditText>(R.id.et_word_ai_question)
-            val btnWordQuickTranslate = root.findViewById<ImageButton>(R.id.btn_word_quick_translate)
+            val btnWordPreset1 = root.findViewById<ImageButton>(R.id.btn_word_preset_1)
+            val btnWordPreset2 = root.findViewById<ImageButton>(R.id.btn_word_preset_2)
             val etCutoutQuestion = root.findViewById<EditText>(R.id.et_cutout_ai_question)
-            val btnCutoutQuickTranslate = root.findViewById<ImageButton>(R.id.btn_cutout_quick_translate)
+            val btnCutoutPreset1 = root.findViewById<ImageButton>(R.id.btn_cutout_preset_1)
+            val btnCutoutPreset2 = root.findViewById<ImageButton>(R.id.btn_cutout_preset_2)
 
-            assertTrue(btnWordQuickTranslate.isEnabled)
-            assertEquals(1.0f, btnWordQuickTranslate.alpha, 0.01f)
-            assertTrue(btnCutoutQuickTranslate.isEnabled)
-            assertEquals(1.0f, btnCutoutQuickTranslate.alpha, 0.01f)
+            assertTrue(btnWordPreset1.isEnabled)
+            assertTrue(btnWordPreset2.isEnabled)
+            assertEquals(1.0f, btnWordPreset1.alpha, 0.01f)
+            assertTrue(btnCutoutPreset1.isEnabled)
+            assertTrue(btnCutoutPreset2.isEnabled)
 
-            // Typing dims and disables both chips
+            // Typing dims and disables both preset buttons
             etCutoutQuestion.setText("What is this")
-            assertFalse(btnCutoutQuickTranslate.isEnabled)
-            assertTrue(btnCutoutQuickTranslate.alpha < 0.5f)
+            assertFalse(btnCutoutPreset1.isEnabled)
+            assertFalse(btnCutoutPreset2.isEnabled)
+            assertTrue(btnCutoutPreset1.alpha < 0.5f)
             etCutoutQuestion.setText("")
-            assertTrue(btnCutoutQuickTranslate.isEnabled)
-            assertEquals(1.0f, btnCutoutQuickTranslate.alpha, 0.01f)
+            assertTrue(btnCutoutPreset1.isEnabled)
+            assertTrue(btnCutoutPreset2.isEnabled)
+            assertEquals(1.0f, btnCutoutPreset1.alpha, 0.01f)
 
             etWordQuestion.setText("custom")
-            assertFalse(btnWordQuickTranslate.isEnabled)
-            assertTrue(btnWordQuickTranslate.alpha < 0.5f)
+            assertFalse(btnWordPreset1.isEnabled)
+            assertFalse(btnWordPreset2.isEnabled)
+            assertTrue(btnWordPreset1.alpha < 0.5f)
             etWordQuestion.setText("")
-            assertTrue(btnWordQuickTranslate.isEnabled)
-            assertEquals(1.0f, btnWordQuickTranslate.alpha, 0.01f)
+            assertTrue(btnWordPreset1.isEnabled)
+            assertTrue(btnWordPreset2.isEnabled)
 
-            // Select word 0 and tap quick Translate chip while EditText is empty
+            // Select word 0 and tap Preset 1 & Preset 2 while EditText is empty
             val selView = root.findViewById<InlineTextSelectionView>(R.id.inline_ocr_selection_view)
             val rect = selView.getMappedRectForCopyNode(0)!!
             selView.dispatchTouchEvent(MotionEvent.obtain(10L, 10L, MotionEvent.ACTION_DOWN, rect.centerX(), rect.centerY(), 0))
             selView.dispatchTouchEvent(MotionEvent.obtain(10L, 25L, MotionEvent.ACTION_UP, rect.centerX(), rect.centerY(), 0))
 
             drainActivities()
-            btnWordQuickTranslate.performClick()
+            btnWordPreset1.performClick()
             ShadowLooper.idleMainLooper()
 
-            val started = Shadows.shadowOf(appContext).nextStartedActivity
-            assertNotNull("Quick Translate chip must launch Google Search immediately", started)
-            assertEquals(Intent.ACTION_WEB_SEARCH, started!!.action)
-            assertEquals(SelectionToolbarHelper.GOOGLE_APP_PACKAGE, started.`package`)
-            assertEquals("Translate to Hindi/English Quantum", started.getStringExtra(SearchManager.QUERY))
+            val started1 = Shadows.shadowOf(appContext).nextStartedActivity
+            assertNotNull("Preset 1 button must launch Google Search immediately", started1)
+            assertEquals(Intent.ACTION_WEB_SEARCH, started1!!.action)
+            assertEquals(SelectionToolbarHelper.GOOGLE_APP_PACKAGE, started1.`package`)
+            assertEquals("${SelectionToolbarHelper.DEFAULT_QUICK_PROMPT_1}Quantum", started1.getStringExtra(SearchManager.QUERY))
+
+            // Re-open overlay and tap Preset 2
+            controller.start()
+            ShadowLooper.idleMainLooper(ScreenTextCopyController.CAPTURE_HIDE_DELAY_MS + 15L, TimeUnit.MILLISECONDS)
+            val root2 = InlineTextOverlayController::class.java
+                .getDeclaredField("overlayView")
+                .apply { isAccessible = true }
+                .get(overlayCtrl) as View
+            root2.measure(
+                View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(2400, View.MeasureSpec.EXACTLY)
+            )
+            root2.layout(0, 0, 1080, 2400)
+            val selView2 = root2.findViewById<InlineTextSelectionView>(R.id.inline_ocr_selection_view)
+            val rect2 = selView2.getMappedRectForCopyNode(0)!!
+            selView2.dispatchTouchEvent(MotionEvent.obtain(10L, 10L, MotionEvent.ACTION_DOWN, rect2.centerX(), rect2.centerY(), 0))
+            selView2.dispatchTouchEvent(MotionEvent.obtain(10L, 25L, MotionEvent.ACTION_UP, rect2.centerX(), rect2.centerY(), 0))
+
+            drainActivities()
+            root2.findViewById<ImageButton>(R.id.btn_word_preset_2).performClick()
+            ShadowLooper.idleMainLooper()
+            val started2 = Shadows.shadowOf(appContext).nextStartedActivity
+            assertNotNull("Preset 2 button must launch Google Search immediately", started2)
+            assertEquals("${SelectionToolbarHelper.DEFAULT_QUICK_PROMPT_2}Quantum", started2!!.getStringExtra(SearchManager.QUERY))
         } finally {
             controller.release()
             scope.cancel()
@@ -270,9 +296,9 @@ class SmartDotElevenFeaturesTest {
         service.stopSelf()
     }
 
-    // Feature 2 & 6: True 1-Tap Direct Mobile Data Widget (Shizuku -> WRITE_SECURE_SETTINGS, never opening Settings/QS)
+    // Feature 2 & 6: DataToggleWidget via Built-In Accessibility QuickTile + Settings Fallback (zero Shizuku)
     @Test
-    fun `Feature 2 & 6 - DataToggleWidget toggles silently via Shizuku or WRITE_SECURE_SETTINGS with zero QS or Settings`() {
+    fun `Feature 2 & 6 - DataToggleWidget uses Accessibility QuickTile when active and falls back to Data Settings when off`() {
         val widgetView = LayoutInflater.from(appContext).inflate(R.layout.widget_data_toggle, null)
         val icon = widgetView.findViewById<ImageView>(R.id.widget_data_icon)
         assertNotNull(icon)
@@ -285,33 +311,16 @@ class SmartDotElevenFeaturesTest {
         }
         SmartDotAccessibilityService.setInstanceForTest(a11yService)
 
-        // Path 1: Shizuku shell `svc data enable`
-        val cmds = mutableListOf<String>()
-        PrivilegedToggleHelper.shizukuShellTestHook = { cmd ->
-            cmds.add(cmd)
-            true
-        }
-        PrivilegedToggleHelper.mobileDataStateTestHook = { false }
-
+        // Path 1: Accessibility active -> performs QuickTile toggle
         drainActivities()
         DataToggleWidget.handleWidgetTap(appContext)
-        assertTrue(cmds.contains("svc data enable"))
-        assertTrue("Widget must NEVER open Quick Settings", globalActions.isEmpty())
-        assertNull("Widget must NEVER open Settings Panel", Shadows.shadowOf(appContext).peekNextStartedActivity())
+        assertTrue(globalActions.contains(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS))
+        assertNull("QuickTile toggle must not launch Settings immediately", Shadows.shadowOf(appContext).peekNextStartedActivity())
 
-        // Path 2: Unprivileged tap does NOT open Quick Settings or Settings Panel either
-        PrivilegedToggleHelper.shizukuShellTestHook = { false }
-        PrivilegedToggleHelper.rootShellTestHook = { false }
+        // Path 2: Accessibility unavailable -> safely launches Mobile Data Settings fallback
+        SmartDotAccessibilityService.setInstanceForTest(null)
         DataToggleWidget.handleWidgetTap(appContext)
-        assertTrue(globalActions.isEmpty())
-        assertNull(Shadows.shadowOf(appContext).peekNextStartedActivity())
-
-        // Path 3: WRITE_SECURE_SETTINGS fallback updates Settings.Global `mobile_data`
-        Shadows.shadowOf(appContext).grantPermissions(android.Manifest.permission.WRITE_SECURE_SETTINGS)
-        android.provider.Settings.Global.putInt(appContext.contentResolver, "mobile_data", 0)
-        PrivilegedToggleHelper.mobileDataStateTestHook = null
-        assertEquals(true, PrivilegedToggleHelper.toggleMobileDataSilently(appContext))
-        assertEquals(1, android.provider.Settings.Global.getInt(appContext.contentResolver, "mobile_data", 0))
+        assertNotNull(Shadows.shadowOf(appContext).nextStartedActivity)
     }
 
     // Feature 3: Full-Screen Installed App Launches without Freeform Prompt
@@ -405,35 +414,46 @@ class SmartDotElevenFeaturesTest {
         proTools.toggleAutoScroller()
         assertFalse(proTools.isAutoScrollerActive())
 
-        // 3) Auto-Clicker (target crosshair + Play/Pause pass-through + interval cycling)
+        // 3) Multi-Point Sequential Auto-Clicker (1, 2, 3... targets + Play/Pause pass-through + interval cycling)
         proTools.toggleAutoClicker(Color.CYAN)
         assertTrue(proTools.isAutoClickerActive())
         assertFalse(proTools.isAutoClickerPlaying())
         assertEquals(500L, proTools.getAutoClickerIntervalMs())
+        assertEquals(1, proTools.getAutoClickerTargetCount())
 
-        val targetField = ProToolsOverlayManager::class.java
-            .getDeclaredField("autoClickerTargetParams")
-            .apply { isAccessible = true }
         val barField = ProToolsOverlayManager::class.java
             .getDeclaredField("autoClickerBarView")
             .apply { isAccessible = true }
         val bar = barField.get(proTools) as LinearLayout
+        val btnAdd = bar.findViewWithTag<TextView>("pro_auto_clicker_add")
+        val btnRemove = bar.findViewWithTag<TextView>("pro_auto_clicker_remove")
         val btnSpeed = bar.findViewWithTag<TextView>("pro_auto_clicker_speed")
         val btnPlayPause = bar.findViewWithTag<TextView>("pro_auto_clicker_play_pause")
+
+        btnAdd.performClick()
+        btnAdd.performClick()
+        assertEquals(3, proTools.getAutoClickerTargetCount())
+        btnRemove.performClick()
+        assertEquals(2, proTools.getAutoClickerTargetCount())
 
         btnSpeed.performClick()
         assertEquals(1000L, proTools.getAutoClickerIntervalMs())
 
         btnPlayPause.performClick()
         assertTrue(proTools.isAutoClickerPlaying())
-        val lpWhilePlaying = targetField.get(proTools) as WindowManager.LayoutParams
-        assertTrue((lpWhilePlaying.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0)
-        assertTrue("Auto-Clicker must dispatch taps via AccessibilityService", tapCoords.isNotEmpty())
+        assertTrue(
+            "All multi-point targets must be FLAG_NOT_TOUCHABLE while playing",
+            proTools.getAutoClickerTargets().all { (it.params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0 }
+        )
+        ShadowLooper.idleMainLooper(1100L, TimeUnit.MILLISECONDS)
+        assertTrue("Auto-Clicker must dispatch sequential taps via AccessibilityService", tapCoords.size >= 2)
 
         btnPlayPause.performClick()
         assertFalse(proTools.isAutoClickerPlaying())
-        val lpWhilePaused = targetField.get(proTools) as WindowManager.LayoutParams
-        assertEquals(0, lpWhilePaused.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+        assertTrue(
+            "All multi-point targets must be draggable when paused",
+            proTools.getAutoClickerTargets().all { (it.params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0 }
+        )
 
         proTools.setShieldHidden(true)
         proTools.setShieldHidden(false)
@@ -443,19 +463,19 @@ class SmartDotElevenFeaturesTest {
         proTools.releaseAll()
     }
 
-    // Feature 7: Open Gemini, ChatGPT, and Google AI Mode in Resizable Floating Windows
+    // Feature 7: Gemini opens AI WebWindow, ChatGPT & Google AI Mode open inside Floating Browser
     @Test
-    fun `Feature 7 - Gemini, ChatGPT, and Google AI Mode open inside FloatingWindowManager with WebView and upload contract`() {
+    fun `Feature 7 - Gemini opens floating AI WebView and Google AI Mode plus ChatGPT open inside Floating Browser`() {
         val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val fwm = FloatingWindowManager(appContext, wm)
 
         FloatingMiniApps.openFloatingAiWebWindow(appContext, fwm, Color.CYAN, "gemini")
-        FloatingMiniApps.openFloatingAiWebWindow(appContext, fwm, Color.CYAN, "chatgpt")
-        FloatingMiniApps.openFloatingAiWebWindow(appContext, fwm, Color.CYAN, "google_ai_mode")
-
+        FloatingMiniApps.openChatGptInBrowser(appContext, fwm, Color.CYAN, "Hello World")
         assertTrue(fwm.hasWindow("floating_ai_gemini"))
-        assertTrue(fwm.hasWindow("floating_ai_chatgpt"))
-        assertTrue(fwm.hasWindow("floating_ai_google_ai_mode"))
+        assertTrue(fwm.hasWindow("floating_browser"))
+
+        FloatingMiniApps.openGoogleAiModeInBrowser(appContext, fwm, Color.CYAN, "Quantum")
+        assertTrue(fwm.hasWindow("floating_browser"))
 
         val geminiWin = fwm.getWindow("floating_ai_gemini")!!
         val desktopToggle = geminiWin.rootView.findViewWithTag<TextView>("fw_ai_mode_toggle_gemini")
@@ -553,76 +573,44 @@ class SmartDotElevenFeaturesTest {
     }
 
     @Test
-    fun `Circle-to-Search Lens mode opens bottom bar without full image upload and translates screen in-place`() {
+    fun `1-Tap Google Lens captures screen bitmap and launches Google Lens directly without Circle-to-Search bar`() {
+        registerResolveActivity(
+            action = Intent.ACTION_SEND,
+            pkg = "com.google.ar.lens",
+            mimeType = "image/png"
+        )
         val a11yService = Robolectric.setupService(SmartDotAccessibilityService::class.java)
+        val testBmp = Bitmap.createBitmap(120, 120, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.RED) }
+        a11yService.screenshotBitmapTestHook = { testBmp }
         SmartDotAccessibilityService.setInstanceForTest(a11yService)
 
-        val scope = CoroutineScope(Dispatchers.Main + Job())
-        val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val bitmap = Bitmap.createBitmap(1080, 2400, Bitmap.Config.ARGB_8888)
-        var fullScreenTranslateCalls = 0
-        val ocrHelper = ScreenOcrHelper(
-            customOcrRunner = {
-                listOf(ScreenOcrHelper.OcrRawItem("Bonjour", Rect(100, 300, 280, 360), isLine = false)) to emptyList()
-            }
-        )
-        val controller = ScreenTextCopyController(
-            context = appContext,
-            serviceScope = scope,
-            clipboardManager = clipboard,
-            getAccentColor = { Color.CYAN },
-            dismissActivePopup = {},
-            setHostOverlaysVisible = {},
-            onAccessibilityRequired = {},
-            nodeExtractor = { emptyList() },
-            ocrHelperFactory = { ocrHelper },
-            screenBitmapCapturer = { cb -> cb(bitmap) },
-            onFullScreenTranslateRequested = { fullScreenTranslateCalls++ }
-        )
+        val floatingService = Robolectric.buildService(FloatingService::class.java)
+            .create()
+            .startCommand(0, 1)
+            .get()
+        drainActivities()
 
-        try {
-            drainActivities()
-            controller.start(circleToSearchBarMode = true)
-            ShadowLooper.idleMainLooper(ScreenTextCopyController.CAPTURE_HIDE_DELAY_MS + 15L, TimeUnit.MILLISECONDS)
-            val deadline = System.currentTimeMillis() + 3000L
-            while (!controller.isOverlayShowing() && System.currentTimeMillis() < deadline) {
-                ShadowLooper.idleMainLooper(20, TimeUnit.MILLISECONDS)
-                Thread.sleep(10)
-            }
-            assertTrue(controller.isOverlayShowing())
-            assertNull("Circle-to-Search bar mode must NOT upload full-screen image", Shadows.shadowOf(appContext).nextStartedActivity)
-
-            val overlayCtrl = ScreenTextCopyController::class.java
-                .getDeclaredField("overlayController")
-                .apply { isAccessible = true }
-                .get(controller) as InlineTextOverlayController
-            val root = InlineTextOverlayController::class.java
-                .getDeclaredField("overlayView")
-                .apply { isAccessible = true }
-                .get(overlayCtrl) as View
-
-            val bottomBar = root.findViewById<LinearLayout>(R.id.circle_to_search_bottom_bar)
-            val btnTranslate = root.findViewById<ImageButton>(R.id.btn_circle_search_translate)
-            assertEquals(View.VISIBLE, bottomBar.visibility)
-            assertNotNull(btnTranslate)
-
-            btnTranslate.performClick()
-            assertEquals(1, fullScreenTranslateCalls)
-        } finally {
-            controller.release()
-            scope.cancel()
+        val triggerLens = FloatingService::class.java.getDeclaredMethod("triggerGoogleLensOneTap").apply {
+            isAccessible = true
         }
+        triggerLens.invoke(floatingService)
+        ShadowLooper.idleMainLooper(200L, TimeUnit.MILLISECONDS)
+
+        val launched = Shadows.shadowOf(appContext).nextStartedActivity
+        assertNotNull("1-Tap Google Lens must launch Lens image share intent", launched)
+        assertEquals(Intent.ACTION_SEND, launched!!.action)
+        assertEquals("com.google.ar.lens", launched.`package`)
+        assertEquals("image/png", launched.type)
+        floatingService.stopSelf()
+        testBmp.recycle()
     }
 
     @Test
-    fun `MainActivity Silent Toggle Setup card copies ADB WRITE_SECURE_SETTINGS grant command`() {
-        composeRule.onNodeWithTag("silent_toggle_setup_card").performScrollTo()
-        composeRule.onNodeWithTag("btn_copy_adb_command").performScrollTo().performClick()
-        composeRule.waitForIdle()
-
-        val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val copied = clipboard.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
-        assertEquals(PrivilegedToggleHelper.adbGrantCommand(appContext), copied)
+    fun `MainActivity removes Shizuku ADB card and provides Quick Prompt 1 and 2 editable fields`() {
+        composeRule.onNodeWithTag("silent_toggle_setup_card").assertDoesNotExist()
+        composeRule.onNodeWithTag("selection_toolbar_order_card").performScrollTo()
+        composeRule.onNodeWithTag("input_quick_prompt_1").performScrollTo()
+        composeRule.onNodeWithTag("input_quick_prompt_2").performScrollTo()
     }
 
     // Feature 9: 1-Tap Google Lens Shortcut

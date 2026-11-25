@@ -1199,7 +1199,7 @@ class FloatingService : Service() {
             "chrome_incognito", "chrome_search" -> R.drawable.ic_radial_chrome
             "youtube_subscriptions", "youtube_search" -> android.R.drawable.ic_menu_slideshow
             "whatsapp_chat", "whatsapp_camera" -> R.drawable.ic_radial_whatsapp
-            "settings_wifi", "settings_bluetooth", "settings_battery", "settings_app_info" -> R.drawable.ic_radial_settings
+            "settings_wifi", "settings_bluetooth", "settings_battery", "settings_app_info", "accessibility_settings" -> R.drawable.ic_radial_settings
             "custom_url_intent" -> android.R.drawable.ic_menu_directions
             else -> R.drawable.ic_radial_settings
         }
@@ -1288,15 +1288,28 @@ class FloatingService : Service() {
 
     private fun triggerGoogleLensOneTap() {
         activePopupWindow?.dismiss()
-        if (SelectionToolbarHelper.launchNativeGoogleLens(this)) {
-            return
-        }
         val sInstance = SmartDotAccessibilityService.instance
         if (sInstance == null || SmartDotAccessibilityService.isUserPaused) {
             showAccessibilityDialog()
             return
         }
-        getOrCreateScreenTextCopyController().start(circleToSearchBarMode = true)
+        val mainHandler = Handler(Looper.getMainLooper())
+        setOverlayViewsVisible(false)
+        mainHandler.postDelayed({
+            sInstance.captureScreenBitmapInMemory { bitmap ->
+                mainHandler.post {
+                    setOverlayViewsVisible(true)
+                    if (bitmap != null) {
+                        val launched = SelectionToolbarHelper.launchGoogleLensImage(this, bitmap)
+                        if (!launched) {
+                            Toast.makeText(this, "Google Lens not available on this device", Toast.LENGTH_SHORT).show()
+                        }
+                    } else if (!SelectionToolbarHelper.launchNativeGoogleLens(this)) {
+                        Toast.makeText(this, "Google Lens not available on this device", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }, 120L)
     }
 
     private fun getConfiguredAccentColor(): Int {
@@ -1429,30 +1442,9 @@ class FloatingService : Service() {
         }
     }
 
-    private fun triggerDirectSilentToggle(target: QuickTileAutomation.QuickTileTarget) {
-        activePopupWindow?.dismiss()
-        val silentResult = PrivilegedToggleHelper.toggleSilently(this, target)
-        if (silentResult != null) {
-            if (target == QuickTileAutomation.QuickTileTarget.MOBILE_DATA) {
-                DataToggleWidget.refreshAllWidgets(this, forcedState = silentResult)
-            }
-            Toast.makeText(
-                this,
-                "${target.displayName} ${if (silentResult) "ON" else "OFF"}",
-                Toast.LENGTH_SHORT
-            ).show()
-            return
-        }
-        Toast.makeText(
-            this,
-            getString(R.string.silent_toggle_requires_privilege),
-            Toast.LENGTH_LONG
-        ).show()
-    }
-
     private fun triggerOneTapQuickTileToggle(target: QuickTileAutomation.QuickTileTarget) {
         activePopupWindow?.dismiss()
-        // 1. Silent toggle first (Bluetooth < API 33, System Auto-Rotate, WRITE_SECURE_SETTINGS, Shizuku / root svc)
+        // 1. Native OS toggle first (Wi-Fi < Q, Bluetooth < Tiramisu, System Auto-Rotate)
         val silentResult = PrivilegedToggleHelper.toggleSilently(this, target)
         if (silentResult != null) {
             Toast.makeText(
@@ -1552,7 +1544,27 @@ class FloatingService : Service() {
                     activePopupWindow?.dismiss()
                     FloatingMiniApps.openFloatingViewer(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor())
                 }
-                "google_ai_mode", "gemini", "chatgpt" -> {
+                "google_ai_mode" -> {
+                    activePopupWindow?.dismiss()
+                    FloatingMiniApps.openFloatingBrowser(
+                        context = this,
+                        manager = getOrCreateFloatingWindowManager(),
+                        accentColor = getConfiguredAccentColor(),
+                        initialUrl = "https://www.google.com/search?udm=50",
+                        navigateIfOpen = true
+                    )
+                }
+                "chatgpt" -> {
+                    activePopupWindow?.dismiss()
+                    FloatingMiniApps.openFloatingBrowser(
+                        context = this,
+                        manager = getOrCreateFloatingWindowManager(),
+                        accentColor = getConfiguredAccentColor(),
+                        initialUrl = "https://chatgpt.com/",
+                        navigateIfOpen = true
+                    )
+                }
+                "gemini" -> {
                     activePopupWindow?.dismiss()
                     FloatingMiniApps.openFloatingAiWebWindow(
                         this,
@@ -1562,6 +1574,14 @@ class FloatingService : Service() {
                     )
                 }
                 "google_lens" -> triggerGoogleLensOneTap()
+                "accessibility_settings" -> {
+                    activePopupWindow?.dismiss()
+                    startActivity(
+                        Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                    )
+                }
                 "black_screen_mode" -> {
                     activePopupWindow?.dismiss()
                     getOrCreateProToolsManager().toggleBlackScreenMode()
@@ -1645,9 +1665,9 @@ class FloatingService : Service() {
                 }
                 "voice_assistant" -> triggerVoiceAssistant()
                 "flashlight" -> toggleFlashlight()
-                "wifi" -> triggerDirectSilentToggle(QuickTileAutomation.QuickTileTarget.WIFI)
-                "mobile_data" -> triggerDirectSilentToggle(QuickTileAutomation.QuickTileTarget.MOBILE_DATA)
-                "bluetooth" -> triggerDirectSilentToggle(QuickTileAutomation.QuickTileTarget.BLUETOOTH)
+                "wifi" -> triggerOneTapQuickTileToggle(QuickTileAutomation.QuickTileTarget.WIFI)
+                "mobile_data" -> triggerOneTapQuickTileToggle(QuickTileAutomation.QuickTileTarget.MOBILE_DATA)
+                "bluetooth" -> triggerOneTapQuickTileToggle(QuickTileAutomation.QuickTileTarget.BLUETOOTH)
                 "brightness" -> {
                     val stepped = PrivilegedToggleHelper.adjustBrightnessByStep(this, +35)
                     if (stepped != null) {
@@ -2336,6 +2356,29 @@ class FloatingService : Service() {
             },
             getToolbarOrder = {
                 SelectionToolbarHelper.getVisibleToolbarOrder(prefs)
+            },
+            customFloatingAiBrowserLauncher = { providerId, textOrQuery, question, cutoutBitmap ->
+                val fwm = getOrCreateFloatingWindowManager()
+                val accent = getConfiguredAccentColor()
+                when (providerId) {
+                    "chatgpt" -> FloatingMiniApps.openChatGptInBrowser(
+                        context = this,
+                        manager = fwm,
+                        accentColor = accent,
+                        text = textOrQuery,
+                        question = question,
+                        cutoutBitmap = cutoutBitmap
+                    )
+                    else -> FloatingMiniApps.openGoogleAiModeInBrowser(
+                        context = this,
+                        manager = fwm,
+                        accentColor = accent,
+                        query = textOrQuery,
+                        question = question,
+                        cutoutBitmap = cutoutBitmap
+                    )
+                }
+                true
             }
         ).also { screenTextCopyController = it }
     }

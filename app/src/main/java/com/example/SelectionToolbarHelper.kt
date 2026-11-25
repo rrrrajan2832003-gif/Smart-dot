@@ -27,11 +27,69 @@ object SelectionToolbarHelper {
     const val PREFS_NAME = "smart_dot_prefs"
     const val PREF_SELECTION_TOOLBAR_ORDER = "selection_toolbar_order"
     const val PREF_SELECTION_TOOLBAR_HIDDEN = "selection_toolbar_hidden"
+    const val PREF_QUICK_PROMPT_1 = "quick_prompt_1"
+    const val PREF_QUICK_PROMPT_2 = "quick_prompt_2"
+
+    const val DEFAULT_QUICK_PROMPT_1 = "ट्रांसलेट टू हिंदी = "
+    const val DEFAULT_QUICK_PROMPT_2 = "मतलब "
 
     const val GOOGLE_APP_PACKAGE = "com.google.android.googlequicksearchbox"
     const val SEARCH_LITE_PACKAGE = "com.google.android.apps.searchlite"
     const val GEMINI_PACKAGE = "com.google.android.apps.bard"
     const val CHATGPT_PACKAGE = "com.openai.chatgpt"
+
+    fun getQuickPrompt1(context: Context): String {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return getQuickPrompt1(prefs)
+    }
+
+    fun getQuickPrompt1(prefs: SharedPreferences): String {
+        val value = prefs.getString(PREF_QUICK_PROMPT_1, null)
+        return if (value.isNullOrBlank()) DEFAULT_QUICK_PROMPT_1 else value
+    }
+
+    fun getQuickPrompt2(context: Context): String {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return getQuickPrompt2(prefs)
+    }
+
+    fun getQuickPrompt2(prefs: SharedPreferences): String {
+        val value = prefs.getString(PREF_QUICK_PROMPT_2, null)
+        return if (value.isNullOrBlank()) DEFAULT_QUICK_PROMPT_2 else value
+    }
+
+    fun saveQuickPrompt1(prefs: SharedPreferences, prompt: String) {
+        prefs.edit().putString(PREF_QUICK_PROMPT_1, prompt).apply()
+    }
+
+    fun saveQuickPrompt2(prefs: SharedPreferences, prompt: String) {
+        prefs.edit().putString(PREF_QUICK_PROMPT_2, prompt).apply()
+    }
+
+    fun buildPresetQuery(presetText: String, targetText: String): String {
+        val cleanTarget = targetText.trim()
+        if (cleanTarget.isEmpty()) return presetText.trim()
+        if (presetText.isBlank()) return cleanTarget
+        return if (presetText.endsWith(" ")) {
+            "$presetText$cleanTarget"
+        } else {
+            "${presetText.trim()} $cleanTarget"
+        }
+    }
+
+    fun buildGoogleAiModeUrl(query: String, question: String = ""): String {
+        val combined = combineQuestionForAiSearch(question, query)
+        if (combined.isEmpty()) return "https://www.google.com/search?udm=50"
+        val encoded = runCatching { URLEncoder.encode(combined, "UTF-8") }.getOrDefault(combined)
+        return "https://www.google.com/search?udm=50&q=$encoded"
+    }
+
+    fun buildChatGptUrl(text: String, question: String = ""): String {
+        val combined = combineQuestionWithText(question, text)
+        if (combined.isEmpty()) return "https://chatgpt.com/"
+        val encoded = runCatching { URLEncoder.encode(combined, "UTF-8") }.getOrDefault(combined)
+        return "https://chatgpt.com/?q=$encoded"
+    }
 
     enum class ToolbarAction(
         val id: String,

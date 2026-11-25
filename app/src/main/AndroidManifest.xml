@@ -27,9 +27,6 @@
     <uses-permission
         android:name="android.permission.WRITE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
-    <uses-permission
-        android:name="android.permission.WRITE_SECURE_SETTINGS"
-        tools:ignore="ProtectedPermissions" />
 
     <queries>
         <!-- Intent queries for opening web links in browser -->
@@ -95,7 +92,6 @@
         <package android:name="com.google.android.deskclock" />
         <package android:name="com.android.deskclock" />
         <package android:name="com.sec.android.app.clockpackage" />
-        <package android:name="moe.shizuku.privileged.api" />
     </queries>
 
     <application

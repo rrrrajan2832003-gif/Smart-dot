@@ -11,10 +11,10 @@ import android.widget.RemoteViews
 import android.widget.Toast
 
 /**
- * True 1-Tap Direct Mobile Data Home Screen Widget:
- * Toggles Mobile Data silently in the background via Shizuku (`svc data enable/disable`) or
- * `WRITE_SECURE_SETTINGS` + `TelephonyManager` reflection without EVER opening Quick Settings
- * or Android Internet/Settings panels.
+ * True 1-Tap Mobile Data Home Screen Widget:
+ * Uses SmartDot's native toggle / built-in Accessibility Quick-Tile automation to toggle
+ * Mobile Data in 1 tap, falling back gracefully to Android's Connectivity Settings Panel
+ * when Accessibility is disabled or paused.
  */
 class DataToggleWidget : AppWidgetProvider() {
 
@@ -91,11 +91,30 @@ class DataToggleWidget : AppWidgetProvider() {
                 return
             }
 
-            Toast.makeText(
-                context,
-                context.getString(R.string.silent_toggle_requires_privilege),
-                Toast.LENGTH_LONG
-            ).show()
+            val a11yService = SmartDotAccessibilityService.instance
+            if (a11yService != null && !SmartDotAccessibilityService.isUserPaused) {
+                a11yService.performQuickTileToggle(QuickTileAutomation.QuickTileTarget.MOBILE_DATA) { toggled ->
+                    refreshAllWidgets(context)
+                    if (!toggled) {
+                        runCatching {
+                            context.startActivity(
+                                QuickTileAutomation.buildFallbackSettingsIntent(
+                                    QuickTileAutomation.QuickTileTarget.MOBILE_DATA
+                                )
+                            )
+                        }
+                    }
+                }
+                return
+            }
+
+            runCatching {
+                context.startActivity(
+                    QuickTileAutomation.buildFallbackSettingsIntent(
+                        QuickTileAutomation.QuickTileTarget.MOBILE_DATA
+                    )
+                )
+            }
         }
     }
 }

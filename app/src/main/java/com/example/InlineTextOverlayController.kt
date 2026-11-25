@@ -114,7 +114,8 @@ class InlineTextOverlayController(
         onCutoutShareClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int) -> Unit)? = null,
         onWordLensClicked: (() -> Unit)? = null,
         onCutoutLensClicked: ((cutoutRect: RectF, viewW: Int, viewH: Int) -> Unit)? = null,
-        showCircleToSearchBar: Boolean = false
+        onWordBrowserAiClicked: ((query: String, question: String) -> Unit)? = null,
+        onCutoutBrowserAiClicked: ((cutoutRect: RectF, overlappingNodes: List<SmartDotAccessibilityService.ScreenTextNode>, viewW: Int, viewH: Int, question: String) -> Unit)? = null
     ) {
         val refs = setupBaseOverlay(
             mode = OverlayMode.COPY,
@@ -146,11 +147,11 @@ class InlineTextOverlayController(
             onCutoutShareClicked = onCutoutShareClicked,
             onWordLensClicked = onWordLensClicked,
             onCutoutLensClicked = onCutoutLensClicked,
-            showCircleToSearchBar = showCircleToSearchBar
+            onWordBrowserAiClicked = onWordBrowserAiClicked,
+            onCutoutBrowserAiClicked = onCutoutBrowserAiClicked
         ) ?: return
 
         val (root, selView, controlsPill, wordActionBar, copyBtn) = refs
-        val circleBottomBar = root.findViewById<LinearLayout>(R.id.circle_to_search_bottom_bar)
 
         selView.configureCopyMode(
             nodes = nodes,
@@ -163,16 +164,12 @@ class InlineTextOverlayController(
                     activeCopyableText = ""
                     copyBtn.visibility = View.GONE
                     wordActionBar.visibility = View.GONE
-                    if (showCircleToSearchBar && currentCutoutRect == null) {
-                        circleBottomBar?.visibility = View.VISIBLE
-                    }
                     return@configureCopyMode
                 }
                 currentAnchorRect = RectF(anchorRect)
                 activeCopyableText = clean
                 copyBtn.visibility = View.VISIBLE
                 wordActionBar.visibility = View.VISIBLE
-                circleBottomBar?.visibility = View.GONE
                 positionFloatingBar(root, controlsPill, wordActionBar, anchorRect, preferBelow = false, density = context.resources.displayMetrics.density)
             },
             onScrollDismissRequested = {
@@ -189,15 +186,11 @@ class InlineTextOverlayController(
                 if (cutoutRect == null) {
                     currentCutoutRect = null
                     cutoutBar.visibility = View.GONE
-                    if (showCircleToSearchBar && activeCopyableText.isEmpty()) {
-                        circleBottomBar?.visibility = View.VISIBLE
-                    }
                     return@configureCopyMode
                 }
                 currentCutoutRect = RectF(cutoutRect)
                 wordActionBar.visibility = View.GONE
                 copyBtn.visibility = View.GONE
-                circleBottomBar?.visibility = View.GONE
                 cutoutBar.visibility = View.VISIBLE
                 positionFloatingBar(root, controlsPill, cutoutBar, cutoutRect, preferBelow = true, density = context.resources.displayMetrics.density)
             }
@@ -276,15 +269,6 @@ class InlineTextOverlayController(
         }
     }
 
-    fun showCircleToSearchBottomBar() {
-        val root = overlayView ?: return
-        val bar = root.findViewById<LinearLayout>(R.id.circle_to_search_bottom_bar) ?: return
-        wordActionBarView?.visibility = View.GONE
-        wordCopyButtonView?.visibility = View.GONE
-        cutoutActionBarView?.visibility = View.GONE
-        bar.visibility = View.VISIBLE
-    }
-
     private data class BaseOverlayRefs(
         val root: View,
         val selectionView: InlineTextSelectionView,
@@ -325,7 +309,8 @@ class InlineTextOverlayController(
         onCutoutShareClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int) -> Unit)? = null,
         onWordLensClicked: (() -> Unit)? = null,
         onCutoutLensClicked: ((RectF, Int, Int) -> Unit)? = null,
-        showCircleToSearchBar: Boolean = false
+        onWordBrowserAiClicked: ((String, String) -> Unit)? = null,
+        onCutoutBrowserAiClicked: ((RectF, List<SmartDotAccessibilityService.ScreenTextNode>, Int, Int, String) -> Unit)? = null
     ): BaseOverlayRefs? {
         dismissInternal()
 
@@ -354,8 +339,12 @@ class InlineTextOverlayController(
         val wordRow2 = root.findViewById<LinearLayout>(R.id.inline_word_row2)
         val wordQuestionRow = root.findViewById<LinearLayout>(R.id.inline_word_question_row)
         val etWordQuestion = root.findViewById<EditText>(R.id.et_word_ai_question)
-        val btnWordQuickTranslate = root.findViewById<ImageButton>(R.id.btn_word_quick_translate)
+        val btnWordPreset1 = root.findViewById<ImageButton>(R.id.btn_word_preset_1)
+        val btnWordPreset2 = root.findViewById<ImageButton>(R.id.btn_word_preset_2)
         val btnWordSend = root.findViewById<ImageButton>(R.id.btn_word_ai_send)
+        val wordBrowserAiRow = root.findViewById<LinearLayout>(R.id.inline_word_browser_ai_row)
+        val etWordBrowserAiQuestion = root.findViewById<EditText>(R.id.et_word_browser_ai_question)
+        val btnWordBrowserAiSend = root.findViewById<ImageButton>(R.id.btn_word_browser_ai_send)
         val wordTranslateBubble = root.findViewById<LinearLayout>(R.id.inline_word_translate_bubble)
         val tvWordTranslated = root.findViewById<TextView>(R.id.tv_inline_word_translated_text)
         val btnCopyTranslated = root.findViewById<TextView>(R.id.btn_inline_word_translate_copy)
@@ -365,14 +354,13 @@ class InlineTextOverlayController(
         val cutoutRow2 = root.findViewById<LinearLayout>(R.id.inline_cutout_row2)
         val cutoutQuestionRow = root.findViewById<LinearLayout>(R.id.inline_cutout_question_row)
         val etCutoutQuestion = root.findViewById<EditText>(R.id.et_cutout_ai_question)
-        val btnCutoutQuickTranslate = root.findViewById<ImageButton>(R.id.btn_cutout_quick_translate)
+        val btnCutoutPreset1 = root.findViewById<ImageButton>(R.id.btn_cutout_preset_1)
+        val btnCutoutPreset2 = root.findViewById<ImageButton>(R.id.btn_cutout_preset_2)
         val btnCutoutSend = root.findViewById<ImageButton>(R.id.btn_cutout_ai_send)
         val btnCutoutClose = root.findViewById<ImageButton>(R.id.btn_cutout_close)
-
-        val circleSearchBottomBar = root.findViewById<LinearLayout>(R.id.circle_to_search_bottom_bar)
-        val btnCircleSearchNativeLens = root.findViewById<ImageButton>(R.id.btn_circle_search_native_lens)
-        val btnCircleSearchTranslate = root.findViewById<ImageButton>(R.id.btn_circle_search_translate)
-        val btnCircleSearchClose = root.findViewById<ImageButton>(R.id.btn_circle_search_close)
+        val cutoutBrowserAiRow = root.findViewById<LinearLayout>(R.id.inline_cutout_browser_ai_row)
+        val etCutoutBrowserAiQuestion = root.findViewById<EditText>(R.id.et_cutout_browser_ai_question)
+        val btnCutoutBrowserAiSend = root.findViewById<ImageButton>(R.id.btn_cutout_browser_ai_send)
 
         selectionView = selView
         controlsPillView = controlsPill
@@ -482,68 +470,41 @@ class InlineTextOverlayController(
         }
         wordQuestionRow.background = questionInputBg
         cutoutQuestionRow.background = questionInputBg.constantState?.newDrawable()?.mutate() ?: questionInputBg
+        wordBrowserAiRow.background = questionInputBg.constantState?.newDrawable()?.mutate() ?: questionInputBg
+        cutoutBrowserAiRow.background = questionInputBg.constantState?.newDrawable()?.mutate() ?: questionInputBg
         btnWordSend.setColorFilter(accentColor, PorterDuff.Mode.SRC_IN)
         btnCutoutSend.setColorFilter(accentColor, PorterDuff.Mode.SRC_IN)
+        btnWordBrowserAiSend.setColorFilter(accentColor, PorterDuff.Mode.SRC_IN)
+        btnCutoutBrowserAiSend.setColorFilter(accentColor, PorterDuff.Mode.SRC_IN)
         btnCutoutClose.setColorFilter(Color.parseColor("#CBD5E1"), PorterDuff.Mode.SRC_IN)
 
-        fun styleQuickTranslateIcon(btn: ImageButton, enabled: Boolean) {
-            btn.isEnabled = enabled
-            btn.alpha = if (enabled) 1f else 0.35f
-            btn.setColorFilter(
-                if (enabled) accentColor else Color.parseColor("#94A3B8"),
-                PorterDuff.Mode.SRC_IN
-            )
+        fun stylePresetButtons(btn1: ImageButton, btn2: ImageButton, enabled: Boolean) {
+            btn1.isEnabled = enabled
+            btn2.isEnabled = enabled
+            val targetAlpha = if (enabled) 1f else 0.35f
+            btn1.alpha = targetAlpha
+            btn2.alpha = targetAlpha
+            val tint = if (enabled) accentColor else Color.parseColor("#94A3B8")
+            btn1.setColorFilter(tint, PorterDuff.Mode.SRC_IN)
+            btn2.setColorFilter(if (enabled) Color.parseColor("#34D399") else Color.parseColor("#94A3B8"), PorterDuff.Mode.SRC_IN)
         }
-        styleQuickTranslateIcon(btnWordQuickTranslate, enabled = true)
-        styleQuickTranslateIcon(btnCutoutQuickTranslate, enabled = true)
+        stylePresetButtons(btnWordPreset1, btnWordPreset2, enabled = true)
+        stylePresetButtons(btnCutoutPreset1, btnCutoutPreset2, enabled = true)
 
         etWordQuestion.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             override fun afterTextChanged(s: Editable?) {
-                styleQuickTranslateIcon(btnWordQuickTranslate, enabled = s.isNullOrBlank())
+                stylePresetButtons(btnWordPreset1, btnWordPreset2, enabled = s.isNullOrBlank())
             }
         })
         etCutoutQuestion.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
             override fun afterTextChanged(s: Editable?) {
-                styleQuickTranslateIcon(btnCutoutQuickTranslate, enabled = s.isNullOrBlank())
+                stylePresetButtons(btnCutoutPreset1, btnCutoutPreset2, enabled = s.isNullOrBlank())
             }
         })
-
-        circleSearchBottomBar?.apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = 26f * density
-                setColor(Color.argb(240, 15, 23, 42))
-                setStroke((1.5f * density).toInt(), accentColor)
-            }
-            visibility = if (mode == OverlayMode.COPY && showCircleToSearchBar) View.VISIBLE else View.GONE
-        }
-        btnCircleSearchNativeLens?.setColorFilter(accentColor, PorterDuff.Mode.SRC_IN)
-        btnCircleSearchTranslate?.setColorFilter(Color.parseColor("#34D399"), PorterDuff.Mode.SRC_IN)
-        btnCircleSearchClose?.setColorFilter(Color.parseColor("#CBD5E1"), PorterDuff.Mode.SRC_IN)
-
-        btnCircleSearchNativeLens?.setOnClickListener {
-            val launched = SelectionToolbarHelper.launchNativeGoogleLens(context)
-            if (launched) {
-                dismissWithCallback()
-            } else {
-                Toast.makeText(
-                    context,
-                    context.getString(R.string.circle_search_hint),
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-        }
-        btnCircleSearchTranslate?.setOnClickListener {
-            dismissInternal()
-            onFullScreenTranslateClicked?.invoke()
-        }
-        btnCircleSearchClose?.setOnClickListener {
-            dismissWithCallback()
-        }
 
         val normalizedOrder = normalizeToolbarOrder(toolbarOrder)
 
@@ -552,6 +513,7 @@ class InlineTextOverlayController(
         wordRow1.removeAllViews()
         wordRow2.removeAllViews()
         wordQuestionRow.visibility = if (mode == OverlayMode.COPY) View.VISIBLE else View.GONE
+        wordBrowserAiRow.visibility = if (mode == OverlayMode.COPY) View.VISIBLE else View.GONE
 
         val wordActionsToRender = if (mode == OverlayMode.COPY) {
             normalizedOrder
@@ -621,20 +583,52 @@ class InlineTextOverlayController(
             onGoogleAiModeTextClicked?.invoke(selected, question)
             dismissCb?.invoke()
         }
-        btnWordQuickTranslate.setOnClickListener {
-            if (!btnWordQuickTranslate.isEnabled || !etWordQuestion.text.isNullOrBlank()) return@setOnClickListener
+        fun fireWordPreset(presetText: String) {
             val selected = activeCopyableText.trim()
-            if (selected.isNotEmpty()) {
+            if (selected.isNotEmpty() || presetText.isNotBlank()) {
+                val combined = SelectionToolbarHelper.buildPresetQuery(presetText, selected)
                 val dismissCb = activeDismissCallback
                 dismissInternal()
-                onSearchClicked?.invoke(selected, "Translate to Hindi/English")
+                onSearchClicked?.invoke(combined, "")
                 dismissCb?.invoke()
             }
+        }
+        btnWordPreset1.setOnClickListener {
+            if (!btnWordPreset1.isEnabled || !etWordQuestion.text.isNullOrBlank()) return@setOnClickListener
+            fireWordPreset(SelectionToolbarHelper.getQuickPrompt1(context))
+        }
+        btnWordPreset2.setOnClickListener {
+            if (!btnWordPreset2.isEnabled || !etWordQuestion.text.isNullOrBlank()) return@setOnClickListener
+            fireWordPreset(SelectionToolbarHelper.getQuickPrompt2(context))
         }
         btnWordSend.setOnClickListener { submitWordQuestion() }
         etWordQuestion.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEND || actionId == EditorInfo.IME_ACTION_DONE) {
                 submitWordQuestion()
+                true
+            } else {
+                false
+            }
+        }
+
+        fun submitWordBrowserAi() {
+            val question = etWordBrowserAiQuestion.text?.toString()?.trim().orEmpty()
+            val selected = activeCopyableText.trim()
+            if (question.isEmpty() && selected.isEmpty()) {
+                Toast.makeText(context, "Type a question to ask AI", Toast.LENGTH_SHORT).show()
+                etWordBrowserAiQuestion.requestFocus()
+                return
+            }
+            val dismissCb = activeDismissCallback
+            dismissInternal()
+            val handler = onWordBrowserAiClicked ?: onGoogleAiModeTextClicked
+            handler?.invoke(selected, question)
+            dismissCb?.invoke()
+        }
+        btnWordBrowserAiSend.setOnClickListener { submitWordBrowserAi() }
+        etWordBrowserAiQuestion.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEND || actionId == EditorInfo.IME_ACTION_DONE) {
+                submitWordBrowserAi()
                 true
             } else {
                 false
@@ -702,20 +696,54 @@ class InlineTextOverlayController(
             onCutoutGoogleAiModeClicked?.invoke(box, overlapping, w, h, question)
             onDismiss()
         }
-        btnCutoutQuickTranslate.setOnClickListener {
-            if (!btnCutoutQuickTranslate.isEnabled || !etCutoutQuestion.text.isNullOrBlank()) return@setOnClickListener
-            val box = currentCutoutRect ?: selView.getActiveCutoutRect() ?: return@setOnClickListener
+        fun fireCutoutPreset(presetText: String) {
+            val box = currentCutoutRect ?: selView.getActiveCutoutRect() ?: return
             val overlapping = selView.getWordsInsideCutout()
             val w = selView.width
             val h = selView.height
+            val overlapText = overlapping.joinToString(" ") { it.text }.trim()
+            val finalPrompt = if (overlapText.isNotEmpty()) {
+                SelectionToolbarHelper.buildPresetQuery(presetText, overlapText)
+            } else {
+                presetText.trim()
+            }
             dismissInternal()
-            onCutoutSearchWithFallback?.invoke(box, overlapping, w, h, "Translate to Hindi/English")
+            onCutoutSearchWithFallback?.invoke(box, overlapping, w, h, finalPrompt)
             onDismiss()
+        }
+        btnCutoutPreset1.setOnClickListener {
+            if (!btnCutoutPreset1.isEnabled || !etCutoutQuestion.text.isNullOrBlank()) return@setOnClickListener
+            fireCutoutPreset(SelectionToolbarHelper.getQuickPrompt1(context))
+        }
+        btnCutoutPreset2.setOnClickListener {
+            if (!btnCutoutPreset2.isEnabled || !etCutoutQuestion.text.isNullOrBlank()) return@setOnClickListener
+            fireCutoutPreset(SelectionToolbarHelper.getQuickPrompt2(context))
         }
         btnCutoutSend.setOnClickListener { submitCutoutQuestion() }
         etCutoutQuestion.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEND || actionId == EditorInfo.IME_ACTION_DONE) {
                 submitCutoutQuestion()
+                true
+            } else {
+                false
+            }
+        }
+
+        fun submitCutoutBrowserAi() {
+            val question = etCutoutBrowserAiQuestion.text?.toString()?.trim().orEmpty()
+            val box = currentCutoutRect ?: selView.getActiveCutoutRect() ?: return
+            val overlapping = selView.getWordsInsideCutout()
+            val w = selView.width
+            val h = selView.height
+            dismissInternal()
+            val handler = onCutoutBrowserAiClicked ?: onCutoutGoogleAiModeClicked
+            handler?.invoke(box, overlapping, w, h, question)
+            onDismiss()
+        }
+        btnCutoutBrowserAiSend.setOnClickListener { submitCutoutBrowserAi() }
+        etCutoutBrowserAiQuestion.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEND || actionId == EditorInfo.IME_ACTION_DONE) {
+                submitCutoutBrowserAi()
                 true
             } else {
                 false
@@ -740,10 +768,6 @@ class InlineTextOverlayController(
             (statusPill.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
                 lp.topMargin = sysBars.top + (64 * density).toInt()
                 statusPill.layoutParams = lp
-            }
-            (circleSearchBottomBar?.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
-                lp.bottomMargin = sysBars.bottom + (24 * density).toInt()
-                circleSearchBottomBar.layoutParams = lp
             }
             insets
         }
