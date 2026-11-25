@@ -72,7 +72,8 @@ class FloatingWindowManager(
         var windowAlpha: Float = 1.0f,
         var bubbleView: FrameLayout? = null,
         var bubbleParams: WindowManager.LayoutParams? = null,
-        var onCloseCleanup: (() -> Unit)? = null
+        var onCloseCleanup: (() -> Unit)? = null,
+        internal var menuBackdrop: View? = null
     ) {
         private val density = rootView.resources.displayMetrics.density.coerceAtLeast(1f)
 
@@ -82,14 +83,18 @@ class FloatingWindowManager(
         }
 
         fun toggleMenu() {
-            menuDrawer.visibility = if (menuDrawer.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-            if (menuDrawer.visibility == View.VISIBLE) {
+            val opening = menuDrawer.visibility != View.VISIBLE
+            menuDrawer.visibility = if (opening) View.VISIBLE else View.GONE
+            menuBackdrop?.visibility = if (opening) View.VISIBLE else View.GONE
+            if (opening) {
+                menuBackdrop?.bringToFront()
                 menuDrawer.bringToFront()
             }
         }
 
         fun closeMenu() {
             menuDrawer.visibility = View.GONE
+            menuBackdrop?.visibility = View.GONE
         }
 
         fun setWindowOpacityPercent(percent: Int) {
@@ -192,10 +197,12 @@ class FloatingWindowManager(
 
         val lpFlags = if (requiresTextInput) {
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
         } else {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
         }
 
@@ -212,7 +219,22 @@ class FloatingWindowManager(
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
         }
 
-        val root = LinearLayout(context).apply {
+        var outsideMenuDismissHandler: ((MotionEvent) -> Unit)? = null
+        val root = object : LinearLayout(context) {
+            override fun onTouchEvent(event: MotionEvent): Boolean {
+                if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
+                    outsideMenuDismissHandler?.invoke(event)
+                }
+                return super.onTouchEvent(event)
+            }
+
+            override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                if (ev.actionMasked == MotionEvent.ACTION_OUTSIDE || ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                    outsideMenuDismissHandler?.invoke(ev)
+                }
+                return super.dispatchTouchEvent(ev)
+            }
+        }.apply {
             orientation = LinearLayout.VERTICAL
             tag = "fw_window_$windowId"
             background = GradientDrawable().apply {
@@ -413,7 +435,19 @@ class FloatingWindowManager(
             alpha = 0.85f
         }
 
+        val menuBackdrop = View(context).apply {
+            tag = "fw_menu_backdrop_$windowId"
+            visibility = View.GONE
+            setBackgroundColor(Color.argb(60, 2, 6, 23))
+            isClickable = true
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+
         bodyOverlay.addView(contentHost)
+        bodyOverlay.addView(menuBackdrop)
         bodyOverlay.addView(menuDrawer)
         bodyOverlay.addView(resizeGrip)
 
@@ -434,8 +468,38 @@ class FloatingWindowManager(
             opacitySeekBar = opacitySeekBar,
             opacityValueLabel = opacityValueLabel,
             layoutParams = lp,
-            savedBounds = WindowBounds(initialX, initialY, defaultW, defaultH)
+            savedBounds = WindowBounds(initialX, initialY, defaultW, defaultH),
+            menuBackdrop = menuBackdrop
         )
+
+        menuBackdrop.setOnClickListener { managed.closeMenu() }
+        outsideMenuDismissHandler = { ev ->
+            if (menuDrawer.visibility == View.VISIBLE) {
+                if (ev.actionMasked == MotionEvent.ACTION_OUTSIDE) {
+                    managed.closeMenu()
+                } else {
+                    val tx = ev.x.toInt()
+                    val ty = ev.y.toInt()
+                    val drawerLoc = IntArray(2)
+                    val btnLoc = IntArray(2)
+                    val rootLoc = IntArray(2)
+                    root.getLocationOnScreen(rootLoc)
+                    menuDrawer.getLocationOnScreen(drawerLoc)
+                    btnMenu.getLocationOnScreen(btnLoc)
+                    val dLeft = drawerLoc[0] - rootLoc[0]
+                    val dTop = drawerLoc[1] - rootLoc[1]
+                    val inDrawer = tx in dLeft..(dLeft + menuDrawer.width) &&
+                        ty in dTop..(dTop + menuDrawer.height)
+                    val bLeft = btnLoc[0] - rootLoc[0]
+                    val bTop = btnLoc[1] - rootLoc[1]
+                    val inBtn = tx in bLeft..(bLeft + btnMenu.width) &&
+                        ty in bTop..(bTop + btnMenu.height)
+                    if (!inDrawer && !inBtn) {
+                        managed.closeMenu()
+                    }
+                }
+            }
+        }
 
         opacitySeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {

@@ -1655,7 +1655,7 @@ fun SmartDotScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(text = "Sensitive (4)", style = MaterialTheme.typography.labelSmall, color = Color(0xFF64748B))
-                    Text(text = "Firm (14)", style = MaterialTheme.typography.labelSmall, color = Color(0xFF64748B))
+                    Text(text = "Firm (${BackTapDetector.MAX_SENSITIVITY.toInt()})", style = MaterialTheme.typography.labelSmall, color = Color(0xFF64748B))
                 }
 
                 HorizontalDivider(color = Color(0xFF334155), thickness = 1.dp, modifier = Modifier.padding(vertical = 12.dp))
@@ -2208,46 +2208,118 @@ fun SmartDotScreen(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                var showQuestionBoxes by remember {
-                    mutableStateOf(SelectionToolbarHelper.isShowQuestionBoxesEnabled(prefs))
+                var showQuestionBox1 by remember {
+                    mutableStateOf(SelectionToolbarHelper.isShowQuestionBox1Enabled(prefs))
                 }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                        Text(
-                            text = "Show Question Boxes",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFFF8FAFC)
-                        )
-                        Text(
-                            text = "Display quick-ask text boxes below the 11-icon selection & cutout toolbar",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF94A3B8)
-                        )
-                    }
-                    Switch(
-                        checked = showQuestionBoxes,
-                        onCheckedChange = { checked ->
-                            showQuestionBoxes = checked
-                            SelectionToolbarHelper.setShowQuestionBoxesEnabled(prefs, checked)
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.Black,
-                            checkedTrackColor = parsedAccentColor
-                        ),
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("switch_show_question_boxes")
-                    )
+                var showQuestionBox2 by remember {
+                    mutableStateOf(SelectionToolbarHelper.isShowQuestionBox2Enabled(prefs))
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "Question Box Visibility",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFFF8FAFC)
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Surface(
+                    color = Color(0xFF0F172A),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp)
+                                    .alpha(if (showQuestionBox1) 1f else 0.5f)
+                            ) {
+                                Text(
+                                    text = "Question Box 1 (Ask AI / Search)",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFF8FAFC)
+                                )
+                                Text(
+                                    text = "Show \"Ask about this text/image...\" bar",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    val updated = !showQuestionBox1
+                                    showQuestionBox1 = updated
+                                    SelectionToolbarHelper.setShowQuestionBox1Enabled(prefs, updated)
+                                },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("btn_toggle_question_box_1")
+                            ) {
+                                Icon(
+                                    imageVector = if (showQuestionBox1) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                    contentDescription = if (showQuestionBox1) "Hide Question Box 1" else "Show Question Box 1",
+                                    tint = if (showQuestionBox1) parsedAccentColor else Color(0xFF64748B)
+                                )
+                            }
+                        }
+
+                        HorizontalDivider(color = Color(0xFF1E293B), thickness = 1.dp)
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp)
+                                    .alpha(if (showQuestionBox2) 1f else 0.5f)
+                            ) {
+                                Text(
+                                    text = "Question Box 2 (Floating Google AI)",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFF8FAFC)
+                                )
+                                Text(
+                                    text = "Show \"Ask directly in Floating Google AI...\" bar",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+                            IconButton(
+                                onClick = {
+                                    val updated = !showQuestionBox2
+                                    showQuestionBox2 = updated
+                                    SelectionToolbarHelper.setShowQuestionBox2Enabled(prefs, updated)
+                                },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("btn_toggle_question_box_2")
+                            ) {
+                                Icon(
+                                    imageVector = if (showQuestionBox2) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                    contentDescription = if (showQuestionBox2) "Hide Question Box 2" else "Show Question Box 2",
+                                    tint = if (showQuestionBox2) parsedAccentColor else Color(0xFF64748B)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
 
                 var quickPrompt1 by remember {
                     mutableStateOf(SelectionToolbarHelper.getQuickPrompt1(prefs))
@@ -2255,57 +2327,180 @@ fun SmartDotScreen(
                 var quickPrompt2 by remember {
                     mutableStateOf(SelectionToolbarHelper.getQuickPrompt2(prefs))
                 }
+                var box2Preset1 by remember {
+                    mutableStateOf(SelectionToolbarHelper.getBox2Preset1Text(prefs))
+                }
+                var box2Preset2 by remember {
+                    mutableStateOf(SelectionToolbarHelper.getBox2Preset2Text(prefs))
+                }
+                var box1Preset1Icon by remember {
+                    mutableStateOf(SelectionToolbarHelper.getBox1Preset1Icon(prefs))
+                }
+                var box1Preset2Icon by remember {
+                    mutableStateOf(SelectionToolbarHelper.getBox1Preset2Icon(prefs))
+                }
+                var box2Preset1Icon by remember {
+                    mutableStateOf(SelectionToolbarHelper.getBox2Preset1Icon(prefs))
+                }
+                var box2Preset2Icon by remember {
+                    mutableStateOf(SelectionToolbarHelper.getBox2Preset2Icon(prefs))
+                }
 
                 Text(
-                    text = "Quick Preset Question Buttons",
+                    text = "Quick Preset Question Buttons (4 Independent Icons & Prompts)",
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                     color = Color(0xFFF8FAFC)
                 )
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                OutlinedTextField(
-                    value = quickPrompt1,
-                    onValueChange = { updated ->
+                @Composable
+                fun PresetButtonEditorCard(
+                    title: String,
+                    promptValue: String,
+                    onPromptChange: (String) -> Unit,
+                    inputTag: String,
+                    selectedIcon: SelectionToolbarHelper.PresetIconOption,
+                    onIconSelected: (SelectionToolbarHelper.PresetIconOption) -> Unit,
+                    iconTagPrefix: String
+                ) {
+                    Surface(
+                        color = Color(0xFF0F172A),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            OutlinedTextField(
+                                value = promptValue,
+                                onValueChange = onPromptChange,
+                                label = { Text(title) },
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = parsedAccentColor,
+                                    unfocusedBorderColor = Color(0xFF475569),
+                                    focusedTextColor = Color(0xFFF8FAFC),
+                                    unfocusedTextColor = Color(0xFFF8FAFC),
+                                    focusedLabelColor = parsedAccentColor,
+                                    unfocusedLabelColor = Color(0xFF94A3B8)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag(inputTag)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                SelectionToolbarHelper.PresetIconOption.entries.forEach { option ->
+                                    val isSelected = selectedIcon == option
+                                    Surface(
+                                        color = if (isSelected) parsedAccentColor.copy(alpha = 0.22f) else Color(0xFF1E293B),
+                                        shape = RoundedCornerShape(10.dp),
+                                        border = BorderStroke(
+                                            width = if (isSelected) 1.5.dp else 1.dp,
+                                            color = if (isSelected) parsedAccentColor else Color(0xFF334155)
+                                        ),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .defaultMinSize(minHeight = 48.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable { onIconSelected(option) }
+                                            .testTag("${iconTagPrefix}_${option.id}")
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(vertical = 6.dp, horizontal = 2.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.Center
+                                        ) {
+                                            Icon(
+                                                painter = painterResource(id = option.iconRes),
+                                                contentDescription = "$title icon ${option.label}",
+                                                tint = if (isSelected) parsedAccentColor else Color(0xFFCBD5E1),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = option.label,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontSize = 9.sp,
+                                                maxLines = 1,
+                                                color = if (isSelected) parsedAccentColor else Color(0xFF94A3B8)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                PresetButtonEditorCard(
+                    title = "Box 1 - Button 1",
+                    promptValue = quickPrompt1,
+                    onPromptChange = { updated ->
                         quickPrompt1 = updated
                         SelectionToolbarHelper.saveQuickPrompt1(prefs, updated)
                     },
-                    label = { Text("Quick Prompt Button 1 Text") },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = parsedAccentColor,
-                        unfocusedBorderColor = Color(0xFF475569),
-                        focusedTextColor = Color(0xFFF8FAFC),
-                        unfocusedTextColor = Color(0xFFF8FAFC),
-                        focusedLabelColor = parsedAccentColor,
-                        unfocusedLabelColor = Color(0xFF94A3B8)
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("input_quick_prompt_1")
+                    inputTag = "input_quick_prompt_1",
+                    selectedIcon = box1Preset1Icon,
+                    onIconSelected = { option ->
+                        box1Preset1Icon = option
+                        SelectionToolbarHelper.saveBox1Preset1Icon(prefs, option)
+                    },
+                    iconTagPrefix = "btn_preset_icon_box1_1"
                 )
-
                 Spacer(modifier = Modifier.height(8.dp))
 
-                OutlinedTextField(
-                    value = quickPrompt2,
-                    onValueChange = { updated ->
+                PresetButtonEditorCard(
+                    title = "Box 1 - Button 2",
+                    promptValue = quickPrompt2,
+                    onPromptChange = { updated ->
                         quickPrompt2 = updated
                         SelectionToolbarHelper.saveQuickPrompt2(prefs, updated)
                     },
-                    label = { Text("Quick Prompt Button 2 Text") },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = parsedAccentColor,
-                        unfocusedBorderColor = Color(0xFF475569),
-                        focusedTextColor = Color(0xFFF8FAFC),
-                        unfocusedTextColor = Color(0xFFF8FAFC),
-                        focusedLabelColor = parsedAccentColor,
-                        unfocusedLabelColor = Color(0xFF94A3B8)
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("input_quick_prompt_2")
+                    inputTag = "input_quick_prompt_2",
+                    selectedIcon = box1Preset2Icon,
+                    onIconSelected = { option ->
+                        box1Preset2Icon = option
+                        SelectionToolbarHelper.saveBox1Preset2Icon(prefs, option)
+                    },
+                    iconTagPrefix = "btn_preset_icon_box1_2"
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+
+                PresetButtonEditorCard(
+                    title = "Box 2 - Button 1",
+                    promptValue = box2Preset1,
+                    onPromptChange = { updated ->
+                        box2Preset1 = updated
+                        SelectionToolbarHelper.saveBox2Preset1Text(prefs, updated)
+                    },
+                    inputTag = "input_box2_preset_1",
+                    selectedIcon = box2Preset1Icon,
+                    onIconSelected = { option ->
+                        box2Preset1Icon = option
+                        SelectionToolbarHelper.saveBox2Preset1Icon(prefs, option)
+                    },
+                    iconTagPrefix = "btn_preset_icon_box2_1"
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+
+                PresetButtonEditorCard(
+                    title = "Box 2 - Button 2",
+                    promptValue = box2Preset2,
+                    onPromptChange = { updated ->
+                        box2Preset2 = updated
+                        SelectionToolbarHelper.saveBox2Preset2Text(prefs, updated)
+                    },
+                    inputTag = "input_box2_preset_2",
+                    selectedIcon = box2Preset2Icon,
+                    onIconSelected = { option ->
+                        box2Preset2Icon = option
+                        SelectionToolbarHelper.saveBox2Preset2Icon(prefs, option)
+                    },
+                    iconTagPrefix = "btn_preset_icon_box2_2"
                 )
 
                 Spacer(modifier = Modifier.height(10.dp))
@@ -2314,6 +2509,12 @@ fun SmartDotScreen(
                     onClick = {
                         SelectionToolbarHelper.saveQuickPrompt1(prefs, quickPrompt1)
                         SelectionToolbarHelper.saveQuickPrompt2(prefs, quickPrompt2)
+                        SelectionToolbarHelper.saveBox2Preset1Text(prefs, box2Preset1)
+                        SelectionToolbarHelper.saveBox2Preset2Text(prefs, box2Preset2)
+                        SelectionToolbarHelper.saveBox1Preset1Icon(prefs, box1Preset1Icon)
+                        SelectionToolbarHelper.saveBox1Preset2Icon(prefs, box1Preset2Icon)
+                        SelectionToolbarHelper.saveBox2Preset1Icon(prefs, box2Preset1Icon)
+                        SelectionToolbarHelper.saveBox2Preset2Icon(prefs, box2Preset2Icon)
                         Toast.makeText(
                             context,
                             context.getString(R.string.quick_prompts_saved),
@@ -2331,7 +2532,7 @@ fun SmartDotScreen(
                         .testTag("btn_save_quick_prompts")
                 ) {
                     Text(
-                        text = "Save Preset Prompts",
+                        text = "Save All Preset Buttons",
                         fontWeight = FontWeight.Bold
                     )
                 }

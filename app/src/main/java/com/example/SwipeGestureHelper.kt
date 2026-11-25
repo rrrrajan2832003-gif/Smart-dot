@@ -55,6 +55,8 @@ object SwipeGestureHelper {
         GestureActionOption("lock_screen", "Lock Screen"),
         GestureActionOption("floating_window", "Floating Window"),
         GestureActionOption("floating_media_files", "Floating Media & Files"),
+        GestureActionOption("floating_photos_videos", "Floating Photos & Videos"),
+        GestureActionOption("floating_music", "Floating Music & Voice Player"),
         GestureActionOption("floating_browser", "Floating Browser"),
         GestureActionOption("floating_whatsapp", "Floating WhatsApp"),
         GestureActionOption("floating_instagram", "Floating Instagram"),

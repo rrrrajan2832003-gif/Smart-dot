@@ -90,4 +90,6 @@
     <string name="floating_window_title_facebook">Facebook</string>
     <string name="floating_window_title_telegram">Telegram</string>
     <string name="floating_window_title_gmail">Gmail</string>
+    <string name="floating_window_title_music">Music &amp; Voice</string>
+    <string name="floating_window_title_gallery">Photos &amp; Videos</string>
 </resources>

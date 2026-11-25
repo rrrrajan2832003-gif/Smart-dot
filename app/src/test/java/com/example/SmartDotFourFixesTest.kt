@@ -75,16 +75,24 @@ class SmartDotFourFixesTest {
     @After
     fun tearDown() {
         FloatingMiniApps.pendingBrowserUploadImageUri = null
+        FloatingMiniApps.pendingBrowserUploadImageBase64 = null
+        FloatingMiniApps.pendingBrowserUploadPromptText = null
         SmartDotAccessibilityService.setInstanceForTest(null)
     }
 
     @Test
     fun `2nd question box has editable preset buttons with dimming on type, Save button, and Show-Hide Question Boxes toggle`() {
-        // Edit both prompts and explicitly tap Save button in MainActivity
+        // Edit Box 1 & Box 2 prompts and explicitly tap Save button in MainActivity
         composeRule.onNodeWithTag("input_quick_prompt_1")
             .performScrollTo()
-            .performTextReplacement("Explain simply: ")
+            .performTextReplacement("Translate fast: ")
         composeRule.onNodeWithTag("input_quick_prompt_2")
+            .performScrollTo()
+            .performTextReplacement("Define briefly: ")
+        composeRule.onNodeWithTag("input_box2_preset_1")
+            .performScrollTo()
+            .performTextReplacement("Explain simply: ")
+        composeRule.onNodeWithTag("input_box2_preset_2")
             .performScrollTo()
             .performTextReplacement("Key facts: ")
         composeRule.onNodeWithTag("btn_save_quick_prompts")
@@ -94,8 +102,10 @@ class SmartDotFourFixesTest {
         composeRule.waitForIdle()
 
         val prefs = composeRule.activity.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
-        assertEquals("Explain simply: ", SelectionToolbarHelper.getQuickPrompt1(prefs))
-        assertEquals("Key facts: ", SelectionToolbarHelper.getQuickPrompt2(prefs))
+        assertEquals("Translate fast: ", SelectionToolbarHelper.getQuickPrompt1(prefs))
+        assertEquals("Define briefly: ", SelectionToolbarHelper.getQuickPrompt2(prefs))
+        assertEquals("Explain simply: ", SelectionToolbarHelper.getBox2Preset1Text(prefs))
+        assertEquals("Key facts: ", SelectionToolbarHelper.getBox2Preset2Text(prefs))
         assertEquals(appContext.getString(R.string.quick_prompts_saved), ShadowToast.getTextOfLatestToast())
 
         val scope = CoroutineScope(Dispatchers.Main + Job())
@@ -187,11 +197,16 @@ class SmartDotFourFixesTest {
             assertTrue(webView.url.orEmpty().contains("Explain+simply"))
             assertTrue(webView.url.orEmpty().contains("Quantum"))
 
-            // 2) Toggle "Show Question Boxes" OFF in MainActivity -> both boxes hidden on word & cutout toolbars
-            composeRule.onNodeWithTag("switch_show_question_boxes")
+            // 2) Toggle Box 1 & Box 2 Eye buttons OFF in MainActivity -> both boxes hidden on word & cutout toolbars
+            composeRule.onNodeWithTag("btn_toggle_question_box_1")
+                .performScrollTo()
+                .performClick()
+            composeRule.onNodeWithTag("btn_toggle_question_box_2")
                 .performScrollTo()
                 .performClick()
             composeRule.waitForIdle()
+            assertFalse(SelectionToolbarHelper.isShowQuestionBox1Enabled(prefs))
+            assertFalse(SelectionToolbarHelper.isShowQuestionBox2Enabled(prefs))
             assertFalse(SelectionToolbarHelper.isShowQuestionBoxesEnabled(prefs))
 
             if (controller.isOverlayShowing()) overlayCtrl.dismiss()

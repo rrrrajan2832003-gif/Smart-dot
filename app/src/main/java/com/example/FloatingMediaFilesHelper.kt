@@ -1336,4 +1336,26 @@ object FloatingMediaFilesHelper {
             container to cleanup
         }
     }
+
+    fun openFloatingMusicPlayer(
+        context: Context,
+        manager: FloatingWindowManager,
+        accentColor: Int
+    ): FloatingWindowManager.ManagedWindow? =
+        FloatingGalleryMusicHelper.openFloatingMusicPlayer(context, manager, accentColor)
+
+    fun openFloatingPhotosVideosGallery(
+        context: Context,
+        manager: FloatingWindowManager,
+        accentColor: Int,
+        windowId: String = "floating_photos_videos",
+        windowTitle: String = context.getString(R.string.floating_window_title_gallery)
+    ): FloatingWindowManager.ManagedWindow? =
+        FloatingGalleryMusicHelper.openFloatingPhotosVideosGallery(
+            context = context,
+            manager = manager,
+            accentColor = accentColor,
+            windowId = windowId,
+            windowTitle = windowTitle
+        )
 }

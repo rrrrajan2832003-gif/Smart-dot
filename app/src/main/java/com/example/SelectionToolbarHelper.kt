@@ -29,7 +29,15 @@ object SelectionToolbarHelper {
     const val PREF_SELECTION_TOOLBAR_HIDDEN = "selection_toolbar_hidden"
     const val PREF_QUICK_PROMPT_1 = "quick_prompt_1"
     const val PREF_QUICK_PROMPT_2 = "quick_prompt_2"
+    const val PREF_BOX2_PRESET_1 = "box2_preset_1_text"
+    const val PREF_BOX2_PRESET_2 = "box2_preset_2_text"
+    const val PREF_BOX1_PRESET_1_ICON = "box1_preset_1_icon"
+    const val PREF_BOX1_PRESET_2_ICON = "box1_preset_2_icon"
+    const val PREF_BOX2_PRESET_1_ICON = "box2_preset_1_icon"
+    const val PREF_BOX2_PRESET_2_ICON = "box2_preset_2_icon"
     const val PREF_SHOW_QUESTION_BOXES = "show_selection_question_boxes"
+    const val PREF_SHOW_QUESTION_BOX_1 = "show_selection_question_box_1"
+    const val PREF_SHOW_QUESTION_BOX_2 = "show_selection_question_box_2"
 
     const val DEFAULT_QUICK_PROMPT_1 = "ट्रांसलेट टू हिंदी = "
     const val DEFAULT_QUICK_PROMPT_2 = "मतलब "
@@ -39,17 +47,62 @@ object SelectionToolbarHelper {
     const val GEMINI_PACKAGE = "com.google.android.apps.bard"
     const val CHATGPT_PACKAGE = "com.openai.chatgpt"
 
+    enum class PresetIconOption(
+        val id: String,
+        val label: String,
+        val iconRes: Int
+    ) {
+        TRANSLATE("translate", "Translate", R.drawable.ic_tab_translate),
+        MEANING("meaning", "Meaning", R.drawable.ic_preset_meaning),
+        SPARKLE("sparkle", "Sparkle AI", R.drawable.ic_toolbar_ai_mode),
+        QUESTION("question", "Question", R.drawable.ic_preset_question),
+        SUMMARY("summary", "Summary", R.drawable.ic_tab_notes);
+
+        companion object {
+            fun fromId(id: String?): PresetIconOption? =
+                entries.firstOrNull { it.id == id?.trim() }
+        }
+    }
+
+    fun isShowQuestionBox1Enabled(context: Context): Boolean =
+        isShowQuestionBox1Enabled(context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE))
+
+    fun isShowQuestionBox1Enabled(prefs: SharedPreferences): Boolean {
+        val legacyDefault = prefs.getBoolean(PREF_SHOW_QUESTION_BOXES, true)
+        return prefs.getBoolean(PREF_SHOW_QUESTION_BOX_1, legacyDefault)
+    }
+
+    fun setShowQuestionBox1Enabled(prefs: SharedPreferences, enabled: Boolean) {
+        prefs.edit().putBoolean(PREF_SHOW_QUESTION_BOX_1, enabled).apply()
+    }
+
+    fun isShowQuestionBox2Enabled(context: Context): Boolean =
+        isShowQuestionBox2Enabled(context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE))
+
+    fun isShowQuestionBox2Enabled(prefs: SharedPreferences): Boolean {
+        val legacyDefault = prefs.getBoolean(PREF_SHOW_QUESTION_BOXES, true)
+        return prefs.getBoolean(PREF_SHOW_QUESTION_BOX_2, legacyDefault)
+    }
+
+    fun setShowQuestionBox2Enabled(prefs: SharedPreferences, enabled: Boolean) {
+        prefs.edit().putBoolean(PREF_SHOW_QUESTION_BOX_2, enabled).apply()
+    }
+
     fun isShowQuestionBoxesEnabled(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         return isShowQuestionBoxesEnabled(prefs)
     }
 
     fun isShowQuestionBoxesEnabled(prefs: SharedPreferences): Boolean {
-        return prefs.getBoolean(PREF_SHOW_QUESTION_BOXES, true)
+        return isShowQuestionBox1Enabled(prefs) || isShowQuestionBox2Enabled(prefs)
     }
 
     fun setShowQuestionBoxesEnabled(prefs: SharedPreferences, enabled: Boolean) {
-        prefs.edit().putBoolean(PREF_SHOW_QUESTION_BOXES, enabled).apply()
+        prefs.edit()
+            .putBoolean(PREF_SHOW_QUESTION_BOXES, enabled)
+            .putBoolean(PREF_SHOW_QUESTION_BOX_1, enabled)
+            .putBoolean(PREF_SHOW_QUESTION_BOX_2, enabled)
+            .apply()
     }
 
     fun getQuickPrompt1(context: Context): String {
@@ -78,6 +131,70 @@ object SelectionToolbarHelper {
 
     fun saveQuickPrompt2(prefs: SharedPreferences, prompt: String) {
         prefs.edit().putString(PREF_QUICK_PROMPT_2, prompt).apply()
+    }
+
+    fun getBox2Preset1Text(context: Context): String =
+        getBox2Preset1Text(context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE))
+
+    fun getBox2Preset1Text(prefs: SharedPreferences): String {
+        val value = prefs.getString(PREF_BOX2_PRESET_1, null)
+        return if (value.isNullOrBlank()) DEFAULT_QUICK_PROMPT_1 else value
+    }
+
+    fun saveBox2Preset1Text(prefs: SharedPreferences, prompt: String) {
+        prefs.edit().putString(PREF_BOX2_PRESET_1, prompt).apply()
+    }
+
+    fun getBox2Preset2Text(context: Context): String =
+        getBox2Preset2Text(context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE))
+
+    fun getBox2Preset2Text(prefs: SharedPreferences): String {
+        val value = prefs.getString(PREF_BOX2_PRESET_2, null)
+        return if (value.isNullOrBlank()) DEFAULT_QUICK_PROMPT_2 else value
+    }
+
+    fun saveBox2Preset2Text(prefs: SharedPreferences, prompt: String) {
+        prefs.edit().putString(PREF_BOX2_PRESET_2, prompt).apply()
+    }
+
+    fun getBox1Preset1Icon(context: Context): PresetIconOption =
+        getBox1Preset1Icon(context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE))
+
+    fun getBox1Preset1Icon(prefs: SharedPreferences): PresetIconOption =
+        PresetIconOption.fromId(prefs.getString(PREF_BOX1_PRESET_1_ICON, null)) ?: PresetIconOption.TRANSLATE
+
+    fun saveBox1Preset1Icon(prefs: SharedPreferences, option: PresetIconOption) {
+        prefs.edit().putString(PREF_BOX1_PRESET_1_ICON, option.id).apply()
+    }
+
+    fun getBox1Preset2Icon(context: Context): PresetIconOption =
+        getBox1Preset2Icon(context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE))
+
+    fun getBox1Preset2Icon(prefs: SharedPreferences): PresetIconOption =
+        PresetIconOption.fromId(prefs.getString(PREF_BOX1_PRESET_2_ICON, null)) ?: PresetIconOption.MEANING
+
+    fun saveBox1Preset2Icon(prefs: SharedPreferences, option: PresetIconOption) {
+        prefs.edit().putString(PREF_BOX1_PRESET_2_ICON, option.id).apply()
+    }
+
+    fun getBox2Preset1Icon(context: Context): PresetIconOption =
+        getBox2Preset1Icon(context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE))
+
+    fun getBox2Preset1Icon(prefs: SharedPreferences): PresetIconOption =
+        PresetIconOption.fromId(prefs.getString(PREF_BOX2_PRESET_1_ICON, null)) ?: PresetIconOption.TRANSLATE
+
+    fun saveBox2Preset1Icon(prefs: SharedPreferences, option: PresetIconOption) {
+        prefs.edit().putString(PREF_BOX2_PRESET_1_ICON, option.id).apply()
+    }
+
+    fun getBox2Preset2Icon(context: Context): PresetIconOption =
+        getBox2Preset2Icon(context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE))
+
+    fun getBox2Preset2Icon(prefs: SharedPreferences): PresetIconOption =
+        PresetIconOption.fromId(prefs.getString(PREF_BOX2_PRESET_2_ICON, null)) ?: PresetIconOption.MEANING
+
+    fun saveBox2Preset2Icon(prefs: SharedPreferences, option: PresetIconOption) {
+        prefs.edit().putString(PREF_BOX2_PRESET_2_ICON, option.id).apply()
     }
 
     /**

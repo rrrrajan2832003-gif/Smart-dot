@@ -17,9 +17,10 @@ import kotlin.math.max
  */
 class BackTapDetector(
     @Volatile private var zSpikeThreshold: Float = DEFAULT_SENSITIVITY,
-    private val minGapMs: Long = 120L,
-    private val maxGapMs: Long = 400L,
-    private val cooldownMs: Long = 1200L,
+    private val minGapMs: Long = 100L,
+    private val maxGapMs: Long = 450L,
+    private val cooldownMs: Long = 1000L,
+    private val maxLateralAccel: Float = 6.0f,
     private val lateralRatioLimit: Float = 0.85f,
     private val onDoubleBackTap: () -> Unit
 ) : SensorEventListener {
@@ -27,7 +28,7 @@ class BackTapDetector(
     private var firstTapTimeMs = 0L
     private var lastTriggerTimeMs = 0L
 
-    // High-pass filter state when falling back to raw TYPE_ACCELEROMETER
+    // High-pass filter state when reading raw TYPE_ACCELEROMETER
     private var hasGravityEstimate = false
     private var gravityX = 0f
     private var gravityY = 0f
@@ -50,11 +51,13 @@ class BackTapDetector(
         timestampMs: Long
     ): Boolean {
         val absZ = abs(lz)
-        if (absZ < zSpikeThreshold) return false
+        if (absZ <= zSpikeThreshold) return false
 
-        // Reject lateral walking/shaking impulses where X/Y energy rivals or exceeds Z-axis tap
-        val maxLateral = max(abs(lx), abs(ly))
-        if (maxLateral > absZ * lateralRatioLimit) {
+        // Reject lateral walking/shaking impulses where X/Y exceeds 6.0 m/s^2 or rivals Z-axis tap
+        val absX = abs(lx)
+        val absY = abs(ly)
+        val maxLateral = max(absX, absY)
+        if (absX >= maxLateralAccel || absY >= maxLateralAccel || maxLateral > absZ * lateralRatioLimit) {
             return false
         }
 
@@ -78,8 +81,7 @@ class BackTapDetector(
     }
 
     /**
-     * Evaluates a raw accelerometer sample using an exponential high-pass filter
-     * when [Sensor.TYPE_LINEAR_ACCELERATION] is unavailable.
+     * Evaluates a raw accelerometer sample using an exponential high-pass filter (alpha = 0.8f).
      */
     fun onRawAccelerometerSample(
         x: Float,
@@ -121,8 +123,8 @@ class BackTapDetector(
         val z = event.values.getOrNull(2) ?: return
         val nowMs = System.currentTimeMillis()
         when (event.sensor.type) {
-            Sensor.TYPE_LINEAR_ACCELERATION -> onLinearAccelerationSample(x, y, z, nowMs)
             Sensor.TYPE_ACCELEROMETER -> onRawAccelerometerSample(x, y, z, nowMs)
+            Sensor.TYPE_LINEAR_ACCELERATION -> onLinearAccelerationSample(x, y, z, nowMs)
         }
     }
 
@@ -132,7 +134,7 @@ class BackTapDetector(
 
     companion object {
         const val MIN_SENSITIVITY = 4f
-        const val MAX_SENSITIVITY = 14f
-        const val DEFAULT_SENSITIVITY = 7.5f
+        const val MAX_SENSITIVITY = 16f
+        const val DEFAULT_SENSITIVITY = 9.5f
     }
 }

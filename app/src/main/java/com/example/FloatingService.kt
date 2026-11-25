@@ -34,6 +34,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
@@ -153,6 +154,17 @@ class FloatingService : Service() {
     private var isShakeListenerRegistered = false
     private var backTapDetector: BackTapDetector? = null
     private var isBackTapListenerRegistered = false
+    private var backTapWakeLock: PowerManager.WakeLock? = null
+    private var isScreenStateReceiverRegistered = false
+
+    private val screenStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_ON -> updateBackTapWakeLock(shouldHold = true)
+                Intent.ACTION_SCREEN_OFF -> updateBackTapWakeLock(shouldHold = false)
+            }
+        }
+    }
 
     companion object {
         const val ACTION_UPDATE_SETTINGS = "com.example.UPDATE_SETTINGS"
@@ -189,6 +201,21 @@ class FloatingService : Service() {
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboardManager.addPrimaryClipChangedListener(clipListener)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        if (!isScreenStateReceiverRegistered) {
+            val screenFilter = IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_SCREEN_OFF)
+            }
+            runCatching {
+                ContextCompat.registerReceiver(
+                    this,
+                    screenStateReceiver,
+                    screenFilter,
+                    ContextCompat.RECEIVER_EXPORTED
+                )
+                isScreenStateReceiverRegistered = true
+            }
+        }
         syncShakeTorchListener()
         syncBackTapListener()
         SmartDotAccessibilityService.syncUserPausedFromPrefs(this)
@@ -691,6 +718,18 @@ class FloatingService : Service() {
             popupWindow.isOutsideTouchable = true
             popupWindow.isFocusable = true
             popupWindow.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            popupWindow.setTouchInterceptor { _, event ->
+                val isOutsideBounds = event.action == MotionEvent.ACTION_OUTSIDE ||
+                    (event.action == MotionEvent.ACTION_DOWN &&
+                        (event.x < 0f || event.x > popupWidth.toFloat() ||
+                            event.y < 0f || event.y > popupHeight.toFloat()))
+                if (isOutsideBounds) {
+                    popupWindow.dismiss()
+                    true
+                } else {
+                    false
+                }
+            }
 
             popupWindow.setOnDismissListener {
                 lastDismissTime = System.currentTimeMillis()
@@ -1188,6 +1227,8 @@ class FloatingService : Service() {
             "floating_calculator" -> R.drawable.ic_tab_calc
             "floating_translator" -> R.drawable.ic_tab_translate
             "floating_viewer" -> android.R.drawable.ic_menu_gallery
+            "floating_photos_videos" -> android.R.drawable.ic_menu_gallery
+            "floating_music" -> android.R.drawable.ic_media_play
             "floating_media_files" -> android.R.drawable.ic_menu_gallery
             "floating_whatsapp" -> R.drawable.ic_radial_whatsapp
             "floating_instagram", "floating_facebook", "floating_telegram" -> R.drawable.ic_floating_window
@@ -1564,6 +1605,14 @@ class FloatingService : Service() {
                 "floating_viewer" -> {
                     activePopupWindow?.dismiss()
                     FloatingMiniApps.openFloatingViewer(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor())
+                }
+                "floating_photos_videos" -> {
+                    activePopupWindow?.dismiss()
+                    FloatingMiniApps.openFloatingPhotosVideosGallery(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor())
+                }
+                "floating_music" -> {
+                    activePopupWindow?.dismiss()
+                    FloatingMiniApps.openFloatingMusicPlayer(this, getOrCreateFloatingWindowManager(), getConfiguredAccentColor())
                 }
                 "floating_media_files" -> {
                     activePopupWindow?.dismiss()
@@ -3097,6 +3146,29 @@ class FloatingService : Service() {
     // -------------------------------------------------------------
     // Double-Tap Back of Phone to Toggle Mobile Data (Zero Vibration)
     // -------------------------------------------------------------
+    private fun updateBackTapWakeLock(shouldHold: Boolean) {
+        val enabled = prefs.getBoolean(PREF_BACK_TAP_DATA_ENABLED, false)
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val screenInteractive = powerManager?.isInteractive ?: true
+        if (enabled && shouldHold && screenInteractive && powerManager != null) {
+            val lock = backTapWakeLock ?: powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "SmartDot::BackTapWakeLock"
+            ).apply {
+                setReferenceCounted(false)
+            }.also { backTapWakeLock = it }
+            if (!lock.isHeld) {
+                runCatching { lock.acquire(60 * 60 * 1000L) }
+            }
+        } else {
+            backTapWakeLock?.let { lock ->
+                if (lock.isHeld) {
+                    runCatching { lock.release() }
+                }
+            }
+        }
+    }
+
     private fun syncBackTapListener() {
         val manager = sensorManager ?: (getSystemService(Context.SENSOR_SERVICE) as? SensorManager)?.also {
             sensorManager = it
@@ -3114,19 +3186,23 @@ class FloatingService : Service() {
             }.also { backTapDetector = it }
             detector.setThreshold(sensitivity)
             if (!isBackTapListenerRegistered) {
-                val sensor = manager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
-                    ?: manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+                val sensor = manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+                    ?: manager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
                     ?: return
                 isBackTapListenerRegistered = manager.registerListener(
                     detector,
                     sensor,
-                    SensorManager.SENSOR_DELAY_GAME
+                    SensorManager.SENSOR_DELAY_FASTEST
                 )
             }
-        } else if (isBackTapListenerRegistered) {
-            backTapDetector?.let { manager.unregisterListener(it) }
-            backTapDetector?.reset()
-            isBackTapListenerRegistered = false
+            updateBackTapWakeLock(shouldHold = true)
+        } else {
+            if (isBackTapListenerRegistered) {
+                backTapDetector?.let { manager.unregisterListener(it) }
+                backTapDetector?.reset()
+                isBackTapListenerRegistered = false
+            }
+            updateBackTapWakeLock(shouldHold = false)
         }
     }
 
@@ -3786,6 +3862,12 @@ class FloatingService : Service() {
             backTapDetector?.reset()
             isBackTapListenerRegistered = false
         }
+        backTapWakeLock?.let { lock ->
+            if (lock.isHeld) {
+                runCatching { lock.release() }
+            }
+        }
+        backTapWakeLock = null
         removeStopRecordingPill()
         if (screenRecorderManager?.isRecording == true) {
             screenRecorderManager?.stopRecording()
@@ -3810,6 +3892,10 @@ class FloatingService : Service() {
                 Log.e("FloatingService", "Receiver clean failed", e)
             }
             isUpdateReceiverRegistered = false
+        }
+        if (isScreenStateReceiverRegistered) {
+            runCatching { unregisterReceiver(screenStateReceiver) }
+            isScreenStateReceiverRegistered = false
         }
 
         edgeGestureDetector?.cancelAll()

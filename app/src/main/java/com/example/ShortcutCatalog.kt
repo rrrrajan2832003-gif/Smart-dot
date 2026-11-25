@@ -19,7 +19,9 @@ val ACTION_LIST = listOf(
     AvailableAction("floating_notes", "Floating Notes", "Floating Mini-Apps", "Sticky notepad backed by local Room database"),
     AvailableAction("floating_calculator", "Floating Calculator", "Floating Mini-Apps", "Resizable calculator window with live formula evaluation"),
     AvailableAction("floating_translator", "Floating Translator", "Floating Mini-Apps", "Auto-detect offline ML Kit translator in a floating window"),
-    AvailableAction("floating_viewer", "Floating File/Image Viewer", "Floating Mini-Apps", "Zero-permission Photo Picker & document viewer window"),
+    AvailableAction("floating_viewer", "Floating File/Image Viewer", "Floating Mini-Apps", "In-app floating Photos & Videos grid plus document viewer window"),
+    AvailableAction("floating_photos_videos", "Floating Photos & Videos", "Floating Mini-Apps", "In-app thumbnail grid of device photos & videos with built-in zoom viewer & player"),
+    AvailableAction("floating_music", "Floating Music & Voice Player", "Floating Mini-Apps", "Pre-loaded floating audio library & voice recording player with sync"),
     AvailableAction("floating_media_files", "Floating Media & Files", "Floating Mini-Apps", "All-in-one floating file manager, image viewer, video & audio player"),
     AvailableAction("floating_whatsapp", "Floating WhatsApp", "Floating Mini-Apps", "Movable resizable WhatsApp Web window with persistent login"),
     AvailableAction("floating_instagram", "Floating Instagram", "Floating Mini-Apps", "Movable resizable Instagram window inside SmartDot"),
@@ -112,6 +114,8 @@ fun resolveShortcutShortLabel(actionId: String): String {
         "floating_calculator" -> "Calc Win"
         "floating_translator" -> "Trans Win"
         "floating_viewer" -> "Viewer"
+        "floating_photos_videos" -> "Gallery"
+        "floating_music" -> "Music"
         "floating_media_files" -> "Media/Files"
         "floating_whatsapp" -> "WhatsApp"
         "floating_instagram" -> "Instagram"

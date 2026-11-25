@@ -93,7 +93,13 @@ object FloatingMiniApps {
     @Volatile
     internal var pendingBrowserUploadImageUri: Uri? = null
 
-    private val browserNavigators = WeakHashMap<View, (String, Uri?) -> Unit>()
+    @Volatile
+    internal var pendingBrowserUploadImageBase64: String? = null
+
+    @Volatile
+    internal var pendingBrowserUploadPromptText: String? = null
+
+    private val browserNavigators = WeakHashMap<View, (String, Uri?, String?, String?) -> Unit>()
 
     // --- Bookmarks Persistence ---
     fun getBrowserBookmarks(context: Context): List<BookmarkEntry> {
@@ -376,10 +382,16 @@ object FloatingMiniApps {
         accentColor: Int,
         initialUrl: String = "https://www.google.com",
         navigateIfOpen: Boolean = false,
-        preloadImageUri: Uri? = null
+        preloadImageUri: Uri? = null,
+        preloadImageBase64: String? = null,
+        preloadPromptText: String? = null
     ): FloatingWindowManager.ManagedWindow? {
         if (preloadImageUri != null) {
             pendingBrowserUploadImageUri = preloadImageUri
+        }
+        if (preloadImageBase64 != null) {
+            pendingBrowserUploadImageBase64 = preloadImageBase64
+            pendingBrowserUploadPromptText = preloadPromptText
         }
         val alreadyOpen = manager.hasWindow("floating_browser")
         val managedWin = manager.openOrFocusWindow(
@@ -976,9 +988,13 @@ object FloatingMiniApps {
             renderTabsStrip()
             refreshMenuItems()
 
-            browserNavigators[managed.rootView] = { nextUrl, imgUri ->
+            browserNavigators[managed.rootView] = { nextUrl, imgUri, imgB64, promptTxt ->
                 if (imgUri != null) {
                     pendingBrowserUploadImageUri = imgUri
+                }
+                if (imgB64 != null) {
+                    pendingBrowserUploadImageBase64 = imgB64
+                    pendingBrowserUploadPromptText = promptTxt
                 }
                 hideAllSheets()
                 loadUrlInActiveTab(nextUrl)
@@ -994,6 +1010,8 @@ object FloatingMiniApps {
             val cleanup: () -> Unit = {
                 browserNavigators.remove(managed.rootView)
                 pendingBrowserUploadImageUri = null
+                pendingBrowserUploadImageBase64 = null
+                pendingBrowserUploadPromptText = null
                 tabs.forEach { tab ->
                     runCatching {
                         tab.webView.stopLoading()
@@ -1006,7 +1024,12 @@ object FloatingMiniApps {
         }
 
         if (alreadyOpen && navigateIfOpen && managedWin != null) {
-            browserNavigators[managedWin.rootView]?.invoke(normalizeBrowserInput(initialUrl), preloadImageUri)
+            browserNavigators[managedWin.rootView]?.invoke(
+                normalizeBrowserInput(initialUrl),
+                preloadImageUri,
+                preloadImageBase64,
+                preloadPromptText
+            )
         }
         return managedWin
     }
@@ -1185,6 +1208,28 @@ object FloatingMiniApps {
         return FloatingMediaFilesHelper.openFloatingMediaFiles(context, manager, accentColor)
     }
 
+    fun openFloatingPhotosVideosGallery(
+        context: Context,
+        manager: FloatingWindowManager,
+        accentColor: Int
+    ): FloatingWindowManager.ManagedWindow? {
+        return FloatingMediaFilesHelper.openFloatingPhotosVideosGallery(context, manager, accentColor)
+    }
+
+    fun openFloatingMusicPlayer(
+        context: Context,
+        manager: FloatingWindowManager,
+        accentColor: Int
+    ): FloatingWindowManager.ManagedWindow? {
+        return FloatingMediaFilesHelper.openFloatingMusicPlayer(context, manager, accentColor)
+    }
+
+    internal fun encodeBitmapToPngBase64(bitmap: Bitmap): String {
+        val baos = java.io.ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, baos)
+        return android.util.Base64.encodeToString(baos.toByteArray(), android.util.Base64.NO_WRAP)
+    }
+
     fun openGoogleAiModeInBrowser(
         context: Context,
         manager: FloatingWindowManager,
@@ -1196,6 +1241,9 @@ object FloatingMiniApps {
         val cleanQuestion = question.trim()
         val imageUri = cutoutBitmap?.let { bmp ->
             SelectionToolbarHelper.writeCutoutToCacheUri(context, bmp, fileName = "cutout.png")
+        }
+        val imageBase64 = cutoutBitmap?.let { bmp ->
+            encodeBitmapToPngBase64(bmp)
         }
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         if (imageUri != null) {
@@ -1210,15 +1258,20 @@ object FloatingMiniApps {
                 }
             }
         }
-        val effectiveQuery = if (imageUri != null) "" else query
-        val url = SelectionToolbarHelper.buildGoogleAiModeUrl(effectiveQuery, cleanQuestion)
+        val url = if (imageUri != null) {
+            "https://www.google.com/search?udm=50"
+        } else {
+            SelectionToolbarHelper.buildGoogleAiModeUrl(query, cleanQuestion)
+        }
         return openFloatingBrowser(
             context = context,
             manager = manager,
             accentColor = accentColor,
             initialUrl = url,
             navigateIfOpen = true,
-            preloadImageUri = imageUri
+            preloadImageUri = imageUri,
+            preloadImageBase64 = imageBase64,
+            preloadPromptText = cleanQuestion
         )
     }
 
@@ -1234,6 +1287,9 @@ object FloatingMiniApps {
         val imageUri = cutoutBitmap?.let { bmp ->
             SelectionToolbarHelper.writeCutoutToCacheUri(context, bmp, fileName = "cutout.png")
         }
+        val imageBase64 = cutoutBitmap?.let { bmp ->
+            encodeBitmapToPngBase64(bmp)
+        }
         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         if (imageUri != null) {
             runCatching {
@@ -1247,16 +1303,86 @@ object FloatingMiniApps {
                 }
             }
         }
-        val effectiveText = if (imageUri != null) "" else text
-        val url = SelectionToolbarHelper.buildChatGptUrl(effectiveText, cleanQuestion)
+        val url = if (imageUri != null) {
+            "https://chatgpt.com/"
+        } else {
+            SelectionToolbarHelper.buildChatGptUrl(text, cleanQuestion)
+        }
         return openFloatingBrowser(
             context = context,
             manager = manager,
             accentColor = accentColor,
             initialUrl = url,
             navigateIfOpen = true,
-            preloadImageUri = imageUri
+            preloadImageUri = imageUri,
+            preloadImageBase64 = imageBase64,
+            preloadPromptText = cleanQuestion
         )
+    }
+
+    internal fun getBase64UploadAndPromptScript(base64Png: String, promptText: String): String {
+        val safeBase64 = JSONObject.quote(base64Png)
+        val safePrompt = JSONObject.quote(promptText)
+        return """
+            (function() {
+                if (window.__smartDotCutoutInjected) return 'already_injected';
+                var b64 = $safeBase64;
+                var promptStr = $safePrompt;
+                var inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+                var imgInput = inputs.find(function(i) {
+                    var acc = (i.getAttribute('accept') || '').toLowerCase();
+                    return acc.indexOf('image') !== -1 || acc === '' || acc.indexOf('*') !== -1;
+                }) || inputs[0];
+                if (!imgInput) {
+                    var triggers = document.querySelectorAll(
+                        'button[aria-label*="image" i], button[aria-label*="upload" i], button[aria-label*="photo" i], button[aria-label*="attach" i], [data-testid*="attach" i], [data-testid*="upload" i]'
+                    );
+                    if (triggers.length > 0 && !window.__smartDotTriggerOpened) {
+                        window.__smartDotTriggerOpened = true;
+                        triggers[0].click();
+                    }
+                    return 'no_input';
+                }
+                var binary = atob(b64);
+                var len = binary.length;
+                var bytes = new Uint8Array(len);
+                for (var idx = 0; idx < len; idx++) {
+                    bytes[idx] = binary.charCodeAt(idx);
+                }
+                var file = new File([bytes], 'cutout.png', { type: 'image/png' });
+                var dataTransfer = new DataTransfer();
+                dataTransfer.items.add(file);
+                imgInput.files = dataTransfer.files;
+                imgInput.dispatchEvent(new Event('input', { bubbles: true }));
+                imgInput.dispatchEvent(new Event('change', { bubbles: true }));
+                window.__smartDotCutoutInjected = true;
+                if (promptStr && promptStr.trim().length > 0) {
+                    var box = document.querySelector('textarea#prompt-textarea, textarea[name="q"], div[contenteditable="true"], textarea');
+                    if (box) {
+                        box.focus();
+                        if (box.tagName === 'TEXTAREA' || box.tagName === 'INPUT') {
+                            var proto = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+                            if (proto && proto.set) {
+                                proto.set.call(box, promptStr);
+                            } else {
+                                box.value = promptStr;
+                            }
+                        } else {
+                            box.textContent = promptStr;
+                        }
+                        box.dispatchEvent(new Event('input', { bubbles: true }));
+                        box.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    setTimeout(function() {
+                        var submitBtn = document.querySelector('button[data-testid="send-button"], button[type="submit"], button[aria-label*="Send" i], button[aria-label*="Search" i], button[aria-label*="Submit" i]');
+                        if (submitBtn && !submitBtn.disabled) {
+                            submitBtn.click();
+                        }
+                    }, 350);
+                }
+                return 'injected';
+            })();
+        """.trimIndent()
     }
 
     internal fun getAutoUploadTriggerScript(): String = """
@@ -1309,7 +1435,27 @@ object FloatingMiniApps {
                     }
                     onTitleChanged(view?.title.orEmpty())
                     runCatching { CookieManager.getInstance().flush() }
-                    if (pendingBrowserUploadImageUri != null && view != null) {
+                    val b64 = pendingBrowserUploadImageBase64
+                    val prompt = pendingBrowserUploadPromptText.orEmpty()
+                    if (!b64.isNullOrEmpty() && view != null) {
+                        val js = getBase64UploadAndPromptScript(b64, prompt)
+                        view.evaluateJavascript(js) { res ->
+                            if (res?.contains("injected") == true) {
+                                pendingBrowserUploadImageBase64 = null
+                                pendingBrowserUploadPromptText = null
+                            }
+                        }
+                        view.postDelayed({
+                            val retryB64 = pendingBrowserUploadImageBase64
+                            if (!retryB64.isNullOrEmpty()) {
+                                val retryJs = getBase64UploadAndPromptScript(retryB64, pendingBrowserUploadPromptText.orEmpty())
+                                view.evaluateJavascript(retryJs) {
+                                    pendingBrowserUploadImageBase64 = null
+                                    pendingBrowserUploadPromptText = null
+                                }
+                            }
+                        }, 1500L)
+                    } else if (pendingBrowserUploadImageUri != null && view != null) {
                         val js = getAutoUploadTriggerScript()
                         view.evaluateJavascript(js, null)
                         view.postDelayed({
@@ -2085,186 +2231,13 @@ object FloatingMiniApps {
         manager: FloatingWindowManager,
         accentColor: Int
     ): FloatingWindowManager.ManagedWindow? {
-        return manager.openOrFocusWindow(
-            windowId = "floating_viewer",
-            title = context.getString(R.string.floating_window_title_viewer),
+        return FloatingMediaFilesHelper.openFloatingPhotosVideosGallery(
+            context = context,
+            manager = manager,
             accentColor = accentColor,
-            iconRes = android.R.drawable.ic_menu_gallery,
-            requiresTextInput = false
-        ) { managed ->
-            val container = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(context, 8f), dp(context, 8f), dp(context, 8f), dp(context, 8f))
-            }
-
-            val topBtns = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    bottomMargin = dp(context, 6f)
-                }
-            }
-
-            val tvFileInfo = TextView(context).apply {
-                tag = "fw_viewer_status"
-                text = "Pick an image or text document via Android Photo Picker / Files."
-                textSize = 11.5f
-                setTextColor(Color.parseColor("#94A3B8"))
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    bottomMargin = dp(context, 6f)
-                }
-            }
-
-            val imageView = FloatingMediaFilesHelper.PinchZoomImageView(context).apply {
-                tag = "fw_viewer_image"
-                visibility = View.GONE
-                layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT
-                )
-            }
-
-            val tvFilePreview = TextView(context).apply {
-                tag = "fw_viewer_text"
-                text = ""
-                textSize = 12f
-                setTextColor(Color.WHITE)
-                setPadding(dp(context, 8f), dp(context, 8f), dp(context, 8f), dp(context, 8f))
-            }
-            val textScroll = ScrollView(context).apply {
-                visibility = View.GONE
-                layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT
-                )
-                addView(tvFilePreview)
-            }
-
-            val previewHost = FrameLayout(context).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    0,
-                    1f
-                )
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(context, 10f).toFloat()
-                    setColor(Color.parseColor("#1E293B"))
-                }
-                addView(imageView)
-                addView(textScroll)
-            }
-
-            fun loadUriIntoViewer(uri: Uri, isImage: Boolean) {
-                val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull().orEmpty()
-                if (isImage || mime.startsWith("image/")) {
-                    imageView.resetZoom()
-                    val bmp = runCatching {
-                        context.contentResolver.openInputStream(uri)?.use { stream ->
-                            BitmapFactory.decodeStream(stream)
-                        }
-                    }.getOrNull()
-                    if (bmp != null) {
-                        imageView.setImageBitmap(bmp)
-                    } else {
-                        imageView.setImageURI(uri)
-                    }
-                    imageView.visibility = View.VISIBLE
-                    textScroll.visibility = View.GONE
-                    tvFileInfo.text = uri.lastPathSegment ?: "Selected Image"
-                } else {
-                    val textBody = runCatching {
-                        context.contentResolver.openInputStream(uri)?.use { stream ->
-                            val buf = ByteArray(64 * 1024)
-                            val read = stream.read(buf)
-                            if (read > 0) String(buf, 0, read, Charsets.UTF_8) else "(Empty file)"
-                        } ?: "Unable to open selected file."
-                    }.getOrElse { "Preview unavailable for binary file: ${uri.lastPathSegment ?: uri}" }
-                    tvFilePreview.text = textBody
-                    textScroll.visibility = View.VISIBLE
-                    imageView.visibility = View.GONE
-                    tvFileInfo.text = uri.lastPathSegment ?: "Selected Document"
-                }
-            }
-
-            val btnPickImage = Button(context).apply {
-                tag = "fw_viewer_pick_image"
-                text = "Pick Image"
-                textSize = 11.5f
-                setTextColor(Color.BLACK)
-                backgroundTintList = null
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(context, 8f).toFloat()
-                    setColor(accentColor)
-                }
-                layoutParams = LinearLayout.LayoutParams(0, dp(context, 38f), 1f).apply {
-                    marginEnd = dp(context, 6f)
-                }
-                setOnClickListener {
-                    ViewerPickerActivity.pendingCallback = { uri, isImg ->
-                        loadUriIntoViewer(uri, isImg)
-                    }
-                    val intent = Intent(context, ViewerPickerActivity::class.java).apply {
-                        putExtra(ViewerPickerActivity.EXTRA_PICK_MODE, ViewerPickerActivity.MODE_IMAGE)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(intent)
-                }
-            }
-
-            val btnPickFile = Button(context).apply {
-                tag = "fw_viewer_pick_file"
-                text = "Open File"
-                textSize = 11.5f
-                setTextColor(Color.WHITE)
-                backgroundTintList = null
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(context, 8f).toFloat()
-                    setColor(Color.parseColor("#334155"))
-                }
-                layoutParams = LinearLayout.LayoutParams(0, dp(context, 38f), 1f)
-                setOnClickListener {
-                    ViewerPickerActivity.pendingCallback = { uri, isImg ->
-                        loadUriIntoViewer(uri, isImg)
-                    }
-                    val intent = Intent(context, ViewerPickerActivity::class.java).apply {
-                        putExtra(ViewerPickerActivity.EXTRA_PICK_MODE, ViewerPickerActivity.MODE_FILE)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(intent)
-                }
-            }
-
-            managed.setMenuItems(
-                listOf(
-                    FloatingWindowManager.WindowMenuItem("pick_img", "🖼 Pick Image (Photo Picker)") {
-                        btnPickImage.performClick()
-                    },
-                    FloatingWindowManager.WindowMenuItem("open_file", "📂 Open Document (SAF)") {
-                        btnPickFile.performClick()
-                    },
-                    FloatingWindowManager.WindowMenuItem("open_media", "🎵 Open Full Media & Files") {
-                        openFloatingMediaFiles(context, manager, accentColor)
-                    }
-                )
-            )
-
-            topBtns.addView(btnPickImage)
-            topBtns.addView(btnPickFile)
-
-            container.addView(topBtns)
-            container.addView(tvFileInfo)
-            container.addView(previewHost)
-
-            val cleanup: () -> Unit = {
-                ViewerPickerActivity.pendingCallback = null
-            }
-            container to cleanup
-        }
+            windowId = "floating_viewer",
+            windowTitle = context.getString(R.string.floating_window_title_viewer)
+        )
     }
 
     /**
