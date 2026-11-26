@@ -48,50 +48,22 @@ object SwipeGestureHelper {
 
     val GESTURE_ACTIONS: List<GestureActionOption> = listOf(
         GestureActionOption("none", "None"),
-        GestureActionOption("open_menu", "Open Floating Menu"),
-        GestureActionOption("back", "Back"),
-        GestureActionOption("home", "Home"),
-        GestureActionOption("recent_apps", "Recents"),
-        GestureActionOption("lock_screen", "Lock Screen"),
-        GestureActionOption("floating_window", "Floating Window"),
-        GestureActionOption("floating_media_files", "Floating Media & Files"),
-        GestureActionOption("floating_photos_videos", "Floating Photos & Videos"),
-        GestureActionOption("floating_music", "Floating Music & Voice Player"),
-        GestureActionOption("floating_browser", "Floating Browser"),
-        GestureActionOption("floating_whatsapp", "Floating WhatsApp"),
-        GestureActionOption("floating_instagram", "Floating Instagram"),
-        GestureActionOption("floating_facebook", "Floating Facebook"),
-        GestureActionOption("floating_youtube", "Floating YouTube"),
-        GestureActionOption("floating_telegram", "Floating Telegram"),
-        GestureActionOption("realme_smart_sidebar", "Realme Smart Sidebar"),
-        GestureActionOption("split_screen", "Split Screen"),
-        GestureActionOption("screenshot", "Screenshot"),
-        GestureActionOption("notifications", "Notification Panel"),
-        GestureActionOption("quick_settings", "Quick Settings"),
-        GestureActionOption("flashlight", "Flashlight"),
-        GestureActionOption("wifi", "Wi-Fi Toggle"),
-        GestureActionOption("mobile_data", "Mobile Data Toggle"),
-        GestureActionOption("bluetooth", "Bluetooth Toggle"),
-        GestureActionOption("auto_rotate", "Auto-Rotate Toggle"),
-        GestureActionOption("screen_copy", "Screen Text Copy"),
-        GestureActionOption("screen_translate", "Screen Translate"),
-        GestureActionOption("screen_record", "Screen Recording"),
-        GestureActionOption("ask_ai", "AI Assistant (Ask AI)"),
-        GestureActionOption("voice_assistant", "Voice Assistant"),
-        GestureActionOption("chrome_incognito", "Chrome Incognito"),
-        GestureActionOption("chrome_search", "Chrome Search"),
-        GestureActionOption("youtube_subscriptions", "YouTube Subscriptions"),
-        GestureActionOption("youtube_search", "YouTube Search"),
-        GestureActionOption("whatsapp_chat", "WhatsApp Direct Chat"),
-        GestureActionOption("whatsapp_camera", "WhatsApp Camera"),
-        GestureActionOption("settings_wifi", "Settings: Wi-Fi"),
-        GestureActionOption("settings_bluetooth", "Settings: Bluetooth"),
-        GestureActionOption("settings_battery", "Settings: Battery"),
-        GestureActionOption("settings_app_info", "Settings: App Info"),
-        GestureActionOption("custom_url_intent", "Custom URL / Intent")
-    )
+        GestureActionOption("open_menu", "Open Floating Menu")
+    ) + ACTION_LIST
+        .filter { it.id != "open_menu" }
+        .map { GestureActionOption(it.id, it.name) }
 
-    fun getActionDisplayName(actionId: String): String {
+    fun getAllGestureOptions(prefs: SharedPreferences): List<GestureActionOption> {
+        val customWa = getCustomWhatsAppShortcuts(prefs).map { item ->
+            GestureActionOption(item.id, "${item.title} (WhatsApp)")
+        }
+        return GESTURE_ACTIONS + customWa
+    }
+
+    fun getActionDisplayName(actionId: String, prefs: SharedPreferences? = null): String {
+        if (prefs != null && isCustomWhatsAppShortcut(actionId)) {
+            findCustomWhatsAppShortcut(prefs, actionId)?.let { return it.title }
+        }
         return GESTURE_ACTIONS.firstOrNull { it.id == actionId }?.name ?: "None"
     }
 

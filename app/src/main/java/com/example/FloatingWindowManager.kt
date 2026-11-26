@@ -5,14 +5,17 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.PorterDuff
+import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.text.TextUtils
 import android.util.Log
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.webkit.WebView
 import android.widget.FrameLayout
@@ -22,6 +25,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import kotlin.math.abs
 
 /**
@@ -73,7 +78,10 @@ class FloatingWindowManager(
         var bubbleView: FrameLayout? = null,
         var bubbleParams: WindowManager.LayoutParams? = null,
         var onCloseCleanup: (() -> Unit)? = null,
-        internal var menuBackdrop: View? = null
+        var onBackPressed: (() -> Boolean)? = null,
+        internal var menuBackdrop: View? = null,
+        internal var keyboardLayoutListener: ViewTreeObserver.OnGlobalLayoutListener? = null,
+        internal var preKeyboardY: Int? = null
     ) {
         private val density = rootView.resources.displayMetrics.density.coerceAtLeast(1f)
 
@@ -195,16 +203,12 @@ class FloatingWindowManager(
         val initialX = (((screenW - defaultW) / 2) + cascadeOffset).coerceIn(8, (screenW - defaultW - 8).coerceAtLeast(8))
         val initialY = (((screenH - defaultH) / 3) + cascadeOffset).coerceIn(24, (screenH - defaultH - 24).coerceAtLeast(24))
 
-        val lpFlags = if (requiresTextInput) {
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-        } else {
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-        }
+        @Suppress("UNUSED_VARIABLE")
+        val unusedFocusArg = requiresTextInput
+        // Always omit FLAG_NOT_FOCUSABLE so Back key events and text inputs work across all floating windows
+        val lpFlags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
 
         val lp = WindowManager.LayoutParams(
             defaultW,
@@ -220,6 +224,7 @@ class FloatingWindowManager(
         }
 
         var outsideMenuDismissHandler: ((MotionEvent) -> Unit)? = null
+        var managedRef: ManagedWindow? = null
         val root = object : LinearLayout(context) {
             override fun onTouchEvent(event: MotionEvent): Boolean {
                 if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
@@ -234,9 +239,37 @@ class FloatingWindowManager(
                 }
                 return super.dispatchTouchEvent(ev)
             }
+
+            override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+                if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+                    if (event.action == KeyEvent.ACTION_DOWN) {
+                        if (event.repeatCount == 0) {
+                            event.startTracking()
+                        }
+                        return true
+                    }
+                    if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) {
+                        val m = managedRef
+                        if (m != null) {
+                            if (m.menuDrawer.visibility == View.VISIBLE) {
+                                m.closeMenu()
+                                return true
+                            }
+                            if (m.onBackPressed?.invoke() == true) {
+                                return true
+                            }
+                            minimizeToBubble(m)
+                            return true
+                        }
+                    }
+                }
+                return super.dispatchKeyEvent(event)
+            }
         }.apply {
             orientation = LinearLayout.VERTICAL
             tag = "fw_window_$windowId"
+            isFocusable = true
+            isFocusableInTouchMode = true
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = 16f * density
@@ -451,8 +484,33 @@ class FloatingWindowManager(
         bodyOverlay.addView(menuDrawer)
         bodyOverlay.addView(resizeGrip)
 
+        // Bottom Pill Handle Bar (Swipe up > 80px to minimize into floating bubble)
+        val bottomPillHandle = FrameLayout(context).apply {
+            tag = "fw_bottom_pill_$windowId"
+            contentDescription = "Swipe up to minimize $title"
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (20 * density).toInt()
+            )
+            setPadding(0, (6 * density).toInt(), 0, (6 * density).toInt())
+        }
+        val pillThumb = View(context).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                (48 * density).toInt(),
+                (4 * density).toInt(),
+                Gravity.CENTER
+            )
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 4f * density
+                setColor(Color.parseColor("#64748B"))
+            }
+        }
+        bottomPillHandle.addView(pillThumb)
+
         root.addView(titleBar)
         root.addView(bodyOverlay)
+        root.addView(bottomPillHandle)
 
         val managed = ManagedWindow(
             windowId = windowId,
@@ -471,6 +529,57 @@ class FloatingWindowManager(
             savedBounds = WindowBounds(initialX, initialY, defaultW, defaultH),
             menuBackdrop = menuBackdrop
         )
+        managedRef = managed
+
+        bottomPillHandle.setOnTouchListener(object : View.OnTouchListener {
+            private var downRawY = 0f
+            private var triggered = false
+
+            override fun onTouch(v: View, event: MotionEvent): Boolean {
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downRawY = event.rawY
+                        triggered = false
+                        return true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dy = event.rawY - downRawY
+                        if (!triggered && dy < -80f) {
+                            triggered = true
+                            minimizeToBubble(managed)
+                        }
+                        return true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        val dy = event.rawY - downRawY
+                        if (!triggered && dy < -80f) {
+                            triggered = true
+                            minimizeToBubble(managed)
+                        }
+                        return true
+                    }
+                }
+                return false
+            }
+        })
+
+        val kbListener = ViewTreeObserver.OnGlobalLayoutListener {
+            val metrics = context.resources.displayMetrics
+            val scrH = metrics.heightPixels.coerceAtLeast(1)
+            val imeInsetsBottom = ViewCompat.getRootWindowInsets(root)
+                ?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
+            val visibleFrame = Rect()
+            root.getWindowVisibleDisplayFrame(visibleFrame)
+            val frameKbHeight = if (visibleFrame.bottom > 0 && visibleFrame.bottom < scrH && (scrH - visibleFrame.bottom) > scrH * 0.15f) {
+                scrH - visibleFrame.bottom
+            } else {
+                0
+            }
+            val kbHeight = maxOf(imeInsetsBottom, frameKbHeight)
+            handleKeyboardHeightChanged(managed, kbHeight, scrH)
+        }
+        managed.keyboardLayoutListener = kbListener
+        root.viewTreeObserver.addOnGlobalLayoutListener(kbListener)
 
         menuBackdrop.setOnClickListener { managed.closeMenu() }
         outsideMenuDismissHandler = { ev ->
@@ -601,12 +710,45 @@ class FloatingWindowManager(
 
         return try {
             windowManager.addView(root, lp)
+            root.requestFocus()
             activeWindows[windowId] = managed
             managed
         } catch (e: Exception) {
             Log.e(TAG, "Failed adding floating mini-app window $windowId", e)
+            managed.keyboardLayoutListener?.let { listener ->
+                runCatching { root.viewTreeObserver.removeOnGlobalLayoutListener(listener) }
+            }
+            managed.keyboardLayoutListener = null
             runCatching { cleanup?.invoke() }
             null
+        }
+    }
+
+    fun handleKeyboardHeightChanged(
+        managed: ManagedWindow,
+        keyboardHeightPx: Int,
+        screenHeightPx: Int = context.resources.displayMetrics.heightPixels.coerceAtLeast(1)
+    ) {
+        if (managed.isMinimized) return
+        val lp = managed.layoutParams
+        if (keyboardHeightPx > 0) {
+            if (managed.preKeyboardY == null) {
+                managed.preKeyboardY = lp.y
+            }
+            val targetY = maxOf(20, screenHeightPx - keyboardHeightPx - lp.height - 24)
+            if (lp.y > targetY) {
+                lp.y = targetY
+                runCatching { windowManager.updateViewLayout(managed.rootView, lp) }
+            }
+        } else {
+            val restoreY = managed.preKeyboardY
+            if (restoreY != null) {
+                managed.preKeyboardY = null
+                if (lp.y != restoreY) {
+                    lp.y = restoreY
+                    runCatching { windowManager.updateViewLayout(managed.rootView, lp) }
+                }
+            }
         }
     }
 
@@ -733,6 +875,7 @@ class FloatingWindowManager(
         managed.isMinimized = false
         managed.rootView.visibility = View.VISIBLE
         bringToFront(managed)
+        managed.rootView.requestFocus()
     }
 
     fun bringToFront(managed: ManagedWindow) {
@@ -749,6 +892,10 @@ class FloatingWindowManager(
 
     fun closeWindow(windowId: String) {
         val managed = activeWindows.remove(windowId) ?: return
+        managed.keyboardLayoutListener?.let { listener ->
+            runCatching { managed.rootView.viewTreeObserver.removeOnGlobalLayoutListener(listener) }
+        }
+        managed.keyboardLayoutListener = null
         managed.bubbleView?.let { bubble ->
             runCatching { windowManager.removeView(bubble) }
         }

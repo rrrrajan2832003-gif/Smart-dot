@@ -118,9 +118,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val requestMediaPermissionsLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { _ ->
+        // Runtime media permissions granted/declined; Floating Gallery/Music check live status
+    }
+
+    private fun requestMissingMediaPermissionsOnLaunch() {
+        val missing = MediaPermissionActivity.requiredPermissionsForAllMedia().filter { perm ->
+            ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) {
+            runCatching {
+                requestMediaPermissionsLauncher.launch(missing.toTypedArray())
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        requestMissingMediaPermissionsOnLaunch()
 
         // Handle incoming tab selection (e.g. settings vs about_app shortcut)
         activeTabState.value = intent?.getStringExtra("open_tab") ?: "settings"
@@ -1919,7 +1937,7 @@ fun SmartDotScreen(
                             rowEntries.forEach { indexed ->
                                 val idx = indexed.index
                                 val shortcutId = indexed.value
-                                val label = getActionName(shortcutId)
+                                val label = getActionName(shortcutId, prefs)
                                 Surface(
                                     color = Color(0xFF0F172A),
                                     shape = RoundedCornerShape(10.dp),
@@ -2002,6 +2020,170 @@ fun SmartDotScreen(
                             .testTag("btn_save_custom_uri")
                     ) {
                         Text("Save", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                // Direct WhatsApp Chat / Meta AI Shortcut Builder
+                var customWaTitleInput by remember { mutableStateOf("") }
+                var customWaPhoneInput by remember { mutableStateOf("") }
+                val customWaShortcuts = remember {
+                    mutableStateListOf<CustomWhatsAppShortcut>().apply {
+                        addAll(getCustomWhatsAppShortcuts(prefs))
+                    }
+                }
+                val builderAccent = Color(android.graphics.Color.parseColor(dotColor))
+
+                Spacer(modifier = Modifier.height(14.dp))
+                Surface(
+                    color = Color(0xFF0F172A),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFF334155)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("custom_wa_builder_card")
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = "Direct WhatsApp Chat / Meta AI",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = builderAccent
+                        )
+                        Text(
+                            text = "Create 1-tap shortcuts to any WhatsApp chat or Meta AI inside Floating WhatsApp.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF94A3B8),
+                            modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
+                        )
+                        OutlinedTextField(
+                            value = customWaTitleInput,
+                            onValueChange = { customWaTitleInput = it },
+                            placeholder = { Text("Shortcut Title (e.g. Meta AI, Work Chat)", color = Color(0xFF64748B), fontSize = 11.sp) },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedBorderColor = builderAccent,
+                                unfocusedBorderColor = Color(0xFF475569),
+                                focusedContainerColor = Color(0xFF1E293B),
+                                unfocusedContainerColor = Color(0xFF1E293B)
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("input_custom_wa_title")
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = customWaPhoneInput,
+                                onValueChange = { customWaPhoneInput = it },
+                                placeholder = { Text("Phone + Country Code (e.g. 13135550002)", color = Color(0xFF64748B), fontSize = 11.sp) },
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White,
+                                    focusedBorderColor = builderAccent,
+                                    unfocusedBorderColor = Color(0xFF475569),
+                                    focusedContainerColor = Color(0xFF1E293B),
+                                    unfocusedContainerColor = Color(0xFF1E293B)
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("input_custom_wa_phone")
+                            )
+                            Button(
+                                onClick = {
+                                    val saved = saveCustomWhatsAppShortcut(prefs, customWaTitleInput, customWaPhoneInput)
+                                    if (saved == null) {
+                                        Toast.makeText(context, "Enter both a title and valid phone number.", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        customWaShortcuts.clear()
+                                        customWaShortcuts.addAll(getCustomWhatsAppShortcuts(prefs))
+                                        if (!shortcutsList.contains(saved.id)) {
+                                            shortcutsList.add(saved.id)
+                                            saveShortcutsList(prefs, shortcutsList)
+                                            updateServiceStyle()
+                                        }
+                                        customWaTitleInput = ""
+                                        customWaPhoneInput = ""
+                                        Toast.makeText(context, "Added ${saved.title} WhatsApp shortcut", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = builderAccent,
+                                    contentColor = Color.Black
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .testTag("btn_save_custom_wa")
+                            ) {
+                                Text("Save & Add", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        if (customWaShortcuts.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            customWaShortcuts.forEach { item ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = item.title,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Color.White
+                                        )
+                                        Text(
+                                            text = "+${item.phoneDigits}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color(0xFF94A3B8)
+                                        )
+                                    }
+                                    if (!shortcutsList.contains(item.id)) {
+                                        TextButton(
+                                            onClick = {
+                                                shortcutsList.add(item.id)
+                                                saveShortcutsList(prefs, shortcutsList)
+                                                updateServiceStyle()
+                                            },
+                                            modifier = Modifier.testTag("btn_add_custom_wa_${item.id}")
+                                        ) {
+                                            Text("Add", color = builderAccent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            deleteCustomWhatsAppShortcut(prefs, item.id)
+                                            customWaShortcuts.clear()
+                                            customWaShortcuts.addAll(getCustomWhatsAppShortcuts(prefs))
+                                            if (shortcutsList.remove(item.id)) {
+                                                saveShortcutsList(prefs, shortcutsList)
+                                                updateServiceStyle()
+                                            }
+                                        },
+                                        modifier = Modifier
+                                            .size(40.dp)
+                                            .testTag("btn_delete_custom_wa_${item.id}")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Delete,
+                                            contentDescription = "Delete ${item.title}",
+                                            tint = Color(0xFFEF4444)
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -2541,7 +2723,8 @@ fun SmartDotScreen(
 
         if (showSelectorDialog && activeSlotIndex >= 0) {
             val isEditingExisting = activeSlotIndex in shortcutsList.indices
-            val categoriesList = remember { listOf("All") + ACTION_LIST.map { it.category }.distinct() }
+            val allAvailableActions = getAllAvailableActions(prefs)
+            val categoriesList = listOf("All") + allAvailableActions.map { it.category }.distinct()
             val accentDialogColor = Color(android.graphics.Color.parseColor(dotColor))
 
             AlertDialog(
@@ -2659,9 +2842,9 @@ fun SmartDotScreen(
                                 .fillMaxWidth()
                         ) {
                             val filteredActions = if (selectedCategoryFilter == "All") {
-                                ACTION_LIST
+                                allAvailableActions
                             } else {
-                                ACTION_LIST.filter { it.category == selectedCategoryFilter }
+                                allAvailableActions.filter { it.category == selectedCategoryFilter }
                             }
                             val categories = filteredActions.groupBy { it.category }
                             val scrollStateDiag = rememberScrollState()
@@ -2789,7 +2972,8 @@ private fun getShortcutAction(index: Int, prefs: android.content.SharedPreferenc
     return prefs.getString("shortcut_$index", defaults.getOrElse(index) { "settings" }) ?: "settings"
 }
 
-private fun getActionName(actionId: String): String = resolveShortcutShortLabel(actionId)
+private fun getActionName(actionId: String, prefs: android.content.SharedPreferences? = null): String =
+    resolveShortcutShortLabel(actionId, prefs)
 
 @Composable
 fun PermissionStatusRow(

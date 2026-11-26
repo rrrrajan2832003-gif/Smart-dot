@@ -21,6 +21,12 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
     <uses-feature
         android:name="android.hardware.camera.any"
         android:required="false" />
@@ -129,6 +135,13 @@
 
         <activity
             android:name=".ViewerPickerActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.TransparentConsent" />
+
+        <activity
+            android:name=".MediaPermissionActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:launchMode="singleTop"

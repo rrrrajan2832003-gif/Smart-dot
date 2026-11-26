@@ -34,12 +34,17 @@ import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.VideoView
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 
 /**
- * Play-Policy-compliant All-in-One Floating Media Player & File Manager:
- * - Browses Downloads, Pictures, Movies, Music, and Documents via zero-permission MediaStore,
+ * All-in-One Floating Media Player & File Manager:
+ * - Browses Downloads, Pictures, Movies, Music, and Documents via MediaStore on Dispatchers.IO,
  *   public directory reads where permitted, Android Photo Picker, and SAF (OpenDocument / OpenDocumentTree).
  * - Built-in Image Viewer with pinch-to-zoom & fit-to-window.
  * - Built-in Video Player (VideoView + Play/Pause, SeekBar, Mute).
@@ -410,6 +415,8 @@ object FloatingMediaFilesHelper {
             }
 
             val mainHandler = Handler(Looper.getMainLooper())
+            val mediaJob = SupervisorJob()
+            val mediaScope = CoroutineScope(Dispatchers.Main.immediate + mediaJob)
             var currentCategory = MediaFolderCategory.DOWNLOADS
             var currentFolderItems: List<MediaItem> = emptyList()
             var audioQueue: List<MediaItem> = emptyList()
@@ -418,6 +425,7 @@ object FloatingMediaFilesHelper {
             var isVideoMuted = false
             var activeVideoPlayer: android.media.MediaPlayer? = null
             var isReleased = false
+            var folderLoadSeq = 0
 
             // --- 1. File Browser View ---
             val browserView = LinearLayout(context).apply {
@@ -506,7 +514,29 @@ object FloatingMediaFilesHelper {
             miniAudioBar.addView(btnMiniPlayPause)
             miniAudioBar.addView(btnMiniExpand)
 
+            val btnGrantMediaPerm = TextView(context).apply {
+                tag = "fw_media_grant_perm"
+                text = "🔓 Grant Media Permission"
+                textSize = 12f
+                setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                setTextColor(Color.BLACK)
+                gravity = Gravity.CENTER
+                setPadding(dp(context, 12f), dp(context, 9f), dp(context, 12f), dp(context, 9f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 10f).toFloat()
+                    setColor(accentColor)
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dp(context, 6f)
+                }
+                visibility = if (MediaPermissionActivity.hasAllMediaPermissions(context)) View.GONE else View.VISIBLE
+            }
+
             browserView.addView(folderChipsScroll)
+            browserView.addView(btnGrantMediaPerm)
             browserView.addView(fileListScroll)
             browserView.addView(miniAudioBar)
 
@@ -1018,13 +1048,14 @@ object FloatingMediaFilesHelper {
                 }
             }
 
+            lateinit var renderFolderView: () -> Unit
+
             fun openPicker(mode: String) {
                 if (mode == ViewerPickerActivity.MODE_FOLDER) {
                     ViewerPickerActivity.pendingFolderCallback = { treeUri ->
                         saveSafTreeUri(context, treeUri)
-                        currentFolderItems = listFilesForFolder(context, currentCategory)
                         mainHandler.post {
-                            // Re-render happens cleanly below via reloadFolder
+                            if (!isReleased) renderFolderView()
                         }
                     }
                 } else {
@@ -1051,8 +1082,6 @@ object FloatingMediaFilesHelper {
                     }
                 )
             }
-
-            lateinit var renderFolderView: () -> Unit
 
             fun renderFolderChips() {
                 folderChipsStrip.removeAllViews()
@@ -1086,117 +1115,148 @@ object FloatingMediaFilesHelper {
             }
 
             renderFolderView = {
-                fileListContainer.removeAllViews()
-                currentFolderItems = listFilesForFolder(context, currentCategory)
-                if (currentFolderItems.isEmpty()) {
-                    val emptyCard = LinearLayout(context).apply {
-                        orientation = LinearLayout.VERTICAL
-                        gravity = Gravity.CENTER_HORIZONTAL
-                        setPadding(dp(context, 12f), dp(context, 16f), dp(context, 12f), dp(context, 16f))
-                        background = GradientDrawable().apply {
-                            cornerRadius = dp(context, 10f).toFloat()
-                            setColor(Color.parseColor("#1E293B"))
-                        }
-                    }
-                    emptyCard.addView(TextView(context).apply {
-                        tag = "fw_media_empty_state"
-                        text = "No accessible files listed in ${currentCategory.label}. Open media or grant folder access via SAF:"
-                        textSize = 12f
-                        setTextColor(Color.parseColor("#CBD5E1"))
-                        gravity = Gravity.CENTER
-                    })
-                    val actionsRow = LinearLayout(context).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.CENTER
-                        layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.MATCH_PARENT,
-                            LinearLayout.LayoutParams.WRAP_CONTENT
-                        ).apply {
-                            topMargin = dp(context, 10f)
-                        }
-                    }
-                    val btnPickImg = Button(context).apply {
-                        tag = "fw_media_pick_photo"
-                        text = "Pick Photo"
-                        textSize = 11f
-                        setTextColor(Color.BLACK)
-                        backgroundTintList = null
-                        background = GradientDrawable().apply {
-                            cornerRadius = dp(context, 8f).toFloat()
-                            setColor(accentColor)
-                        }
-                        layoutParams = LinearLayout.LayoutParams(0, dp(context, 38f), 1f).apply {
-                            marginEnd = dp(context, 6f)
-                        }
-                        setOnClickListener { openPicker(ViewerPickerActivity.MODE_IMAGE) }
-                    }
-                    val btnOpenMedia = Button(context).apply {
-                        tag = "fw_media_open_file"
-                        text = "Open Media/File"
-                        textSize = 11f
-                        setTextColor(Color.WHITE)
-                        backgroundTintList = null
-                        background = GradientDrawable().apply {
-                            cornerRadius = dp(context, 8f).toFloat()
-                            setColor(Color.parseColor("#334155"))
-                        }
-                        layoutParams = LinearLayout.LayoutParams(0, dp(context, 38f), 1f)
-                        setOnClickListener { openPicker(ViewerPickerActivity.MODE_MEDIA) }
-                    }
-                    actionsRow.addView(btnPickImg)
-                    actionsRow.addView(btnOpenMedia)
-                    emptyCard.addView(actionsRow)
-                    fileListContainer.addView(emptyCard)
+                btnGrantMediaPerm.visibility = if (MediaPermissionActivity.hasAllMediaPermissions(context)) {
+                    View.GONE
                 } else {
-                    currentFolderItems.forEachIndexed { idx, item ->
-                        val icon = when (item.fileType) {
-                            MediaFileType.IMAGE -> "🖼"
-                            MediaFileType.VIDEO -> "🎬"
-                            MediaFileType.AUDIO -> "🎵"
-                            MediaFileType.DOCUMENT -> "📄"
+                    View.VISIBLE
+                }
+                val seq = ++folderLoadSeq
+                val activeCat = currentCategory
+                mediaScope.launch {
+                    val queried = withContext(Dispatchers.IO) {
+                        listFilesForFolder(context, activeCat)
+                    }
+                    withContext(Dispatchers.Main) {
+                        if (isReleased || seq != folderLoadSeq) return@withContext
+                        btnGrantMediaPerm.visibility = if (MediaPermissionActivity.hasAllMediaPermissions(context)) {
+                            View.GONE
+                        } else {
+                            View.VISIBLE
                         }
-                        val row = LinearLayout(context).apply {
-                            tag = "fw_media_file_row_$idx"
-                            orientation = LinearLayout.HORIZONTAL
-                            gravity = Gravity.CENTER_VERTICAL
-                            setPadding(dp(context, 10f), dp(context, 8f), dp(context, 10f), dp(context, 8f))
-                            background = GradientDrawable().apply {
-                                cornerRadius = dp(context, 8f).toFloat()
-                                setColor(Color.parseColor("#1E293B"))
+                        fileListContainer.removeAllViews()
+                        currentFolderItems = queried
+                        if (currentFolderItems.isEmpty()) {
+                            val emptyCard = LinearLayout(context).apply {
+                                orientation = LinearLayout.VERTICAL
+                                gravity = Gravity.CENTER_HORIZONTAL
+                                setPadding(dp(context, 12f), dp(context, 16f), dp(context, 12f), dp(context, 16f))
+                                background = GradientDrawable().apply {
+                                    cornerRadius = dp(context, 10f).toFloat()
+                                    setColor(Color.parseColor("#1E293B"))
+                                }
                             }
-                            layoutParams = LinearLayout.LayoutParams(
-                                LinearLayout.LayoutParams.MATCH_PARENT,
-                                LinearLayout.LayoutParams.WRAP_CONTENT
-                            ).apply {
-                                bottomMargin = dp(context, 6f)
+                            emptyCard.addView(TextView(context).apply {
+                                tag = "fw_media_empty_state"
+                                text = "No accessible files listed in ${activeCat.label}. Grant media permission or open via SAF:"
+                                textSize = 12f
+                                setTextColor(Color.parseColor("#CBD5E1"))
+                                gravity = Gravity.CENTER
+                            })
+                            val actionsRow = LinearLayout(context).apply {
+                                orientation = LinearLayout.HORIZONTAL
+                                gravity = Gravity.CENTER
+                                layoutParams = LinearLayout.LayoutParams(
+                                    LinearLayout.LayoutParams.MATCH_PARENT,
+                                    LinearLayout.LayoutParams.WRAP_CONTENT
+                                ).apply {
+                                    topMargin = dp(context, 10f)
+                                }
                             }
-                            setOnClickListener { openMediaItem(item) }
+                            val btnPickImg = Button(context).apply {
+                                tag = "fw_media_pick_photo"
+                                text = "Pick Photo"
+                                textSize = 11f
+                                setTextColor(Color.BLACK)
+                                backgroundTintList = null
+                                background = GradientDrawable().apply {
+                                    cornerRadius = dp(context, 8f).toFloat()
+                                    setColor(accentColor)
+                                }
+                                layoutParams = LinearLayout.LayoutParams(0, dp(context, 38f), 1f).apply {
+                                    marginEnd = dp(context, 6f)
+                                }
+                                setOnClickListener { openPicker(ViewerPickerActivity.MODE_IMAGE) }
+                            }
+                            val btnOpenMedia = Button(context).apply {
+                                tag = "fw_media_open_file"
+                                text = "Open Media/File"
+                                textSize = 11f
+                                setTextColor(Color.WHITE)
+                                backgroundTintList = null
+                                background = GradientDrawable().apply {
+                                    cornerRadius = dp(context, 8f).toFloat()
+                                    setColor(Color.parseColor("#334155"))
+                                }
+                                layoutParams = LinearLayout.LayoutParams(0, dp(context, 38f), 1f)
+                                setOnClickListener { openPicker(ViewerPickerActivity.MODE_MEDIA) }
+                            }
+                            actionsRow.addView(btnPickImg)
+                            actionsRow.addView(btnOpenMedia)
+                            emptyCard.addView(actionsRow)
+                            fileListContainer.addView(emptyCard)
+                        } else {
+                            currentFolderItems.forEachIndexed { idx, item ->
+                                val icon = when (item.fileType) {
+                                    MediaFileType.IMAGE -> "🖼"
+                                    MediaFileType.VIDEO -> "🎬"
+                                    MediaFileType.AUDIO -> "🎵"
+                                    MediaFileType.DOCUMENT -> "📄"
+                                }
+                                val row = LinearLayout(context).apply {
+                                    tag = "fw_media_file_row_$idx"
+                                    orientation = LinearLayout.HORIZONTAL
+                                    gravity = Gravity.CENTER_VERTICAL
+                                    setPadding(dp(context, 10f), dp(context, 8f), dp(context, 10f), dp(context, 8f))
+                                    background = GradientDrawable().apply {
+                                        cornerRadius = dp(context, 8f).toFloat()
+                                        setColor(Color.parseColor("#1E293B"))
+                                    }
+                                    layoutParams = LinearLayout.LayoutParams(
+                                        LinearLayout.LayoutParams.MATCH_PARENT,
+                                        LinearLayout.LayoutParams.WRAP_CONTENT
+                                    ).apply {
+                                        bottomMargin = dp(context, 6f)
+                                    }
+                                    setOnClickListener { openMediaItem(item) }
+                                }
+                                row.addView(TextView(context).apply {
+                                    text = icon
+                                    textSize = 18f
+                                    setPadding(0, 0, dp(context, 10f), 0)
+                                })
+                                val infoCol = LinearLayout(context).apply {
+                                    orientation = LinearLayout.VERTICAL
+                                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                                }
+                                infoCol.addView(TextView(context).apply {
+                                    text = item.displayName
+                                    textSize = 12.5f
+                                    setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                                    setTextColor(Color.WHITE)
+                                    maxLines = 1
+                                    ellipsize = TextUtils.TruncateAt.END
+                                })
+                                val sizeStr = if (item.sizeBytes > 0) Formatter.formatShortFileSize(context, item.sizeBytes) else item.folderLabel
+                                infoCol.addView(TextView(context).apply {
+                                    text = "${item.fileType.name} • $sizeStr"
+                                    textSize = 10.5f
+                                    setTextColor(Color.parseColor("#94A3B8"))
+                                })
+                                row.addView(infoCol)
+                                fileListContainer.addView(row)
+                            }
                         }
-                        row.addView(TextView(context).apply {
-                            text = icon
-                            textSize = 18f
-                            setPadding(0, 0, dp(context, 10f), 0)
-                        })
-                        val infoCol = LinearLayout(context).apply {
-                            orientation = LinearLayout.VERTICAL
-                            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                        }
-                        infoCol.addView(TextView(context).apply {
-                            text = item.displayName
-                            textSize = 12.5f
-                            setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-                            setTextColor(Color.WHITE)
-                            maxLines = 1
-                            ellipsize = TextUtils.TruncateAt.END
-                        })
-                        val sizeStr = if (item.sizeBytes > 0) Formatter.formatShortFileSize(context, item.sizeBytes) else item.folderLabel
-                        infoCol.addView(TextView(context).apply {
-                            text = "${item.fileType.name} • $sizeStr"
-                            textSize = 10.5f
-                            setTextColor(Color.parseColor("#94A3B8"))
-                        })
-                        row.addView(infoCol)
-                        fileListContainer.addView(row)
+                    }
+                }
+            }
+
+            btnGrantMediaPerm.setOnClickListener {
+                MediaPermissionActivity.launchPermissionPrompt(
+                    context = context,
+                    permissions = MediaPermissionActivity.requiredPermissionsForAllMedia()
+                ) {
+                    mainHandler.post {
+                        if (!isReleased) renderFolderView()
                     }
                 }
             }
@@ -1322,6 +1382,7 @@ object FloatingMediaFilesHelper {
 
             val cleanup: () -> Unit = {
                 isReleased = true
+                mediaJob.cancel()
                 mainHandler.removeCallbacks(ticker)
                 ViewerPickerActivity.pendingCallback = null
                 ViewerPickerActivity.pendingFolderCallback = null

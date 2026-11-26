@@ -1082,11 +1082,17 @@ class InlineTextOverlayController(
                 onFullScreenTranslateClicked?.invoke()
             }
             SelectionToolbarHelper.ToolbarAction.GOOGLE_LENS -> {
+                val dismissCb = activeDismissCallback
+                dismissInternal()
                 if (onWordLensClicked != null) {
                     onWordLensClicked.invoke()
                 } else {
-                    val launched = SelectionToolbarHelper.launchNativeGoogleLens(context)
-                    if (launched) dismissWithCallback()
+                    dismissCb?.invoke()
+                    mainHandler.postDelayed({
+                        if (!SelectionToolbarHelper.launchNativeGoogleLens(context)) {
+                            Toast.makeText(context, "Google Lens unavailable.", Toast.LENGTH_SHORT).show()
+                        }
+                    }, 180L)
                 }
             }
         }
@@ -1179,8 +1185,11 @@ class InlineTextOverlayController(
             }
             SelectionToolbarHelper.ToolbarAction.GOOGLE_LENS -> {
                 dismissInternal()
-                onCutoutLensClicked?.invoke(box, viewW, viewH)
-                onDismiss()
+                if (onCutoutLensClicked != null) {
+                    onCutoutLensClicked.invoke(box, viewW, viewH)
+                } else {
+                    onDismiss()
+                }
             }
         }
     }

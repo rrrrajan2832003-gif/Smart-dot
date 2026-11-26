@@ -314,6 +314,14 @@ class ScreenTranslateController(
         }
     }
 
+    fun dismissOverlayIfShowing() {
+        ocrRequestToken++
+        translationRequestToken++
+        isActive = false
+        overlayController?.dismiss()
+        setHostOverlaysVisible(true)
+    }
+
     fun release() {
         ocrRequestToken++
         translationRequestToken++

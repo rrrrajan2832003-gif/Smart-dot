@@ -1,5 +1,9 @@
 package com.example
 
+import android.content.SharedPreferences
+import org.json.JSONArray
+import org.json.JSONObject
+
 /**
  * Unified Shortcut Catalog shared by MainActivity and FloatingService.
  * Note: Keeps "screen_translate" directly below "screen_copy" for ScreenTextCopyTest parity,
@@ -11,6 +15,104 @@ data class AvailableAction(
     val category: String,
     val description: String
 )
+
+data class CustomWhatsAppShortcut(
+    val id: String,
+    val title: String,
+    val phoneDigits: String
+) {
+    fun buildDirectChatUrl(): String = "https://web.whatsapp.com/send?phone=$phoneDigits"
+}
+
+const val CUSTOM_WA_PREFIX = "custom_wa_"
+const val PREF_CUSTOM_WHATSAPP_SHORTCUTS = "custom_whatsapp_shortcuts"
+
+fun isCustomWhatsAppShortcut(actionId: String): Boolean = actionId.startsWith(CUSTOM_WA_PREFIX)
+
+fun sanitizeWhatsAppPhoneDigits(rawPhone: String): String = rawPhone.filter { it.isDigit() }
+
+fun getCustomWhatsAppShortcuts(prefs: SharedPreferences): List<CustomWhatsAppShortcut> {
+    val raw = prefs.getString(PREF_CUSTOM_WHATSAPP_SHORTCUTS, null).orEmpty()
+    if (raw.isBlank()) return emptyList()
+    return runCatching {
+        val arr = JSONArray(raw)
+        val out = ArrayList<CustomWhatsAppShortcut>(arr.length())
+        for (i in 0 until arr.length()) {
+            val obj = arr.optJSONObject(i) ?: continue
+            val id = obj.optString("id").trim()
+            val title = obj.optString("title").trim()
+            val digits = sanitizeWhatsAppPhoneDigits(obj.optString("phone"))
+            if (id.isNotEmpty() && title.isNotEmpty() && digits.isNotEmpty()) {
+                out.add(CustomWhatsAppShortcut(id = id, title = title, phoneDigits = digits))
+            }
+        }
+        out
+    }.getOrElse { emptyList() }
+}
+
+private fun persistCustomWhatsAppShortcuts(
+    prefs: SharedPreferences,
+    items: List<CustomWhatsAppShortcut>
+) {
+    val arr = JSONArray()
+    items.forEach { item ->
+        arr.put(JSONObject().apply {
+            put("id", item.id)
+            put("title", item.title)
+            put("phone", item.phoneDigits)
+        })
+    }
+    prefs.edit().putString(PREF_CUSTOM_WHATSAPP_SHORTCUTS, arr.toString()).apply()
+}
+
+fun saveCustomWhatsAppShortcut(
+    prefs: SharedPreferences,
+    title: String,
+    rawPhone: String
+): CustomWhatsAppShortcut? {
+    val cleanTitle = title.trim()
+    val digits = sanitizeWhatsAppPhoneDigits(rawPhone)
+    if (cleanTitle.isEmpty() || digits.isEmpty()) return null
+    val current = getCustomWhatsAppShortcuts(prefs).toMutableList()
+    val existingIdx = current.indexOfFirst { it.phoneDigits == digits && it.title.equals(cleanTitle, ignoreCase = true) }
+    val entry = if (existingIdx >= 0) {
+        current[existingIdx].copy(title = cleanTitle, phoneDigits = digits).also {
+            current[existingIdx] = it
+        }
+    } else {
+        val id = "${CUSTOM_WA_PREFIX}${digits}_${System.currentTimeMillis()}"
+        CustomWhatsAppShortcut(id = id, title = cleanTitle, phoneDigits = digits).also {
+            current.add(0, it)
+        }
+    }
+    persistCustomWhatsAppShortcuts(prefs, current)
+    return entry
+}
+
+fun deleteCustomWhatsAppShortcut(prefs: SharedPreferences, id: String) {
+    val updated = getCustomWhatsAppShortcuts(prefs).filterNot { it.id == id }
+    persistCustomWhatsAppShortcuts(prefs, updated)
+}
+
+fun findCustomWhatsAppShortcut(
+    prefs: SharedPreferences,
+    actionId: String
+): CustomWhatsAppShortcut? {
+    if (!isCustomWhatsAppShortcut(actionId)) return null
+    return getCustomWhatsAppShortcuts(prefs).firstOrNull { it.id == actionId }
+}
+
+fun getAllAvailableActions(prefs: SharedPreferences): List<AvailableAction> {
+    val customActions = getCustomWhatsAppShortcuts(prefs).map { item ->
+        AvailableAction(
+            id = item.id,
+            name = item.title,
+            category = "WhatsApp Direct Chats",
+            description = "Open ${item.title} (+${item.phoneDigits}) directly in Floating WhatsApp"
+        )
+    }
+    return ACTION_LIST + customActions
+}
 
 val ACTION_LIST = listOf(
     // Floating Mini-Apps (True Multi-Window Overlays)
@@ -106,7 +208,13 @@ val ACTION_LIST = listOf(
     AvailableAction("custom_url_intent", "Custom URL / Intent", "In-App Shortcuts", "Launch configured Custom URL or Intent URI")
 )
 
-fun resolveShortcutShortLabel(actionId: String): String {
+fun resolveShortcutShortLabel(actionId: String, prefs: SharedPreferences? = null): String {
+    if (isCustomWhatsAppShortcut(actionId)) {
+        if (prefs != null) {
+            findCustomWhatsAppShortcut(prefs, actionId)?.let { return it.title }
+        }
+        return "WA Chat"
+    }
     return when (actionId) {
         "floating_browser" -> "Browser"
         "floating_youtube" -> "YT Float"

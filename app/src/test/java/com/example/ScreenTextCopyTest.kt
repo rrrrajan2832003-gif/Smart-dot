@@ -202,7 +202,7 @@ class ScreenTextCopyTest {
         root.layout(0, 0, 1080, 2400)
 
         val selView = root.findViewById<InlineTextSelectionView>(R.id.inline_ocr_selection_view)
-        assertEquals(6f * density, selView.getHighlighterStrokeWidthPx(), 0.01f)
+        assertEquals(4f * density, selView.getHighlighterStrokeWidthPx(), 0.01f)
 
         // Verify snug highlight box stays strictly inside original Element bounding box with 2dp inset
         val firstWordRect = selView.getMappedRectForCopyNode(0)!!

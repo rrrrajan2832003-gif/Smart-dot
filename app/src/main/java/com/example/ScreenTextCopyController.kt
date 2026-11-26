@@ -505,25 +505,69 @@ class ScreenTextCopyController(
     }
 
     private fun launchLensOnFullScreen() {
-        val bmp = retainedScreenBitmap?.takeIf { !it.isRecycled }
-        if (bmp != null) {
-            SelectionToolbarHelper.launchGoogleLensImage(context, bmp)
-        } else {
-            SelectionToolbarHelper.launchNativeGoogleLens(context)
+        val copiedBmp = retainedScreenBitmap?.takeIf { !it.isRecycled }?.let { bmp ->
+            runCatching { bmp.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull()
         }
+        dismissActivePopup()
+        setHostOverlaysVisible(false)
+        overlayController?.dismiss()
+        releaseRetainedBitmap()
+        ocrRequestToken++
+        isActive = false
+        stopSpeaking()
+
+        mainHandler.postDelayed({
+            if (copiedBmp != null) {
+                setHostOverlaysVisible(true)
+                try {
+                    SelectionToolbarHelper.launchGoogleLensImage(context, copiedBmp)
+                } finally {
+                    runCatching { if (!copiedBmp.isRecycled) copiedBmp.recycle() }
+                }
+            } else if (screenBitmapCapturer !== DEFAULT_BITMAP_CAPTURER || SmartDotAccessibilityService.instance != null) {
+                screenBitmapCapturer { freshBmp ->
+                    mainHandler.post {
+                        setHostOverlaysVisible(true)
+                        if (freshBmp != null) {
+                            try {
+                                SelectionToolbarHelper.launchGoogleLensImage(context, freshBmp)
+                            } finally {
+                                runCatching { if (!freshBmp.isRecycled) freshBmp.recycle() }
+                            }
+                        } else {
+                            SelectionToolbarHelper.launchNativeGoogleLens(context)
+                        }
+                    }
+                }
+            } else {
+                setHostOverlaysVisible(true)
+                SelectionToolbarHelper.launchNativeGoogleLens(context)
+            }
+        }, 180L)
     }
 
     private fun launchLensOnCutout(boxRect: RectF, viewW: Int, viewH: Int) {
         val cropped = cropCutoutBitmap(boxRect, viewW, viewH)
-        if (cropped != null) {
-            try {
-                SelectionToolbarHelper.launchGoogleLensImage(context, cropped)
-            } finally {
-                runCatching { if (!cropped.isRecycled) cropped.recycle() }
+        dismissActivePopup()
+        setHostOverlaysVisible(false)
+        overlayController?.dismiss()
+        releaseRetainedBitmap()
+        ocrRequestToken++
+        isActive = false
+        stopSpeaking()
+
+        mainHandler.postDelayed({
+            setHostOverlaysVisible(true)
+            if (cropped != null) {
+                try {
+                    SelectionToolbarHelper.launchGoogleLensImage(context, cropped)
+                } finally {
+                    runCatching { if (!cropped.isRecycled) cropped.recycle() }
+                }
+            } else {
+                SelectionToolbarHelper.launchNativeGoogleLens(context)
             }
-        } else {
-            launchLensOnFullScreen()
-        }
+        }, 180L)
     }
 
     private fun searchCutoutBox(
@@ -796,6 +840,15 @@ class ScreenTextCopyController(
             }
         }
         retainedScreenBitmap = null
+    }
+
+    fun dismissOverlayIfShowing() {
+        ocrRequestToken++
+        isActive = false
+        overlayController?.dismiss()
+        releaseRetainedBitmap()
+        stopSpeaking()
+        setHostOverlaysVisible(true)
     }
 
     fun release() {

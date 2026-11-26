@@ -16,6 +16,7 @@ import android.text.TextPaint
 import android.text.TextUtils
 import android.util.AttributeSet
 import android.util.TypedValue
+import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -26,12 +27,13 @@ import kotlin.math.hypot
  * 100% transparent overlay view aligned 1:1 over the live screen with ZERO unselected boxes,
  * ZERO borders, and ZERO strokes.
  *
- * Both COPY and TRANSLATE modes share the exact same sleek thin (6dp) highlighter pen gesture:
- * - Single tap on any word highlights strictly that word (2dp inward-padded RoundRect inside its box)
- *   and anchors the floating "Copy" pill right beside it.
- * - Dragging a finger draws a thin 6dp highlighter stroke and selects ONLY intersecting words
- *   (strict tight collision radius so adjacent words above/below/beside are never accidentally grabbed),
- *   showing the "Copy" pill on ACTION_UP.
+ * Both COPY and TRANSLATE modes share the exact same sleek thin (4dp) highlighter pen gesture:
+ * - Single tap on any word highlights strictly that word (2dp inward-padded RoundRect inside its box,
+ *   matching exact bounds or closest word within 12dp) and anchors the action toolbar.
+ * - Double-tap anywhere on screen highlights ALL detected screen words in reading order and pops up
+ *   the 5+5 Action Toolbar + Question Boxes right away.
+ * - Dragging a finger draws a slim 4dp highlighter stroke and selects ONLY words whose inner 50%
+ *   core bounding box intersects the finger path, preventing adjacent lines from being grabbed.
  */
 class InlineTextSelectionView @JvmOverloads constructor(
     context: Context,
@@ -88,12 +90,11 @@ class InlineTextSelectionView @JvmOverloads constructor(
     private val labelPadX = 2.5f * density
     private val labelPadY = 1.5f * density
 
-    // Tight tap & stroke collision tolerances so adjacent rows/words are never grabbed by mistake
-    private val exactPad = 2f * density
-    private val nearPad = 4f * density
-    private val highlighterHitRadius = 1.5f * density
+    // Single-tap tolerance (12dp edge tolerance) & slim 4dp highlighter drag stroke
+    private val tapEdgeTolerancePx = 12f * density
+    private val singleTapMaxMovePx = 15f
 
-    // Zero stroke/border paints for text outlines — borderless selection fills + sleek thin 6dp highlighter pen
+    // Zero stroke/border paints for text outlines — borderless selection fills + sleek thin 4dp highlighter pen
     private val selectedHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
     }
@@ -101,7 +102,7 @@ class InlineTextSelectionView @JvmOverloads constructor(
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
-        strokeWidth = 6f * density
+        strokeWidth = 4f * density
     }
     private val translatedLabelBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
@@ -141,6 +142,18 @@ class InlineTextSelectionView @JvmOverloads constructor(
     private var lastTouchX = 0f
     private var lastTouchY = 0f
     private var downHitNodeId: Int? = null
+    private var doubleTapTriggeredThisGesture = false
+
+    private val gestureDetector = GestureDetector(
+        context,
+        object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                return selectAllScreenWords()
+            }
+        }
+    )
 
     init {
         setWillNotDraw(false)
@@ -226,12 +239,21 @@ class InlineTextSelectionView @JvmOverloads constructor(
     private fun activeWordList(): List<MappedCopyNode> =
         if (mode == DisplayMode.COPY) mappedCopyNodes else mappedTranslatedWordNodes
 
-    fun getSelectedWordNodes(): List<SmartDotAccessibilityService.ScreenTextNode> {
+    private fun getSelectedMappedNodesOrdered(): List<MappedCopyNode> {
         if (selectedWordIds.isEmpty()) return emptyList()
-        return activeWordList()
-            .filter { it.node.id in selectedWordIds }
-            .map { it.node }
+        val selected = activeWordList().filter { it.node.id in selectedWordIds }
+        if (selected.size <= 1) return selected
+        val avgHeight = selected
+            .map { it.rect.height().coerceAtLeast(8f) }
+            .average()
+            .toFloat()
+            .coerceAtLeast(12f)
+        val rowTolerance = (avgHeight * 0.55f).coerceAtLeast(8f)
+        return sortNodesInReadingOrder(selected, rowTolerance)
     }
+
+    fun getSelectedWordNodes(): List<SmartDotAccessibilityService.ScreenTextNode> =
+        getSelectedMappedNodesOrdered().map { it.node }
 
     fun getSelectedCopyNodes(): List<SmartDotAccessibilityService.ScreenTextNode> =
         getSelectedWordNodes()
@@ -283,6 +305,59 @@ class InlineTextSelectionView @JvmOverloads constructor(
         cutoutDragMode = CutoutDragMode.NONE
         invalidate()
         onCutoutChanged?.invoke(null)
+    }
+
+    fun selectAllScreenWords(): Boolean {
+        val candidates = activeWordList()
+        if (candidates.isEmpty()) return false
+        if (mode == DisplayMode.COPY && cutoutRect != null) {
+            clearCutout()
+        }
+        val avgHeight = candidates
+            .map { it.rect.height().coerceAtLeast(8f) }
+            .average()
+            .toFloat()
+            .coerceAtLeast(12f)
+        val rowTolerance = (avgHeight * 0.55f).coerceAtLeast(8f)
+
+        val sorted = sortNodesInReadingOrder(candidates, rowTolerance)
+        selectedWordIds.clear()
+        for (mapped in sorted) {
+            selectedWordIds.add(mapped.node.id)
+        }
+        isHighlighterDragging = false
+        highlighterPath.reset()
+        strokePoints.clear()
+        doubleTapTriggeredThisGesture = true
+        invalidate()
+        emitCurrentSelectionToController()
+        return true
+    }
+
+    private fun sortNodesInReadingOrder(
+        nodes: List<MappedCopyNode>,
+        rowTolerancePx: Float
+    ): List<MappedCopyNode> {
+        if (nodes.size <= 1) return nodes
+        val byTop = nodes.sortedBy { it.rect.centerY() }
+        val rows = ArrayList<MutableList<MappedCopyNode>>()
+        for (item in byTop) {
+            val cy = item.rect.centerY()
+            val targetRow = rows.lastOrNull()?.takeIf { row ->
+                abs(row.first().rect.centerY() - cy) <= rowTolerancePx
+            }
+            if (targetRow != null) {
+                targetRow.add(item)
+            } else {
+                rows.add(mutableListOf(item))
+            }
+        }
+        val ordered = ArrayList<MappedCopyNode>(nodes.size)
+        for (row in rows) {
+            row.sortBy { it.rect.left }
+            ordered.addAll(row)
+        }
+        return ordered
     }
 
     fun getWordsInsideCutout(): List<SmartDotAccessibilityService.ScreenTextNode> {
@@ -585,6 +660,23 @@ class InlineTextSelectionView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            doubleTapTriggeredThisGesture = false
+        }
+        val doubleTapHandled = gestureDetector.onTouchEvent(event)
+        if (doubleTapTriggeredThisGesture && event.actionMasked != MotionEvent.ACTION_DOWN) {
+            if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                doubleTapTriggeredThisGesture = false
+                strokePoints.clear()
+                isHighlighterDragging = false
+                highlighterPath.reset()
+            }
+            return true
+        }
+        if (doubleTapHandled && event.actionMasked != MotionEvent.ACTION_DOWN) {
+            return true
+        }
+
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = event.x
@@ -699,7 +791,19 @@ class InlineTextSelectionView @JvmOverloads constructor(
                 }
 
                 strokePoints.clear()
-                // Single tap without drag -> select ONLY that single word and show Copy pill beside it
+                val totalMovePx = hypot(dx, dy)
+                if (totalMovePx >= singleTapMaxMovePx) {
+                    // Moved slightly past single-tap threshold without crossing highlighter drag
+                    val hitId = findTappedNodeId(event.x, event.y) ?: downHitNodeId
+                    if (hitId != null) {
+                        selectedWordIds.clear()
+                        selectedWordIds.add(hitId)
+                        invalidate()
+                        emitCurrentSelectionToController()
+                    }
+                    return true
+                }
+                // Single tap (< 15px move) -> select strictly THAT ONE word (exact box or closest within 12dp)
                 performClick()
                 val hitId = findTappedNodeId(event.x, event.y) ?: downHitNodeId
                 if (hitId != null) {
@@ -797,7 +901,7 @@ class InlineTextSelectionView @JvmOverloads constructor(
     }
 
     private fun emitCurrentSelectionToController() {
-        val selectedMapped = activeWordList().filter { it.node.id in selectedWordIds }
+        val selectedMapped = getSelectedMappedNodesOrdered()
         if (selectedMapped.isEmpty()) {
             onCopySelectionChanged?.invoke("", null)
             return
@@ -812,10 +916,24 @@ class InlineTextSelectionView @JvmOverloads constructor(
 
     private fun highlightWordsIntersectingSegment(x1: Float, y1: Float, x2: Float, y2: Float) {
         for (mapped in activeWordList()) {
-            if (segmentIntersectsRect(x1, y1, x2, y2, mapped.rect, highlighterHitRadius)) {
+            val coreRect = computeInnerCoreRect(mapped.rect)
+            if (segmentIntersectsRect(x1, y1, x2, y2, coreRect, expandPx = 0f)) {
                 selectedWordIds.add(mapped.node.id)
             }
         }
+    }
+
+    private fun computeInnerCoreRect(rect: RectF): RectF {
+        val w = rect.width().coerceAtLeast(1f)
+        val h = rect.height().coerceAtLeast(1f)
+        val insetX = (w * 0.25f).coerceAtMost(((w - 2f) * 0.5f).coerceAtLeast(0f))
+        val insetY = (h * 0.25f).coerceAtMost(((h - 2f) * 0.5f).coerceAtLeast(0f))
+        return RectF(
+            rect.left + insetX,
+            rect.top + insetY,
+            rect.right - insetX,
+            rect.bottom - insetY
+        )
     }
 
     private fun segmentIntersectsRect(
@@ -859,15 +977,12 @@ class InlineTextSelectionView @JvmOverloads constructor(
     private fun findTappedNodeId(x: Float, y: Float): Int? {
         val candidates = activeWordList()
 
+        // 1. Exact bounding box hit (pick smallest box if overlapping)
         var bestId: Int? = null
         var bestArea = Float.MAX_VALUE
         for (mapped in candidates) {
             val r = mapped.rect
-            if (x >= r.left - exactPad &&
-                x <= r.right + exactPad &&
-                y >= r.top - exactPad &&
-                y <= r.bottom + exactPad
-            ) {
+            if (r.contains(x, y)) {
                 val area = r.width().coerceAtLeast(1f) * r.height().coerceAtLeast(1f)
                 if (area < bestArea) {
                     bestArea = area
@@ -877,20 +992,20 @@ class InlineTextSelectionView @JvmOverloads constructor(
         }
         if (bestId != null) return bestId
 
+        // 2. Single closest word within 12dp edge tolerance (edge tap rescue, never grabbing far neighbors)
         var closestId: Int? = null
-        var minDistSq = Float.MAX_VALUE
+        var minCenterDist = Float.MAX_VALUE
+        var minEdgeDist = Float.MAX_VALUE
         for (mapped in candidates) {
             val r = mapped.rect
-            if (x >= r.left - nearPad &&
-                x <= r.right + nearPad &&
-                y >= r.top - nearPad &&
-                y <= r.bottom + nearPad
-            ) {
-                val cx = x.coerceIn(r.left, r.right)
-                val cy = y.coerceIn(r.top, r.bottom)
-                val dSq = (x - cx) * (x - cx) + (y - cy) * (y - cy)
-                if (dSq < minDistSq) {
-                    minDistSq = dSq
+            val cx = x.coerceIn(r.left, r.right)
+            val cy = y.coerceIn(r.top, r.bottom)
+            val edgeDist = hypot(x - cx, y - cy)
+            if (edgeDist <= tapEdgeTolerancePx) {
+                val centerDist = hypot(x - r.centerX(), y - r.centerY())
+                if (edgeDist < minEdgeDist - 1f || (abs(edgeDist - minEdgeDist) <= 1f && centerDist < minCenterDist)) {
+                    minEdgeDist = edgeDist
+                    minCenterDist = centerDist
                     closestId = mapped.node.id
                 }
             }

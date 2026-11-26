@@ -300,10 +300,12 @@ class SmartDotExtendedFeaturesTest {
         }
         SmartDotAccessibilityService.setInstanceForTest(a11yService)
         try {
+            val shadowApp = Shadows.shadowOf(RuntimeEnvironment.getApplication())
+            while (shadowApp.nextStartedActivity != null) { /* drain launch permission intent */ }
             val widget = DataToggleWidget()
             widget.onReceive(appContext, Intent(DataToggleWidget.ACTION_WIDGET_TOGGLE_DATA))
             assertTrue(globalActions.contains(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS))
-            assertNull(Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity)
+            assertNull(shadowApp.nextStartedActivity)
 
             SmartDotAccessibilityService.setInstanceForTest(null)
             widget.onReceive(appContext, Intent(DataToggleWidget.ACTION_WIDGET_TOGGLE_DATA))

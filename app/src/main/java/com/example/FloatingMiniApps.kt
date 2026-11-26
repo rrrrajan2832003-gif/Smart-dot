@@ -1007,6 +1007,16 @@ object FloatingMiniApps {
             container.addView(downloadsSheet)
             container.addView(webHost)
 
+            managed.onBackPressed = {
+                val activeWebView = tabs.getOrNull(activeTabIdx)?.webView
+                if (activeWebView != null && activeWebView.canGoBack()) {
+                    activeWebView.goBack()
+                    true
+                } else {
+                    false
+                }
+            }
+
             val cleanup: () -> Unit = {
                 browserNavigators.remove(managed.rootView)
                 pendingBrowserUploadImageUri = null
@@ -1044,7 +1054,9 @@ object FloatingMiniApps {
         context: Context,
         manager: FloatingWindowManager,
         accentColor: Int,
-        appId: String
+        appId: String,
+        overrideUrl: String? = null,
+        overrideTitle: String? = null
     ): FloatingWindowManager.ManagedWindow? {
         data class SocialSpec(
             val windowId: String,
@@ -1053,7 +1065,7 @@ object FloatingMiniApps {
             val iconRes: Int,
             val defaultDesktop: Boolean
         )
-        val spec = when (appId) {
+        val baseSpec = when (appId) {
             "whatsapp" -> SocialSpec(
                 windowId = "floating_whatsapp",
                 title = context.getString(R.string.floating_window_title_whatsapp),
@@ -1090,8 +1102,12 @@ object FloatingMiniApps {
                 defaultDesktop = false
             )
         }
+        val targetUrl = overrideUrl?.takeIf { it.isNotBlank() } ?: baseSpec.url
+        val targetTitle = overrideTitle?.takeIf { it.isNotBlank() } ?: baseSpec.title
+        val spec = baseSpec.copy(title = targetTitle, url = targetUrl)
 
-        return manager.openOrFocusWindow(
+        val alreadyOpen = manager.hasWindow(spec.windowId)
+        val managedWin = manager.openOrFocusWindow(
             windowId = spec.windowId,
             title = spec.title,
             accentColor = accentColor,
@@ -1129,6 +1145,15 @@ object FloatingMiniApps {
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.MATCH_PARENT
                 )
+            }
+
+            managed.onBackPressed = {
+                if (webView.canGoBack()) {
+                    webView.goBack()
+                    true
+                } else {
+                    false
+                }
             }
 
             lateinit var refreshSocialMenu: () -> Unit
@@ -1198,6 +1223,11 @@ object FloatingMiniApps {
             }
             webView to cleanup
         }
+        if (alreadyOpen && !overrideUrl.isNullOrBlank() && managedWin != null) {
+            managedWin.updateTitle(targetTitle)
+            managedWin.contentHost.findViewWithTag<WebView>("fw_social_webview_$appId")?.loadUrl(targetUrl)
+        }
+        return managedWin
     }
 
     fun openFloatingMediaFiles(
@@ -1258,7 +1288,8 @@ object FloatingMiniApps {
                 }
             }
         }
-        val url = if (imageUri != null) {
+        val hasCutoutImage = imageUri != null || !imageBase64.isNullOrBlank()
+        val url = if (hasCutoutImage) {
             "https://www.google.com/search?udm=50"
         } else {
             SelectionToolbarHelper.buildGoogleAiModeUrl(query, cleanQuestion)
@@ -1303,7 +1334,8 @@ object FloatingMiniApps {
                 }
             }
         }
-        val url = if (imageUri != null) {
+        val hasCutoutImage = imageUri != null || !imageBase64.isNullOrBlank()
+        val url = if (hasCutoutImage) {
             "https://chatgpt.com/"
         } else {
             SelectionToolbarHelper.buildChatGptUrl(text, cleanQuestion)
@@ -1564,6 +1596,15 @@ object FloatingMiniApps {
                 }
             }
             refreshYtMenu()
+
+            managed.onBackPressed = {
+                if (webView.canGoBack()) {
+                    webView.goBack()
+                    true
+                } else {
+                    false
+                }
+            }
 
             webView.loadUrl("https://m.youtube.com")
 
@@ -2338,6 +2379,15 @@ object FloatingMiniApps {
                 }
             }
             refreshAiMenu()
+
+            managed.onBackPressed = {
+                if (webView.canGoBack()) {
+                    webView.goBack()
+                    true
+                } else {
+                    false
+                }
+            }
 
             webView.loadUrl(targetUrl)
 

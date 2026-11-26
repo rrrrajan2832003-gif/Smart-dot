@@ -1175,6 +1175,7 @@ class FloatingService : Service() {
     // Tab 1: Custom Re-mappable 12-Slot Shortcuts Grid (3 Columns)
     // -------------------------------------------------------------
     private fun getActionIcon(actionId: String): Int {
+        if (isCustomWhatsAppShortcut(actionId)) return R.drawable.ic_radial_whatsapp
         return when (actionId) {
             "home" -> R.drawable.ic_radial_home
             "back" -> R.drawable.ic_radial_back
@@ -1255,7 +1256,7 @@ class FloatingService : Service() {
         }
     }
 
-    private fun getActionName(actionId: String): String = resolveShortcutShortLabel(actionId)
+    private fun getActionName(actionId: String): String = resolveShortcutShortLabel(actionId, prefs)
 
     private fun toggleFlashlight() {
         val cameraManager = getSystemService(Context.CAMERA_SERVICE) as? android.hardware.camera2.CameraManager ?: return
@@ -1336,15 +1337,28 @@ class FloatingService : Service() {
         proToolsOverlayManager?.setShieldHidden(hidden)
     }
 
+    private fun removeAllTextCopyOverlays() {
+        if (activePopupWindow?.isShowing == true) {
+            activePopupWindow?.dismiss()
+        }
+        screenTextCopyController?.dismissOverlayIfShowing()
+        screenTranslateController?.dismissOverlayIfShowing()
+        setOverlayViewsVisible(false)
+    }
+
     private fun triggerGoogleLensOneTap() {
-        activePopupWindow?.dismiss()
+        removeAllTextCopyOverlays()
         val sInstance = SmartDotAccessibilityService.instance
+        val mainHandler = Handler(Looper.getMainLooper())
         if (sInstance == null || SmartDotAccessibilityService.isUserPaused) {
-            showAccessibilityDialog()
+            mainHandler.postDelayed({
+                setOverlayViewsVisible(true)
+                if (!SelectionToolbarHelper.launchNativeGoogleLens(this)) {
+                    showAccessibilityDialog()
+                }
+            }, 180L)
             return
         }
-        val mainHandler = Handler(Looper.getMainLooper())
-        setOverlayViewsVisible(false)
         mainHandler.postDelayed({
             sInstance.captureScreenBitmapInMemory { bitmap ->
                 mainHandler.post {
@@ -1359,7 +1373,7 @@ class FloatingService : Service() {
                     }
                 }
             }
-        }, 120L)
+        }, 180L)
     }
 
     private fun getConfiguredAccentColor(): Int {
@@ -1982,11 +1996,35 @@ class FloatingService : Service() {
                     }
                 }
                 else -> {
-                    if (InAppShortcutLauncher.isInAppShortcut(actionId)) {
-                        activePopupWindow?.dismiss()
-                        InAppShortcutLauncher.launch(this, actionId)
-                    } else {
-                        Toast.makeText(context, "Action: $actionId executed", Toast.LENGTH_SHORT).show()
+                    when {
+                        isCustomWhatsAppShortcut(actionId) -> {
+                            activePopupWindow?.dismiss()
+                            val waShortcut = findCustomWhatsAppShortcut(prefs, actionId)
+                            if (waShortcut != null) {
+                                FloatingMiniApps.openFloatingSocialApp(
+                                    context = this,
+                                    manager = getOrCreateFloatingWindowManager(),
+                                    accentColor = getConfiguredAccentColor(),
+                                    appId = "whatsapp",
+                                    overrideUrl = waShortcut.buildDirectChatUrl(),
+                                    overrideTitle = waShortcut.title
+                                )
+                            } else {
+                                FloatingMiniApps.openFloatingSocialApp(
+                                    context = this,
+                                    manager = getOrCreateFloatingWindowManager(),
+                                    accentColor = getConfiguredAccentColor(),
+                                    appId = "whatsapp"
+                                )
+                            }
+                        }
+                        InAppShortcutLauncher.isInAppShortcut(actionId) -> {
+                            activePopupWindow?.dismiss()
+                            InAppShortcutLauncher.launch(this, actionId)
+                        }
+                        else -> {
+                            Toast.makeText(context, "Action: $actionId executed", Toast.LENGTH_SHORT).show()
+                        }
                     }
                 }
             }

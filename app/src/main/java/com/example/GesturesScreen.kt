@@ -295,7 +295,7 @@ fun GesturesScreen(
 
                     partGestures.forEachIndexed { idx, gesture ->
                         val assignedId = gestureAssignments[gesture] ?: gesture.defaultActionId
-                        val assignedLabel = SwipeGestureHelper.getActionDisplayName(assignedId)
+                        val assignedLabel = SwipeGestureHelper.getActionDisplayName(assignedId, prefs)
                         val isConfigured = assignedId != "none"
 
                         Row(
@@ -409,7 +409,10 @@ fun GesturesScreen(
                         .height(340.dp)
                         .verticalScroll(listScroll)
                 ) {
-                    SwipeGestureHelper.GESTURE_ACTIONS.forEach { option ->
+                    val gestureOptions = remember(pickingGesture) {
+                        SwipeGestureHelper.getAllGestureOptions(prefs)
+                    }
+                    gestureOptions.forEach { option ->
                         val selected = currentActionId == option.id
                         Row(
                             modifier = Modifier

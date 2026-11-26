@@ -72,6 +72,7 @@ class SmartDotTwelveUpgradesTest {
         FloatingMiniApps.pendingBrowserUploadImageBase64 = null
         FloatingMiniApps.pendingBrowserUploadPromptText = null
         SmartDotAccessibilityService.setInstanceForTest(null)
+        clearFileProviderCache()
     }
 
     @After
@@ -80,6 +81,16 @@ class SmartDotTwelveUpgradesTest {
         FloatingMiniApps.pendingBrowserUploadImageBase64 = null
         FloatingMiniApps.pendingBrowserUploadPromptText = null
         SmartDotAccessibilityService.setInstanceForTest(null)
+        clearFileProviderCache()
+    }
+
+    private fun clearFileProviderCache() {
+        runCatching {
+            val field = androidx.core.content.FileProvider::class.java.getDeclaredField("sCache").apply {
+                isAccessible = true
+            }
+            (field.get(null) as? MutableMap<*, *>)?.clear()
+        }
     }
 
     @Test
@@ -177,7 +188,7 @@ class SmartDotTwelveUpgradesTest {
             .startCommand(0, 1)
             .get()
         try {
-            val showPopup = FloatingService::class.java.getDeclaredMethod("showFloatingMenu")
+            val showPopup = FloatingService::class.java.getDeclaredMethod("showAssistantSidebar")
                 .apply { isAccessible = true }
             showPopup.invoke(service)
             ShadowLooper.idleMainLooper()
@@ -408,16 +419,16 @@ class SmartDotTwelveUpgradesTest {
             fwm.closeAllWindows()
         }
 
-        // Verify Play-Policy: Manifest has WAKE_LOCK and NO prohibited READ_EXTERNAL_STORAGE / READ_MEDIA_*
+        // Verify Manifest has WAKE_LOCK and full media permissions for Gallery/Music sync
         val pkgInfo = appContext.packageManager.getPackageInfo(
             appContext.packageName,
             PackageManager.GET_PERMISSIONS
         )
         val permissions = pkgInfo.requestedPermissions?.toList().orEmpty()
         assertTrue(permissions.contains(android.Manifest.permission.WAKE_LOCK))
-        assertFalse(permissions.contains(android.Manifest.permission.READ_EXTERNAL_STORAGE))
-        assertFalse(permissions.contains("android.permission.READ_MEDIA_IMAGES"))
-        assertFalse(permissions.contains("android.permission.READ_MEDIA_VIDEO"))
+        assertTrue(permissions.contains("android.permission.READ_MEDIA_IMAGES"))
+        assertTrue(permissions.contains("android.permission.READ_MEDIA_VIDEO"))
+        assertTrue(permissions.contains("android.permission.READ_MEDIA_AUDIO"))
     }
 
     private fun findWebView(view: View): WebView? {

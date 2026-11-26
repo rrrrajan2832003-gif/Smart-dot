@@ -30,17 +30,18 @@ import android.widget.VideoView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 
 /**
- * Play-Policy-compliant in-app Floating Media libraries:
- * 1. Dedicated Floating Music & Voice Player (queries MediaStore.Audio.Media + Sync button + MediaPlayer).
+ * In-app Floating Media libraries:
+ * 1. Dedicated Floating Music & Voice Player (queries MediaStore.Audio.Media on Dispatchers.IO + Sync button + MediaPlayer).
  * 2. True In-App Floating Photos & Videos Thumbnail Grid (queries MediaStore.Images & MediaStore.Video
- *    sorted by DATE_ADDED DESC, displaying a 3-column thumbnail grid with built-in PinchZoomImageView
- *    and VideoView player — never launching the external system file manager).
+ *    on Dispatchers.IO sorted by DATE_ADDED DESC, displaying a 3-column thumbnail grid with built-in
+ *    PinchZoomImageView and VideoView player).
  */
 object FloatingGalleryMusicHelper {
 
@@ -386,10 +387,13 @@ object FloatingGalleryMusicHelper {
             }
 
             val mainHandler = Handler(Looper.getMainLooper())
+            val musicJob = SupervisorJob()
+            val musicScope = CoroutineScope(Dispatchers.Main.immediate + musicJob)
             var audioQueue: List<AudioTrackItem> = emptyList()
             var currentAudioIndex = -1
             var mediaPlayer: MediaPlayer? = null
             var isReleased = false
+            var refreshSeq = 0
 
             // Top Library Header + Sync (↻) Button
             val headerRow = LinearLayout(context).apply {
@@ -512,6 +516,28 @@ object FloatingGalleryMusicHelper {
             playerCard.addView(tvTime)
             playerCard.addView(controlsRow)
 
+            // Grant Media Permission Banner (visible when READ_MEDIA_AUDIO / READ_EXTERNAL_STORAGE missing)
+            val btnGrantAudioPerm = TextView(context).apply {
+                tag = "fw_music_grant_perm"
+                text = "🔓 Grant Media Permission"
+                textSize = 12f
+                setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                setTextColor(Color.BLACK)
+                gravity = Gravity.CENTER
+                setPadding(dp(context, 12f), dp(context, 9f), dp(context, 12f), dp(context, 9f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 10f).toFloat()
+                    setColor(accentColor)
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dp(context, 6f)
+                }
+                visibility = if (MediaPermissionActivity.hasAudioPermission(context)) View.GONE else View.VISIBLE
+            }
+
             // Scrollable Audio Track List
             val listContainer = LinearLayout(context).apply {
                 tag = "fw_music_list"
@@ -583,67 +609,98 @@ object FloatingGalleryMusicHelper {
             }
 
             fun refreshAudioLibrary() {
-                listContainer.removeAllViews()
-                audioQueue = queryAudioLibrary(context)
-                tvCount.text = "Audio Library (${audioQueue.size})"
-                if (audioQueue.isEmpty()) {
-                    listContainer.addView(TextView(context).apply {
-                        tag = "fw_music_empty"
-                        text = "No audio or voice recordings found in MediaStore.\nTap ↻ Sync or open an audio file from ☰ Menu."
-                        textSize = 12f
-                        setTextColor(Color.parseColor("#94A3B8"))
-                        gravity = Gravity.CENTER
-                        setPadding(dp(context, 12f), dp(context, 20f), dp(context, 12f), dp(context, 20f))
-                    })
-                    return
+                val hasPerm = MediaPermissionActivity.hasAudioPermission(context)
+                btnGrantAudioPerm.visibility = if (hasPerm) View.GONE else View.VISIBLE
+                val seq = ++refreshSeq
+                musicScope.launch {
+                    val queried = withContext(Dispatchers.IO) {
+                        queryAudioLibrary(context)
+                    }
+                    withContext(Dispatchers.Main) {
+                        if (isReleased || seq != refreshSeq) return@withContext
+                        btnGrantAudioPerm.visibility = if (MediaPermissionActivity.hasAudioPermission(context)) {
+                            View.GONE
+                        } else {
+                            View.VISIBLE
+                        }
+                        listContainer.removeAllViews()
+                        audioQueue = queried
+                        tvCount.text = "Audio Library (${audioQueue.size})"
+                        if (audioQueue.isEmpty()) {
+                            listContainer.addView(TextView(context).apply {
+                                tag = "fw_music_empty"
+                                text = if (!MediaPermissionActivity.hasAudioPermission(context)) {
+                                    "Media permission required to list all device songs.\nTap \"Grant Media Permission\" above or open via ☰ Menu."
+                                } else {
+                                    "No audio or voice recordings found in MediaStore.\nTap ↻ Sync or open an audio file from ☰ Menu."
+                                }
+                                textSize = 12f
+                                setTextColor(Color.parseColor("#94A3B8"))
+                                gravity = Gravity.CENTER
+                                setPadding(dp(context, 12f), dp(context, 20f), dp(context, 12f), dp(context, 20f))
+                            })
+                            return@withContext
+                        }
+                        audioQueue.forEachIndexed { idx, track ->
+                            val row = LinearLayout(context).apply {
+                                tag = "fw_music_row_$idx"
+                                orientation = LinearLayout.HORIZONTAL
+                                gravity = Gravity.CENTER_VERTICAL
+                                setPadding(dp(context, 10f), dp(context, 8f), dp(context, 10f), dp(context, 8f))
+                                background = GradientDrawable().apply {
+                                    cornerRadius = dp(context, 8f).toFloat()
+                                    setColor(Color.parseColor("#1E293B"))
+                                }
+                                layoutParams = LinearLayout.LayoutParams(
+                                    LinearLayout.LayoutParams.MATCH_PARENT,
+                                    LinearLayout.LayoutParams.WRAP_CONTENT
+                                ).apply {
+                                    bottomMargin = dp(context, 5f)
+                                }
+                                setOnClickListener { playTrackAt(idx) }
+                            }
+                            row.addView(TextView(context).apply {
+                                text = "🎵"
+                                textSize = 16f
+                                setPadding(0, 0, dp(context, 8f), 0)
+                            })
+                            val textCol = LinearLayout(context).apply {
+                                orientation = LinearLayout.VERTICAL
+                                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                            }
+                            textCol.addView(TextView(context).apply {
+                                text = track.displayName
+                                textSize = 12.5f
+                                setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                                setTextColor(Color.WHITE)
+                                maxLines = 1
+                                ellipsize = TextUtils.TruncateAt.END
+                            })
+                            val durLabel = if (track.durationMs > 0L) {
+                                FloatingMediaFilesHelper.formatDurationMs(track.durationMs)
+                            } else {
+                                "Audio"
+                            }
+                            textCol.addView(TextView(context).apply {
+                                text = "${track.folderName} • $durLabel"
+                                textSize = 10.5f
+                                setTextColor(Color.parseColor("#94A3B8"))
+                            })
+                            row.addView(textCol)
+                            listContainer.addView(row)
+                        }
+                    }
                 }
-                audioQueue.forEachIndexed { idx, track ->
-                    val row = LinearLayout(context).apply {
-                        tag = "fw_music_row_$idx"
-                        orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.CENTER_VERTICAL
-                        setPadding(dp(context, 10f), dp(context, 8f), dp(context, 10f), dp(context, 8f))
-                        background = GradientDrawable().apply {
-                            cornerRadius = dp(context, 8f).toFloat()
-                            setColor(Color.parseColor("#1E293B"))
-                        }
-                        layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.MATCH_PARENT,
-                            LinearLayout.LayoutParams.WRAP_CONTENT
-                        ).apply {
-                            bottomMargin = dp(context, 5f)
-                        }
-                        setOnClickListener { playTrackAt(idx) }
+            }
+
+            btnGrantAudioPerm.setOnClickListener {
+                MediaPermissionActivity.launchPermissionPrompt(
+                    context = context,
+                    permissions = MediaPermissionActivity.requiredPermissionsForAudio()
+                ) {
+                    mainHandler.post {
+                        if (!isReleased) refreshAudioLibrary()
                     }
-                    row.addView(TextView(context).apply {
-                        text = "🎵"
-                        textSize = 16f
-                        setPadding(0, 0, dp(context, 8f), 0)
-                    })
-                    val textCol = LinearLayout(context).apply {
-                        orientation = LinearLayout.VERTICAL
-                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                    }
-                    textCol.addView(TextView(context).apply {
-                        text = track.displayName
-                        textSize = 12.5f
-                        setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-                        setTextColor(Color.WHITE)
-                        maxLines = 1
-                        ellipsize = TextUtils.TruncateAt.END
-                    })
-                    val durLabel = if (track.durationMs > 0L) {
-                        FloatingMediaFilesHelper.formatDurationMs(track.durationMs)
-                    } else {
-                        "Audio"
-                    }
-                    textCol.addView(TextView(context).apply {
-                        text = "${track.folderName} • $durLabel"
-                        textSize = 10.5f
-                        setTextColor(Color.parseColor("#94A3B8"))
-                    })
-                    row.addView(textCol)
-                    listContainer.addView(row)
                 }
             }
 
@@ -722,10 +779,12 @@ object FloatingGalleryMusicHelper {
             refreshAudioLibrary()
             container.addView(headerRow)
             container.addView(playerCard)
+            container.addView(btnGrantAudioPerm)
             container.addView(listScroll)
 
             val cleanup: () -> Unit = {
                 isReleased = true
+                musicJob.cancel()
                 mainHandler.removeCallbacks(ticker)
                 runCatching {
                     mediaPlayer?.stop()
@@ -761,12 +820,13 @@ object FloatingGalleryMusicHelper {
             }
 
             val mainHandler = Handler(Looper.getMainLooper())
-            val thumbJob = Job()
-            val thumbScope = CoroutineScope(Dispatchers.Main + thumbJob)
+            val thumbJob = SupervisorJob()
+            val thumbScope = CoroutineScope(Dispatchers.Main.immediate + thumbJob)
             var currentFilter = GalleryFilter.ALL
             var isReleased = false
             var isVideoMuted = false
             var activeVideoPlayer: MediaPlayer? = null
+            var galleryLoadSeq = 0
 
             // 1. Grid View
             val gridRoot = LinearLayout(context).apply {
@@ -810,6 +870,27 @@ object FloatingGalleryMusicHelper {
             filterRow.addView(chipsContainer)
             filterRow.addView(btnSync)
 
+            val btnGrantGalleryPerm = TextView(context).apply {
+                tag = "fw_gallery_grant_perm"
+                text = "🔓 Grant Media Permission"
+                textSize = 12f
+                setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                setTextColor(Color.BLACK)
+                gravity = Gravity.CENTER
+                setPadding(dp(context, 12f), dp(context, 9f), dp(context, 12f), dp(context, 9f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 10f).toFloat()
+                    setColor(accentColor)
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dp(context, 6f)
+                }
+                visibility = if (MediaPermissionActivity.hasImagesAndVideoPermission(context)) View.GONE else View.VISIBLE
+            }
+
             val gridContainer = LinearLayout(context).apply {
                 tag = "fw_gallery_grid"
                 orientation = LinearLayout.VERTICAL
@@ -823,6 +904,7 @@ object FloatingGalleryMusicHelper {
                 addView(gridContainer)
             }
             gridRoot.addView(filterRow)
+            gridRoot.addView(btnGrantGalleryPerm)
             gridRoot.addView(gridScroll)
 
             // 2. Full-bleed In-Window Pinch-Zoom Image Viewer
@@ -1116,103 +1198,137 @@ object FloatingGalleryMusicHelper {
             }
 
             renderGrid = {
-                gridContainer.removeAllViews()
-                val items = queryPhotosAndVideos(context, currentFilter)
-                if (items.isEmpty()) {
-                    gridContainer.addView(TextView(context).apply {
-                        tag = "fw_gallery_empty"
-                        text = "No photos or videos indexed yet.\nTap ↻ Sync or open ☰ Menu to browse."
-                        textSize = 12f
-                        setTextColor(Color.parseColor("#94A3B8"))
-                        gravity = Gravity.CENTER
-                        setPadding(dp(context, 12f), dp(context, 24f), dp(context, 12f), dp(context, 24f))
-                    })
+                btnGrantGalleryPerm.visibility = if (MediaPermissionActivity.hasImagesAndVideoPermission(context)) {
+                    View.GONE
                 } else {
-                    val cols = 3
-                    val tileHeightPx = dp(context, 90f)
-                    val tileGap = dp(context, 4f)
-                    val thumbTargetPx = dp(context, 160f)
-                    val chunks = items.chunked(cols)
-                    var globalIdx = 0
-                    chunks.forEach { rowItems ->
-                        val row = LinearLayout(context).apply {
-                            orientation = LinearLayout.HORIZONTAL
-                            layoutParams = LinearLayout.LayoutParams(
-                                LinearLayout.LayoutParams.MATCH_PARENT,
-                                LinearLayout.LayoutParams.WRAP_CONTENT
-                            ).apply {
-                                bottomMargin = tileGap
-                            }
+                    View.VISIBLE
+                }
+                val seq = ++galleryLoadSeq
+                val activeFilter = currentFilter
+                thumbScope.launch {
+                    val items = withContext(Dispatchers.IO) {
+                        queryPhotosAndVideos(context, activeFilter)
+                    }
+                    withContext(Dispatchers.Main) {
+                        if (isReleased || seq != galleryLoadSeq) return@withContext
+                        btnGrantGalleryPerm.visibility = if (MediaPermissionActivity.hasImagesAndVideoPermission(context)) {
+                            View.GONE
+                        } else {
+                            View.VISIBLE
                         }
-                        rowItems.forEach { item ->
-                            val itemIdx = globalIdx++
-                            val tile = FrameLayout(context).apply {
-                                tag = "fw_gallery_item_$itemIdx"
-                                layoutParams = LinearLayout.LayoutParams(0, tileHeightPx, 1f).apply {
-                                    marginEnd = tileGap / 2
-                                    marginStart = tileGap / 2
-                                }
-                                background = GradientDrawable().apply {
-                                    cornerRadius = dp(context, 8f).toFloat()
-                                    setColor(Color.parseColor("#1E293B"))
-                                }
-                                setOnClickListener { openGalleryItem(item) }
-                            }
-                            val thumbImg = ImageView(context).apply {
-                                scaleType = ImageView.ScaleType.CENTER_CROP
-                                contentDescription = item.displayName
-                                layoutParams = FrameLayout.LayoutParams(
-                                    FrameLayout.LayoutParams.MATCH_PARENT,
-                                    FrameLayout.LayoutParams.MATCH_PARENT
-                                )
-                            }
-                            tile.addView(thumbImg)
-                            if (item.isVideo) {
-                                val badgeText = if (item.durationMs > 0L) {
-                                    "▶ ${FloatingMediaFilesHelper.formatDurationMs(item.durationMs)}"
+                        gridContainer.removeAllViews()
+                        if (items.isEmpty()) {
+                            gridContainer.addView(TextView(context).apply {
+                                tag = "fw_gallery_empty"
+                                text = if (!MediaPermissionActivity.hasImagesAndVideoPermission(context)) {
+                                    "Media permission required to sync Photos & Videos.\nTap \"Grant Media Permission\" above or pick via ☰ Menu."
                                 } else {
-                                    "▶ Video"
+                                    "No photos or videos indexed yet.\nTap ↻ Sync or open ☰ Menu to browse."
                                 }
-                                tile.addView(TextView(context).apply {
-                                    text = badgeText
-                                    textSize = 10f
-                                    setTextColor(Color.WHITE)
-                                    setPadding(dp(context, 5f), dp(context, 2f), dp(context, 5f), dp(context, 2f))
-                                    background = GradientDrawable().apply {
-                                        cornerRadius = dp(context, 5f).toFloat()
-                                        setColor(Color.argb(180, 15, 23, 42))
-                                    }
-                                    layoutParams = FrameLayout.LayoutParams(
-                                        FrameLayout.LayoutParams.WRAP_CONTENT,
-                                        FrameLayout.LayoutParams.WRAP_CONTENT,
-                                        Gravity.BOTTOM or Gravity.END
+                                textSize = 12f
+                                setTextColor(Color.parseColor("#94A3B8"))
+                                gravity = Gravity.CENTER
+                                setPadding(dp(context, 12f), dp(context, 24f), dp(context, 12f), dp(context, 24f))
+                            })
+                        } else {
+                            val cols = 3
+                            val tileHeightPx = dp(context, 90f)
+                            val tileGap = dp(context, 4f)
+                            val thumbTargetPx = dp(context, 160f)
+                            val chunks = items.chunked(cols)
+                            var globalIdx = 0
+                            chunks.forEach { rowItems ->
+                                val row = LinearLayout(context).apply {
+                                    orientation = LinearLayout.HORIZONTAL
+                                    layoutParams = LinearLayout.LayoutParams(
+                                        LinearLayout.LayoutParams.MATCH_PARENT,
+                                        LinearLayout.LayoutParams.WRAP_CONTENT
                                     ).apply {
-                                        marginEnd = dp(context, 4f)
-                                        bottomMargin = dp(context, 4f)
+                                        bottomMargin = tileGap
                                     }
-                                })
-                            }
-                            thumbScope.launch {
-                                val bmp = withContext(Dispatchers.IO) {
-                                    loadThumbnailBitmap(context, item, thumbTargetPx)
                                 }
-                                if (bmp != null && !isReleased) {
-                                    thumbImg.setImageBitmap(bmp)
-                                }
-                            }
-                            row.addView(tile)
-                        }
-                        if (rowItems.size < cols) {
-                            repeat(cols - rowItems.size) {
-                                row.addView(View(context).apply {
-                                    layoutParams = LinearLayout.LayoutParams(0, tileHeightPx, 1f).apply {
-                                        marginEnd = tileGap / 2
-                                        marginStart = tileGap / 2
+                                rowItems.forEach { item ->
+                                    val itemIdx = globalIdx++
+                                    val tile = FrameLayout(context).apply {
+                                        tag = "fw_gallery_item_$itemIdx"
+                                        layoutParams = LinearLayout.LayoutParams(0, tileHeightPx, 1f).apply {
+                                            marginEnd = tileGap / 2
+                                            marginStart = tileGap / 2
+                                        }
+                                        background = GradientDrawable().apply {
+                                            cornerRadius = dp(context, 8f).toFloat()
+                                            setColor(Color.parseColor("#1E293B"))
+                                        }
+                                        setOnClickListener { openGalleryItem(item) }
                                     }
-                                })
+                                    val thumbImg = ImageView(context).apply {
+                                        scaleType = ImageView.ScaleType.CENTER_CROP
+                                        contentDescription = item.displayName
+                                        layoutParams = FrameLayout.LayoutParams(
+                                            FrameLayout.LayoutParams.MATCH_PARENT,
+                                            FrameLayout.LayoutParams.MATCH_PARENT
+                                        )
+                                    }
+                                    tile.addView(thumbImg)
+                                    if (item.isVideo) {
+                                        val badgeText = if (item.durationMs > 0L) {
+                                            "▶ ${FloatingMediaFilesHelper.formatDurationMs(item.durationMs)}"
+                                        } else {
+                                            "▶ Video"
+                                        }
+                                        tile.addView(TextView(context).apply {
+                                            text = badgeText
+                                            textSize = 10f
+                                            setTextColor(Color.WHITE)
+                                            setPadding(dp(context, 5f), dp(context, 2f), dp(context, 5f), dp(context, 2f))
+                                            background = GradientDrawable().apply {
+                                                cornerRadius = dp(context, 5f).toFloat()
+                                                setColor(Color.argb(180, 15, 23, 42))
+                                            }
+                                            layoutParams = FrameLayout.LayoutParams(
+                                                FrameLayout.LayoutParams.WRAP_CONTENT,
+                                                FrameLayout.LayoutParams.WRAP_CONTENT,
+                                                Gravity.BOTTOM or Gravity.END
+                                            ).apply {
+                                                marginEnd = dp(context, 4f)
+                                                bottomMargin = dp(context, 4f)
+                                            }
+                                        })
+                                    }
+                                    thumbScope.launch {
+                                        val bmp = withContext(Dispatchers.IO) {
+                                            loadThumbnailBitmap(context, item, thumbTargetPx)
+                                        }
+                                        if (bmp != null && !isReleased) {
+                                            thumbImg.setImageBitmap(bmp)
+                                        }
+                                    }
+                                    row.addView(tile)
+                                }
+                                if (rowItems.size < cols) {
+                                    repeat(cols - rowItems.size) {
+                                        row.addView(View(context).apply {
+                                            layoutParams = LinearLayout.LayoutParams(0, tileHeightPx, 1f).apply {
+                                                marginEnd = tileGap / 2
+                                                marginStart = tileGap / 2
+                                            }
+                                        })
+                                    }
+                                }
+                                gridContainer.addView(row)
                             }
                         }
-                        gridContainer.addView(row)
+                    }
+                }
+            }
+
+            btnGrantGalleryPerm.setOnClickListener {
+                MediaPermissionActivity.launchPermissionPrompt(
+                    context = context,
+                    permissions = MediaPermissionActivity.requiredPermissionsForGallery()
+                ) {
+                    mainHandler.post {
+                        if (!isReleased) renderGrid()
                     }
                 }
             }
