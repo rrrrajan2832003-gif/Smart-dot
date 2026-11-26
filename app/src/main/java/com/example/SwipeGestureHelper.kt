@@ -57,7 +57,7 @@ object SwipeGestureHelper {
         val customWa = getCustomWhatsAppShortcuts(prefs).map { item ->
             GestureActionOption(item.id, "${item.title} (WhatsApp)")
         }
-        return GESTURE_ACTIONS + customWa
+        return GESTURE_ACTIONS.take(2) + customWa + GESTURE_ACTIONS.drop(2)
     }
 
     fun getActionDisplayName(actionId: String, prefs: SharedPreferences? = null): String {

@@ -57,6 +57,8 @@ class FloatingWindowManager(
         val onClick: () -> Unit
     )
 
+    enum class EdgeDockSide { NONE, LEFT, RIGHT }
+
     data class ManagedWindow(
         val windowId: String,
         var title: String,
@@ -74,6 +76,8 @@ class FloatingWindowManager(
         val savedBounds: WindowBounds,
         var isMaximized: Boolean = false,
         var isMinimized: Boolean = false,
+        var edgeDockSide: EdgeDockSide = EdgeDockSide.NONE,
+        var isRemovedForShield: Boolean = false,
         var windowAlpha: Float = 1.0f,
         var bubbleView: FrameLayout? = null,
         var bubbleParams: WindowManager.LayoutParams? = null,
@@ -168,6 +172,8 @@ class FloatingWindowManager(
 
     private val density = context.resources.displayMetrics.density.coerceAtLeast(1f)
     private val activeWindows = LinkedHashMap<String, ManagedWindow>()
+    @Volatile
+    private var isShieldHidden = false
 
     fun getOpenWindowIds(): List<String> = activeWindows.keys.toList()
 
@@ -184,6 +190,7 @@ class FloatingWindowManager(
         requiresTextInput: Boolean = true,
         contentBuilder: (ManagedWindow) -> Pair<View, (() -> Unit)?>
     ): ManagedWindow? {
+        if (isShieldHidden) return null
         activeWindows[windowId]?.let { existing ->
             if (existing.isMinimized) {
                 restoreFromBubble(existing)
@@ -258,7 +265,7 @@ class FloatingWindowManager(
                             if (m.onBackPressed?.invoke() == true) {
                                 return true
                             }
-                            minimizeToBubble(m)
+                            closeWindow(m.windowId)
                             return true
                         }
                     }
@@ -484,10 +491,10 @@ class FloatingWindowManager(
         bodyOverlay.addView(menuDrawer)
         bodyOverlay.addView(resizeGrip)
 
-        // Bottom Pill Handle Bar (Swipe up > 80px to minimize into floating bubble)
+        // Bottom Pill Handle Bar (Swipe up > 80px to close the floating window)
         val bottomPillHandle = FrameLayout(context).apply {
             tag = "fw_bottom_pill_$windowId"
-            contentDescription = "Swipe up to minimize $title"
+            contentDescription = "Swipe up to close $title"
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 (20 * density).toInt()
@@ -546,7 +553,7 @@ class FloatingWindowManager(
                         val dy = event.rawY - downRawY
                         if (!triggered && dy < -80f) {
                             triggered = true
-                            minimizeToBubble(managed)
+                            closeWindow(managed.windowId)
                         }
                         return true
                     }
@@ -554,7 +561,7 @@ class FloatingWindowManager(
                         val dy = event.rawY - downRawY
                         if (!triggered && dy < -80f) {
                             triggered = true
-                            minimizeToBubble(managed)
+                            closeWindow(managed.windowId)
                         }
                         return true
                     }
@@ -641,12 +648,13 @@ class FloatingWindowManager(
         btnMinimize.setOnClickListener { minimizeToBubble(managed) }
         btnMaximize.setOnClickListener { toggleMaximize(managed) }
 
-        // Title Bar Drag-to-Move
+        // Title Bar Drag-to-Move (snaps to half-hidden edge bubble when dragged to extreme left/right edge)
         titleBar.setOnTouchListener(object : View.OnTouchListener {
             private var startX = 0
             private var startY = 0
             private var downRawX = 0f
             private var downRawY = 0f
+            private var moved = false
 
             override fun onTouch(v: View, event: MotionEvent): Boolean {
                 when (event.actionMasked) {
@@ -655,17 +663,35 @@ class FloatingWindowManager(
                         startY = lp.y
                         downRawX = event.rawX
                         downRawY = event.rawY
+                        moved = false
                         return true
                     }
                     MotionEvent.ACTION_MOVE -> {
                         if (managed.isMaximized) return true
-                        val maxX = (context.resources.displayMetrics.widthPixels - lp.width).coerceAtLeast(0)
-                        val maxY = (context.resources.displayMetrics.heightPixels - lp.height).coerceAtLeast(0)
-                        lp.x = (startX + (event.rawX - downRawX).toInt()).coerceIn(0, maxX)
-                        lp.y = (startY + (event.rawY - downRawY).toInt()).coerceIn(0, maxY)
+                        val dx = event.rawX - downRawX
+                        val dy = event.rawY - downRawY
+                        if (abs(dx) > 6 * density || abs(dy) > 6 * density) {
+                            moved = true
+                        }
+                        val metrics = context.resources.displayMetrics
+                        val maxX = (metrics.widthPixels - lp.width).coerceAtLeast(0)
+                        val maxY = (metrics.heightPixels - lp.height).coerceAtLeast(0)
+                        lp.x = (startX + dx.toInt()).coerceIn(0, maxX)
+                        lp.y = (startY + dy.toInt()).coerceIn(0, maxY)
                         managed.savedBounds.x = lp.x
                         managed.savedBounds.y = lp.y
                         runCatching { windowManager.updateViewLayout(root, lp) }
+                        return true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        if (moved && !managed.isMaximized) {
+                            val screenW = context.resources.displayMetrics.widthPixels
+                            if (lp.x <= 10) {
+                                minimizeToBubble(managed, EdgeDockSide.LEFT)
+                            } else if (lp.x + lp.width >= screenW - 10) {
+                                minimizeToBubble(managed, EdgeDockSide.RIGHT)
+                            }
+                        }
                         return true
                     }
                 }
@@ -776,14 +802,30 @@ class FloatingWindowManager(
     }
 
     @SuppressLint("ClickableViewAccessibility")
-    fun minimizeToBubble(managed: ManagedWindow) {
+    @JvmOverloads
+    fun minimizeToBubble(
+        managed: ManagedWindow,
+        dockSide: EdgeDockSide = EdgeDockSide.NONE
+    ) {
         if (managed.isMinimized) return
         managed.closeMenu()
         managed.isMinimized = true
+        managed.edgeDockSide = dockSide
         // Keep rootView attached as View.GONE so WebView / MediaPlayer audio continues cleanly!
         managed.rootView.visibility = View.GONE
 
+        val metrics = context.resources.displayMetrics
+        val screenW = metrics.widthPixels.coerceAtLeast((360 * density).toInt())
         val bubbleSizePx = (52 * density).toInt()
+        val halfBubblePx = bubbleSizePx / 2
+
+        val initialBubbleX = when (dockSide) {
+            EdgeDockSide.LEFT -> -halfBubblePx
+            EdgeDockSide.RIGHT -> screenW - halfBubblePx
+            EdgeDockSide.NONE -> managed.layoutParams.x.coerceIn(16, (screenW - bubbleSizePx - 16).coerceAtLeast(16))
+        }
+        val initialBubbleY = managed.layoutParams.y.coerceAtLeast(80)
+
         val bubble = FrameLayout(context).apply {
             tag = "fw_bubble_${managed.windowId}"
             contentDescription = "Restore ${managed.title}"
@@ -807,14 +849,19 @@ class FloatingWindowManager(
         }
         bubble.addView(icon)
 
+        var bubbleFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        if (dockSide != EdgeDockSide.NONE) {
+            bubbleFlags = bubbleFlags or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        }
+
         val bParams = WindowManager.LayoutParams(
             bubbleSizePx,
             bubbleSizePx,
-            managed.layoutParams.x.coerceAtLeast(16),
-            managed.layoutParams.y.coerceAtLeast(80),
+            initialBubbleX,
+            initialBubbleY,
             overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            bubbleFlags,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -844,8 +891,16 @@ class FloatingWindowManager(
                             moved = true
                         }
                         if (moved) {
-                            bParams.x = (startX + dx.toInt()).coerceAtLeast(0)
-                            bParams.y = (startY + dy.toInt()).coerceAtLeast(0)
+                            val scrW = context.resources.displayMetrics.widthPixels
+                            val scrH = context.resources.displayMetrics.heightPixels
+                            val minX = if (managed.edgeDockSide != EdgeDockSide.NONE) -halfBubblePx else 0
+                            val maxX = if (managed.edgeDockSide != EdgeDockSide.NONE) {
+                                scrW - halfBubblePx
+                            } else {
+                                (scrW - bubbleSizePx).coerceAtLeast(0)
+                            }
+                            bParams.x = (startX + dx.toInt()).coerceIn(minX, maxX)
+                            bParams.y = (startY + dy.toInt()).coerceIn(0, (scrH - bubbleSizePx).coerceAtLeast(0))
                             runCatching { windowManager.updateViewLayout(bubble, bParams) }
                         }
                         return true
@@ -863,7 +918,12 @@ class FloatingWindowManager(
 
         managed.bubbleView = bubble
         managed.bubbleParams = bParams
-        runCatching { windowManager.addView(bubble, bParams) }
+        if (!isShieldHidden) {
+            runCatching { windowManager.addView(bubble, bParams) }
+        } else {
+            bubble.visibility = View.GONE
+            managed.isRemovedForShield = true
+        }
     }
 
     fun restoreFromBubble(managed: ManagedWindow) {
@@ -872,7 +932,16 @@ class FloatingWindowManager(
         }
         managed.bubbleView = null
         managed.bubbleParams = null
+        val wasEdgeDocked = managed.edgeDockSide != EdgeDockSide.NONE
+        managed.edgeDockSide = EdgeDockSide.NONE
         managed.isMinimized = false
+        if (wasEdgeDocked) {
+            val scrW = context.resources.displayMetrics.widthPixels
+            val maxX = (scrW - managed.layoutParams.width - 8).coerceAtLeast(8)
+            managed.layoutParams.x = managed.layoutParams.x.coerceIn((12 * density).toInt(), maxX)
+            managed.savedBounds.x = managed.layoutParams.x
+            runCatching { windowManager.updateViewLayout(managed.rootView, managed.layoutParams) }
+        }
         managed.rootView.visibility = View.VISIBLE
         bringToFront(managed)
         managed.rootView.requestFocus()
@@ -913,11 +982,28 @@ class FloatingWindowManager(
     }
 
     fun setShieldHidden(hidden: Boolean) {
+        isShieldHidden = hidden
         activeWindows.values.forEach { managed ->
             if (hidden) {
-                managed.rootView.visibility = View.GONE
-                managed.bubbleView?.visibility = View.GONE
+                if (!managed.isRemovedForShield) {
+                    managed.rootView.visibility = View.GONE
+                    runCatching { windowManager.removeView(managed.rootView) }
+                    managed.bubbleView?.let { bubble ->
+                        bubble.visibility = View.GONE
+                        runCatching { windowManager.removeView(bubble) }
+                    }
+                    managed.isRemovedForShield = true
+                }
             } else {
+                if (managed.isRemovedForShield) {
+                    runCatching { windowManager.addView(managed.rootView, managed.layoutParams) }
+                    val bParams = managed.bubbleParams
+                    val bubble = managed.bubbleView
+                    if (bubble != null && bParams != null) {
+                        runCatching { windowManager.addView(bubble, bParams) }
+                    }
+                    managed.isRemovedForShield = false
+                }
                 managed.rootView.visibility = if (managed.isMinimized) View.GONE else View.VISIBLE
                 managed.bubbleView?.visibility = if (managed.isMinimized) View.VISIBLE else View.GONE
             }

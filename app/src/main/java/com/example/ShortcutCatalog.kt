@@ -111,7 +111,7 @@ fun getAllAvailableActions(prefs: SharedPreferences): List<AvailableAction> {
             description = "Open ${item.title} (+${item.phoneDigits}) directly in Floating WhatsApp"
         )
     }
-    return ACTION_LIST + customActions
+    return customActions + ACTION_LIST
 }
 
 val ACTION_LIST = listOf(

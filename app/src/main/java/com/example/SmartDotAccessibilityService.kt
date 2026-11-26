@@ -490,7 +490,8 @@ class SmartDotAccessibilityService : AccessibilityService() {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             val windowList = runCatching { windows }.getOrNull().orEmpty()
-            for (win in windowList) {
+            val focusedFirst = windowList.sortedByDescending { it.isFocused }
+            for (win in focusedFirst) {
                 if (win.type != AccessibilityWindowInfo.TYPE_APPLICATION) continue
                 val pkg = runCatching { win.root?.packageName?.toString() }.getOrNull()
                 if (!pkg.isNullOrBlank() &&
@@ -563,7 +564,9 @@ class SmartDotAccessibilityService : AccessibilityService() {
             "net.one97.paytm",
             "in.org.npci.upiapp",
             "com.dreamplug.androidapp",
-            "in.amazon.mShop.android.shopping"
+            "in.amazon.mShop.android.shopping",
+            "com.csam.icici.bank.imobile",
+            "com.sbi.lotusintouch"
         )
 
         private val EXCLUDED_NON_BANKING_PACKAGES = setOf(
@@ -571,7 +574,12 @@ class SmartDotAccessibilityService : AccessibilityService() {
             "com.android.chrome",
             "com.google.android.googlequicksearchbox",
             "com.android.vending",
-            "com.android.settings"
+            "com.android.settings",
+            "com.google.android.gms",
+            "com.google.android.apps.nexuslauncher",
+            "com.android.launcher",
+            "com.android.launcher3",
+            "com.oppo.launcher"
         )
 
         @Volatile
@@ -629,8 +637,7 @@ class SmartDotAccessibilityService : AccessibilityService() {
             }
             return lower.contains("bank") ||
                 lower.contains("upi") ||
-                lower.contains(".pay") ||
-                lower.contains("pay.") ||
+                lower.contains("pay") ||
                 lower.contains("paisa") ||
                 lower.contains("bhim") ||
                 lower.contains("wallet")

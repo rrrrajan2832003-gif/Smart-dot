@@ -291,7 +291,7 @@ class SmartDotNewUpgradesTest {
     }
 
     @Test
-    fun `Upgrade 5 & 6 - Back key and bottom pill swipe-up minimize to bubble, and IME keyboard auto-lifts and restores window`() {
+    fun `Upgrade 5 & 6 - Back key and bottom pill swipe-up close window, and IME keyboard auto-lifts and restores window`() {
         val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val fwm = FloatingWindowManager(appContext, wm)
         try {
@@ -299,20 +299,16 @@ class SmartDotNewUpgradesTest {
             // FLAG_NOT_FOCUSABLE must NOT be set so system Back key reaches the window
             assertEquals(0, win.layoutParams.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
 
-            // Back key minimizes when no inner backstack applies
+            // Back key closes the window when no inner backstack applies
             val backDown = KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK)
             val backUp = KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK)
             assertTrue(win.rootView.dispatchKeyEvent(backDown))
             assertTrue(win.rootView.dispatchKeyEvent(backUp))
-            assertTrue("Back button should minimize floating window to bubble", win.isMinimized)
-            assertNotNull(win.bubbleView)
+            assertFalse("Back button should close floating window", fwm.hasWindow("floating_notes"))
 
-            // Restore from bubble
-            fwm.restoreFromBubble(win)
-            assertFalse(win.isMinimized)
-
-            // Bottom pill swipe-up (> 80px upward) minimizes to bubble
-            val pill = win.rootView.findViewWithTag<View>("fw_bottom_pill_floating_notes")
+            // Reopen and verify bottom pill swipe-up (> 80px upward) closes window
+            val win2 = FloatingMiniApps.openFloatingNotes(appContext, fwm, CoroutineScope(SupervisorJob() + Dispatchers.Main), Color.CYAN)!!
+            val pill = win2.rootView.findViewWithTag<View>("fw_bottom_pill_floating_notes")
             assertNotNull(pill)
             val evDown = MotionEvent.obtain(100L, 100L, MotionEvent.ACTION_DOWN, 150f, 500f, 0)
             val evMove = MotionEvent.obtain(100L, 120L, MotionEvent.ACTION_MOVE, 150f, 380f, 0) // dy = -120f
@@ -323,19 +319,19 @@ class SmartDotNewUpgradesTest {
             evDown.recycle()
             evMove.recycle()
             evUp.recycle()
-            assertTrue("Swiping bottom pill upward must minimize window", win.isMinimized)
+            assertFalse("Swiping bottom pill upward must close window", fwm.hasWindow("floating_notes"))
 
-            // Restore and verify keyboard auto-lift & restore
-            fwm.restoreFromBubble(win)
-            win.layoutParams.height = 500
-            win.layoutParams.y = 600
-            fwm.handleKeyboardHeightChanged(win, keyboardHeightPx = 450, screenHeightPx = 1200)
+            // Reopen and verify keyboard auto-lift & restore
+            val win3 = FloatingMiniApps.openFloatingNotes(appContext, fwm, CoroutineScope(SupervisorJob() + Dispatchers.Main), Color.CYAN)!!
+            win3.layoutParams.height = 500
+            win3.layoutParams.y = 600
+            fwm.handleKeyboardHeightChanged(win3, keyboardHeightPx = 450, screenHeightPx = 1200)
             // Expected Y = max(20, 1200 - 450 - 500 - 24) = 226
-            assertEquals(226, win.layoutParams.y)
+            assertEquals(226, win3.layoutParams.y)
 
             // Keyboard dismissed -> restores Y back to 600
-            fwm.handleKeyboardHeightChanged(win, keyboardHeightPx = 0, screenHeightPx = 1200)
-            assertEquals(600, win.layoutParams.y)
+            fwm.handleKeyboardHeightChanged(win3, keyboardHeightPx = 0, screenHeightPx = 1200)
+            assertEquals(600, win3.layoutParams.y)
         } finally {
             fwm.closeAllWindows()
         }

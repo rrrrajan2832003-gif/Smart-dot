@@ -16,17 +16,23 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.text.TextUtils
+import android.util.LruCache
 import android.util.Size
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.VideoView
+import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -69,12 +75,36 @@ object FloatingGalleryMusicHelper {
         val folderName: String
     )
 
+    private const val PREF_MUSIC_HIDE_SHORT = "music_hide_short_audio"
+    private const val SHORT_AUDIO_THRESHOLD_MS = 60_000L
+
     private val AUDIO_EXTS = setOf("mp3", "m4a", "wav", "ogg", "aac", "flac", "opus", "amr")
     private val IMAGE_EXTS = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic")
     private val VIDEO_EXTS = setOf("mp4", "mkv", "webm", "3gp", "mov", "avi")
 
+    private val thumbnailCache = object : LruCache<String, Bitmap>(16 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount.coerceAtLeast(1)
+    }
+
     private fun dp(context: Context, value: Float): Int =
         (value * context.resources.displayMetrics.density.coerceAtLeast(1f)).toInt()
+
+    private fun collectFilesRecursive(
+        dir: File,
+        maxDepth: Int = 2,
+        currentDepth: Int = 0,
+        out: MutableList<File>
+    ) {
+        val children = runCatching { dir.listFiles() }.getOrNull() ?: return
+        for (child in children) {
+            if (child.isHidden) continue
+            if (child.isFile) {
+                out.add(child)
+            } else if (child.isDirectory && currentDepth < maxDepth && child.canRead()) {
+                collectFilesRecursive(child, maxDepth, currentDepth + 1, out)
+            }
+        }
+    }
 
     fun queryAudioLibrary(context: Context): List<AudioTrackItem> {
         val result = ArrayList<AudioTrackItem>()
@@ -120,8 +150,7 @@ object FloatingGalleryMusicHelper {
                     cursor.getColumnIndex(MediaStore.Audio.Media.DATA)
                 }
 
-                var count = 0
-                while (cursor.moveToNext() && count < 150) {
+                while (cursor.moveToNext()) {
                     val id = if (idIdx >= 0) cursor.getLong(idIdx) else continue
                     val name = if (nameIdx >= 0) cursor.getString(nameIdx).orEmpty() else ""
                     if (name.isBlank()) continue
@@ -138,7 +167,6 @@ object FloatingGalleryMusicHelper {
                             sizeBytes = size
                         )
                     )
-                    count++
                 }
             }
         }
@@ -147,21 +175,25 @@ object FloatingGalleryMusicHelper {
         val fallbackDirs = listOfNotNull(
             runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC) }.getOrNull(),
             runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS) }.getOrNull(),
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_RECORDINGS) }.getOrNull()
+            } else null,
             runCatching { File(Environment.getExternalStorageDirectory(), "Recordings") }.getOrNull()
         )
         fallbackDirs.distinctBy { it.absolutePath }.forEach { dir ->
             if (dir.exists() && dir.isDirectory && dir.canRead()) {
-                dir.listFiles()
-                    ?.filter { it.isFile && !it.isHidden && it.extension.lowercase(Locale.ROOT) in AUDIO_EXTS }
-                    ?.sortedByDescending { it.lastModified() }
-                    ?.take(50)
-                    ?.forEach { file ->
+                val collected = ArrayList<File>()
+                collectFilesRecursive(dir, maxDepth = 2, out = collected)
+                collected
+                    .filter { it.extension.lowercase(Locale.ROOT) in AUDIO_EXTS }
+                    .sortedByDescending { it.lastModified() }
+                    .forEach { file ->
                         addUnique(
                             AudioTrackItem(
                                 displayName = file.name,
                                 uri = Uri.fromFile(file),
                                 durationMs = 0L,
-                                folderName = dir.name,
+                                folderName = file.parentFile?.name ?: dir.name,
                                 sizeBytes = file.length()
                             )
                         )
@@ -216,8 +248,7 @@ object FloatingGalleryMusicHelper {
                         @Suppress("DEPRECATION")
                         cursor.getColumnIndex(MediaStore.Images.Media.DATA)
                     }
-                    var count = 0
-                    while (cursor.moveToNext() && count < 120) {
+                    while (cursor.moveToNext()) {
                         val id = if (idIdx >= 0) cursor.getLong(idIdx) else continue
                         val name = if (nameIdx >= 0) cursor.getString(nameIdx).orEmpty() else ""
                         if (name.isBlank()) continue
@@ -234,7 +265,6 @@ object FloatingGalleryMusicHelper {
                                 folderName = extractFolderLabel(rawPath, "Pictures")
                             )
                         )
-                        count++
                     }
                 }
             }
@@ -273,8 +303,7 @@ object FloatingGalleryMusicHelper {
                         @Suppress("DEPRECATION")
                         cursor.getColumnIndex(MediaStore.Video.Media.DATA)
                     }
-                    var count = 0
-                    while (cursor.moveToNext() && count < 90) {
+                    while (cursor.moveToNext()) {
                         val id = if (idIdx >= 0) cursor.getLong(idIdx) else continue
                         val name = if (nameIdx >= 0) cursor.getString(nameIdx).orEmpty() else ""
                         if (name.isBlank()) continue
@@ -292,7 +321,6 @@ object FloatingGalleryMusicHelper {
                                 folderName = extractFolderLabel(rawPath, "Movies")
                             )
                         )
-                        count++
                     }
                 }
             }
@@ -302,11 +330,14 @@ object FloatingGalleryMusicHelper {
         val fallbackDirs = listOfNotNull(
             runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES) }.getOrNull(),
             runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM) }.getOrNull(),
-            runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES) }.getOrNull()
+            runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES) }.getOrNull(),
+            runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS) }.getOrNull()
         )
         fallbackDirs.distinctBy { it.absolutePath }.forEach { dir ->
             if (dir.exists() && dir.isDirectory && dir.canRead()) {
-                dir.listFiles()?.filter { it.isFile && !it.isHidden }?.forEach { file ->
+                val collected = ArrayList<File>()
+                collectFilesRecursive(dir, maxDepth = 2, out = collected)
+                collected.forEach { file ->
                     val ext = file.extension.lowercase(Locale.ROOT)
                     val isImg = ext in IMAGE_EXTS
                     val isVid = ext in VIDEO_EXTS
@@ -319,7 +350,7 @@ object FloatingGalleryMusicHelper {
                                 isVideo = isVid,
                                 durationMs = 0L,
                                 dateAddedSec = file.lastModified() / 1000L,
-                                folderName = dir.name
+                                folderName = file.parentFile?.name ?: dir.name
                             )
                         )
                     }
@@ -336,33 +367,44 @@ object FloatingGalleryMusicHelper {
         return clean.substringAfterLast('/').ifBlank { defaultLabel }
     }
 
+    private fun thumbnailCacheKey(item: GalleryMediaItem, sizePx: Int): String = "${item.uri}|$sizePx"
+
     private fun loadThumbnailBitmap(context: Context, item: GalleryMediaItem, sizePx: Int): Bitmap? {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val loaded = runCatching {
+        val key = thumbnailCacheKey(item, sizePx)
+        thumbnailCache.get(key)?.let { cached ->
+            if (!cached.isRecycled) return cached
+        }
+        val decoded: Bitmap? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching {
                 context.contentResolver.loadThumbnail(item.uri, Size(sizePx, sizePx), null)
             }.getOrNull()
-            if (loaded != null) return loaded
-        }
-        if (item.isVideo) {
-            return null
-        }
-        return runCatching {
-            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            context.contentResolver.openInputStream(item.uri)?.use { stream ->
-                BitmapFactory.decodeStream(stream, null, boundsOpts)
-            }
-            var sample = 1
-            val maxDim = maxOf(boundsOpts.outWidth, boundsOpts.outHeight)
-            if (maxDim > sizePx) {
-                while (maxDim / sample > sizePx * 2) {
-                    sample *= 2
+        } else {
+            null
+        } ?: if (item.isVideo) {
+            null
+        } else {
+            runCatching {
+                val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                context.contentResolver.openInputStream(item.uri)?.use { stream ->
+                    BitmapFactory.decodeStream(stream, null, boundsOpts)
                 }
-            }
-            val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sample }
-            context.contentResolver.openInputStream(item.uri)?.use { stream ->
-                BitmapFactory.decodeStream(stream, null, decodeOpts)
-            }
-        }.getOrNull()
+                var sample = 1
+                val maxDim = maxOf(boundsOpts.outWidth, boundsOpts.outHeight)
+                if (maxDim > sizePx) {
+                    while (maxDim / sample > sizePx * 2) {
+                        sample *= 2
+                    }
+                }
+                val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sample }
+                context.contentResolver.openInputStream(item.uri)?.use { stream ->
+                    BitmapFactory.decodeStream(stream, null, decodeOpts)
+                }
+            }.getOrNull()
+        }
+        if (decoded != null) {
+            thumbnailCache.put(key, decoded)
+        }
+        return decoded
     }
 
     /**
@@ -389,6 +431,9 @@ object FloatingGalleryMusicHelper {
             val mainHandler = Handler(Looper.getMainLooper())
             val musicJob = SupervisorJob()
             val musicScope = CoroutineScope(Dispatchers.Main.immediate + musicJob)
+            val prefs = context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
+            var hideShortAudio = prefs.getBoolean(PREF_MUSIC_HIDE_SHORT, true)
+            var allQueriedTracks: List<AudioTrackItem> = emptyList()
             var audioQueue: List<AudioTrackItem> = emptyList()
             var currentAudioIndex = -1
             var mediaPlayer: MediaPlayer? = null
@@ -403,7 +448,7 @@ object FloatingGalleryMusicHelper {
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply {
-                    bottomMargin = dp(context, 6f)
+                    bottomMargin = dp(context, 4f)
                 }
             }
             val tvCount = TextView(context).apply {
@@ -429,6 +474,36 @@ object FloatingGalleryMusicHelper {
             }
             headerRow.addView(tvCount)
             headerRow.addView(btnSync)
+
+            // Filter Row: "Hide < 1 Min Audio" Switch
+            val filterBar = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(context, 8f), dp(context, 4f), dp(context, 8f), dp(context, 4f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 8f).toFloat()
+                    setColor(Color.parseColor("#162032"))
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dp(context, 6f)
+                }
+            }
+            val tvHideShortLabel = TextView(context).apply {
+                text = "Hide < 1 Min Audio"
+                textSize = 11.5f
+                setTextColor(Color.parseColor("#E2E8F0"))
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val switchHideShort = Switch(context).apply {
+                tag = "fw_music_hide_short_toggle"
+                isChecked = hideShortAudio
+                contentDescription = "Hide audio tracks under 1 minute"
+            }
+            filterBar.addView(tvHideShortLabel)
+            filterBar.addView(switchHideShort)
 
             // Player Card
             val playerCard = LinearLayout(context).apply {
@@ -538,18 +613,37 @@ object FloatingGalleryMusicHelper {
                 visibility = if (MediaPermissionActivity.hasAudioPermission(context)) View.GONE else View.VISIBLE
             }
 
-            // Scrollable Audio Track List
-            val listContainer = LinearLayout(context).apply {
-                tag = "fw_music_list"
-                orientation = LinearLayout.VERTICAL
+            // Virtualized Audio Track List (RecyclerView) + Empty State
+            val tvMusicEmpty = TextView(context).apply {
+                tag = "fw_music_empty"
+                textSize = 12f
+                setTextColor(Color.parseColor("#94A3B8"))
+                gravity = Gravity.CENTER
+                setPadding(dp(context, 12f), dp(context, 20f), dp(context, 12f), dp(context, 20f))
+                visibility = View.GONE
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
+                )
             }
-            val listScroll = ScrollView(context).apply {
+            val musicRecyclerView = RecyclerView(context).apply {
+                tag = "fw_music_list"
+                layoutManager = LinearLayoutManager(context)
+                setHasFixedSize(false)
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            }
+            val listHost = FrameLayout(context).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     0,
                     1f
                 )
-                addView(listContainer)
+                addView(musicRecyclerView)
+                addView(tvMusicEmpty)
             }
 
             fun updatePlayPauseLabel() {
@@ -608,6 +702,112 @@ object FloatingGalleryMusicHelper {
                 }
             }
 
+            class MusicTrackViewHolder(
+                val row: LinearLayout,
+                val tvTitle: TextView,
+                val tvMeta: TextView
+            ) : RecyclerView.ViewHolder(row)
+
+            val musicAdapter = object : RecyclerView.Adapter<MusicTrackViewHolder>() {
+                private var items: List<AudioTrackItem> = emptyList()
+
+                fun submitList(newItems: List<AudioTrackItem>) {
+                    items = newItems
+                    notifyDataSetChanged()
+                }
+
+                override fun getItemCount(): Int = items.size
+
+                override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): MusicTrackViewHolder {
+                    val row = LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(dp(context, 10f), dp(context, 8f), dp(context, 10f), dp(context, 8f))
+                        background = GradientDrawable().apply {
+                            cornerRadius = dp(context, 8f).toFloat()
+                            setColor(Color.parseColor("#1E293B"))
+                        }
+                        layoutParams = RecyclerView.LayoutParams(
+                            RecyclerView.LayoutParams.MATCH_PARENT,
+                            RecyclerView.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            bottomMargin = dp(context, 5f)
+                        }
+                    }
+                    row.addView(TextView(context).apply {
+                        text = "🎵"
+                        textSize = 16f
+                        setPadding(0, 0, dp(context, 8f), 0)
+                    })
+                    val textCol = LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    }
+                    val tvTitle = TextView(context).apply {
+                        textSize = 12.5f
+                        setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                        setTextColor(Color.WHITE)
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                    }
+                    val tvMeta = TextView(context).apply {
+                        textSize = 10.5f
+                        setTextColor(Color.parseColor("#94A3B8"))
+                    }
+                    textCol.addView(tvTitle)
+                    textCol.addView(tvMeta)
+                    row.addView(textCol)
+                    return MusicTrackViewHolder(row, tvTitle, tvMeta)
+                }
+
+                override fun onBindViewHolder(holder: MusicTrackViewHolder, position: Int) {
+                    val track = items[position]
+                    holder.row.tag = "fw_music_row_$position"
+                    holder.tvTitle.text = track.displayName
+                    val durLabel = if (track.durationMs > 0L) {
+                        FloatingMediaFilesHelper.formatDurationMs(track.durationMs)
+                    } else {
+                        "Audio"
+                    }
+                    holder.tvMeta.text = "${track.folderName} • $durLabel"
+                    holder.row.setOnClickListener {
+                        val adapterPos = holder.bindingAdapterPosition
+                        val targetIdx = if (adapterPos != RecyclerView.NO_POSITION) adapterPos else position
+                        playTrackAt(targetIdx)
+                    }
+                }
+            }
+            musicRecyclerView.adapter = musicAdapter
+
+            fun applyAudioFilterAndRender() {
+                audioQueue = if (hideShortAudio) {
+                    allQueriedTracks.filter { it.durationMs >= SHORT_AUDIO_THRESHOLD_MS }
+                } else {
+                    allQueriedTracks
+                }
+                tvCount.text = if (hideShortAudio && allQueriedTracks.size != audioQueue.size) {
+                    "Audio Library (${audioQueue.size} / ${allQueriedTracks.size})"
+                } else {
+                    "Audio Library (${audioQueue.size})"
+                }
+                musicAdapter.submitList(audioQueue)
+                if (audioQueue.isEmpty()) {
+                    musicRecyclerView.visibility = View.GONE
+                    tvMusicEmpty.visibility = View.VISIBLE
+                    tvMusicEmpty.text = when {
+                        !MediaPermissionActivity.hasAudioPermission(context) ->
+                            "Media permission required to list all device songs.\nTap \"Grant Media Permission\" above or open via ☰ Menu."
+                        allQueriedTracks.isNotEmpty() && hideShortAudio ->
+                            "All ${allQueriedTracks.size} tracks are under 1 min.\nTurn off \"Hide < 1 Min Audio\" above to view them."
+                        else ->
+                            "No audio or voice recordings found in MediaStore.\nTap ↻ Sync or open an audio file from ☰ Menu."
+                    }
+                } else {
+                    tvMusicEmpty.visibility = View.GONE
+                    musicRecyclerView.visibility = View.VISIBLE
+                }
+            }
+
             fun refreshAudioLibrary() {
                 val hasPerm = MediaPermissionActivity.hasAudioPermission(context)
                 btnGrantAudioPerm.visibility = if (hasPerm) View.GONE else View.VISIBLE
@@ -623,74 +823,16 @@ object FloatingGalleryMusicHelper {
                         } else {
                             View.VISIBLE
                         }
-                        listContainer.removeAllViews()
-                        audioQueue = queried
-                        tvCount.text = "Audio Library (${audioQueue.size})"
-                        if (audioQueue.isEmpty()) {
-                            listContainer.addView(TextView(context).apply {
-                                tag = "fw_music_empty"
-                                text = if (!MediaPermissionActivity.hasAudioPermission(context)) {
-                                    "Media permission required to list all device songs.\nTap \"Grant Media Permission\" above or open via ☰ Menu."
-                                } else {
-                                    "No audio or voice recordings found in MediaStore.\nTap ↻ Sync or open an audio file from ☰ Menu."
-                                }
-                                textSize = 12f
-                                setTextColor(Color.parseColor("#94A3B8"))
-                                gravity = Gravity.CENTER
-                                setPadding(dp(context, 12f), dp(context, 20f), dp(context, 12f), dp(context, 20f))
-                            })
-                            return@withContext
-                        }
-                        audioQueue.forEachIndexed { idx, track ->
-                            val row = LinearLayout(context).apply {
-                                tag = "fw_music_row_$idx"
-                                orientation = LinearLayout.HORIZONTAL
-                                gravity = Gravity.CENTER_VERTICAL
-                                setPadding(dp(context, 10f), dp(context, 8f), dp(context, 10f), dp(context, 8f))
-                                background = GradientDrawable().apply {
-                                    cornerRadius = dp(context, 8f).toFloat()
-                                    setColor(Color.parseColor("#1E293B"))
-                                }
-                                layoutParams = LinearLayout.LayoutParams(
-                                    LinearLayout.LayoutParams.MATCH_PARENT,
-                                    LinearLayout.LayoutParams.WRAP_CONTENT
-                                ).apply {
-                                    bottomMargin = dp(context, 5f)
-                                }
-                                setOnClickListener { playTrackAt(idx) }
-                            }
-                            row.addView(TextView(context).apply {
-                                text = "🎵"
-                                textSize = 16f
-                                setPadding(0, 0, dp(context, 8f), 0)
-                            })
-                            val textCol = LinearLayout(context).apply {
-                                orientation = LinearLayout.VERTICAL
-                                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                            }
-                            textCol.addView(TextView(context).apply {
-                                text = track.displayName
-                                textSize = 12.5f
-                                setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-                                setTextColor(Color.WHITE)
-                                maxLines = 1
-                                ellipsize = TextUtils.TruncateAt.END
-                            })
-                            val durLabel = if (track.durationMs > 0L) {
-                                FloatingMediaFilesHelper.formatDurationMs(track.durationMs)
-                            } else {
-                                "Audio"
-                            }
-                            textCol.addView(TextView(context).apply {
-                                text = "${track.folderName} • $durLabel"
-                                textSize = 10.5f
-                                setTextColor(Color.parseColor("#94A3B8"))
-                            })
-                            row.addView(textCol)
-                            listContainer.addView(row)
-                        }
+                        allQueriedTracks = queried
+                        applyAudioFilterAndRender()
                     }
                 }
+            }
+
+            switchHideShort.setOnCheckedChangeListener { _, isChecked ->
+                hideShortAudio = isChecked
+                prefs.edit().putBoolean(PREF_MUSIC_HIDE_SHORT, isChecked).apply()
+                applyAudioFilterAndRender()
             }
 
             btnGrantAudioPerm.setOnClickListener {
@@ -762,8 +904,9 @@ object FloatingGalleryMusicHelper {
                     FloatingWindowManager.WindowMenuItem("open_audio_saf", "📂 Open Audio File (SAF)", "fw_music_menu_open") {
                         ViewerPickerActivity.pendingCallback = { uri, _ ->
                             val name = uri.lastPathSegment?.substringAfterLast('/') ?: "Audio Track"
-                            val item = AudioTrackItem(name, uri, 0L, "Picked", 0L)
-                            audioQueue = listOf(item) + audioQueue
+                            val item = AudioTrackItem(name, uri, SHORT_AUDIO_THRESHOLD_MS, "Picked", 0L)
+                            allQueriedTracks = listOf(item) + allQueriedTracks
+                            applyAudioFilterAndRender()
                             playTrackAt(0)
                         }
                         context.startActivity(
@@ -778,9 +921,10 @@ object FloatingGalleryMusicHelper {
 
             refreshAudioLibrary()
             container.addView(headerRow)
+            container.addView(filterBar)
             container.addView(playerCard)
             container.addView(btnGrantAudioPerm)
-            container.addView(listScroll)
+            container.addView(listHost)
 
             val cleanup: () -> Unit = {
                 isReleased = true
@@ -891,21 +1035,40 @@ object FloatingGalleryMusicHelper {
                 visibility = if (MediaPermissionActivity.hasImagesAndVideoPermission(context)) View.GONE else View.VISIBLE
             }
 
-            val gridContainer = LinearLayout(context).apply {
-                tag = "fw_gallery_grid"
-                orientation = LinearLayout.VERTICAL
+            val tvGalleryEmpty = TextView(context).apply {
+                tag = "fw_gallery_empty"
+                textSize = 12f
+                setTextColor(Color.parseColor("#94A3B8"))
+                gravity = Gravity.CENTER
+                setPadding(dp(context, 12f), dp(context, 24f), dp(context, 12f), dp(context, 24f))
+                visibility = View.GONE
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
+                )
             }
-            val gridScroll = ScrollView(context).apply {
+            val gridRecyclerView = RecyclerView(context).apply {
+                tag = "fw_gallery_grid"
+                layoutManager = GridLayoutManager(context, 3)
+                setHasFixedSize(false)
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            }
+            val gridHost = FrameLayout(context).apply {
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     0,
                     1f
                 )
-                addView(gridContainer)
+                addView(gridRecyclerView)
+                addView(tvGalleryEmpty)
             }
             gridRoot.addView(filterRow)
             gridRoot.addView(btnGrantGalleryPerm)
-            gridRoot.addView(gridScroll)
+            gridRoot.addView(gridHost)
 
             // 2. Full-bleed In-Window Pinch-Zoom Image Viewer
             val imageViewerView = LinearLayout(context).apply {
@@ -1197,6 +1360,115 @@ object FloatingGalleryMusicHelper {
                 }
             }
 
+            val tileHeightPx = dp(context, 90f)
+            val tileGap = dp(context, 4f)
+            val thumbTargetPx = dp(context, 160f)
+
+            class GalleryGridViewHolder(
+                val tile: FrameLayout,
+                val thumbImg: ImageView,
+                val badgeView: TextView,
+                var loadJob: Job? = null,
+                var boundUri: Uri? = null
+            ) : RecyclerView.ViewHolder(tile)
+
+            val galleryAdapter = object : RecyclerView.Adapter<GalleryGridViewHolder>() {
+                private var items: List<GalleryMediaItem> = emptyList()
+
+                fun submitList(newItems: List<GalleryMediaItem>) {
+                    items = newItems
+                    notifyDataSetChanged()
+                }
+
+                override fun getItemCount(): Int = items.size
+
+                override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): GalleryGridViewHolder {
+                    val tile = FrameLayout(context).apply {
+                        layoutParams = RecyclerView.LayoutParams(
+                            RecyclerView.LayoutParams.MATCH_PARENT,
+                            tileHeightPx
+                        ).apply {
+                            setMargins(tileGap / 2, tileGap / 2, tileGap / 2, tileGap / 2)
+                        }
+                        background = GradientDrawable().apply {
+                            cornerRadius = dp(context, 8f).toFloat()
+                            setColor(Color.parseColor("#1E293B"))
+                        }
+                    }
+                    val thumbImg = ImageView(context).apply {
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                        layoutParams = FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.MATCH_PARENT,
+                            FrameLayout.LayoutParams.MATCH_PARENT
+                        )
+                    }
+                    val badgeView = TextView(context).apply {
+                        textSize = 10f
+                        setTextColor(Color.WHITE)
+                        setPadding(dp(context, 5f), dp(context, 2f), dp(context, 5f), dp(context, 2f))
+                        background = GradientDrawable().apply {
+                            cornerRadius = dp(context, 5f).toFloat()
+                            setColor(Color.argb(180, 15, 23, 42))
+                        }
+                        layoutParams = FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.WRAP_CONTENT,
+                            FrameLayout.LayoutParams.WRAP_CONTENT,
+                            Gravity.BOTTOM or Gravity.END
+                        ).apply {
+                            marginEnd = dp(context, 4f)
+                            bottomMargin = dp(context, 4f)
+                        }
+                        visibility = View.GONE
+                    }
+                    tile.addView(thumbImg)
+                    tile.addView(badgeView)
+                    return GalleryGridViewHolder(tile, thumbImg, badgeView)
+                }
+
+                override fun onBindViewHolder(holder: GalleryGridViewHolder, position: Int) {
+                    val item = items[position]
+                    holder.loadJob?.cancel()
+                    holder.boundUri = item.uri
+                    holder.tile.tag = "fw_gallery_item_$position"
+                    holder.thumbImg.contentDescription = item.displayName
+                    holder.tile.setOnClickListener { openGalleryItem(item) }
+
+                    if (item.isVideo) {
+                        holder.badgeView.visibility = View.VISIBLE
+                        holder.badgeView.text = if (item.durationMs > 0L) {
+                            "▶ ${FloatingMediaFilesHelper.formatDurationMs(item.durationMs)}"
+                        } else {
+                            "▶ Video"
+                        }
+                    } else {
+                        holder.badgeView.visibility = View.GONE
+                    }
+
+                    val cached = thumbnailCache.get(thumbnailCacheKey(item, thumbTargetPx))
+                    if (cached != null && !cached.isRecycled) {
+                        holder.thumbImg.setImageBitmap(cached)
+                    } else {
+                        holder.thumbImg.setImageBitmap(null)
+                        holder.loadJob = thumbScope.launch {
+                            val bmp = withContext(Dispatchers.IO) {
+                                loadThumbnailBitmap(context, item, thumbTargetPx)
+                            }
+                            if (bmp != null && !isReleased && holder.boundUri == item.uri) {
+                                holder.thumbImg.setImageBitmap(bmp)
+                            }
+                        }
+                    }
+                }
+
+                override fun onViewRecycled(holder: GalleryGridViewHolder) {
+                    holder.loadJob?.cancel()
+                    holder.loadJob = null
+                    holder.boundUri = null
+                    super.onViewRecycled(holder)
+                }
+            }
+            gridRecyclerView.adapter = galleryAdapter
+
             renderGrid = {
                 btnGrantGalleryPerm.visibility = if (MediaPermissionActivity.hasImagesAndVideoPermission(context)) {
                     View.GONE
@@ -1216,107 +1488,18 @@ object FloatingGalleryMusicHelper {
                         } else {
                             View.VISIBLE
                         }
-                        gridContainer.removeAllViews()
+                        galleryAdapter.submitList(items)
                         if (items.isEmpty()) {
-                            gridContainer.addView(TextView(context).apply {
-                                tag = "fw_gallery_empty"
-                                text = if (!MediaPermissionActivity.hasImagesAndVideoPermission(context)) {
-                                    "Media permission required to sync Photos & Videos.\nTap \"Grant Media Permission\" above or pick via ☰ Menu."
-                                } else {
-                                    "No photos or videos indexed yet.\nTap ↻ Sync or open ☰ Menu to browse."
-                                }
-                                textSize = 12f
-                                setTextColor(Color.parseColor("#94A3B8"))
-                                gravity = Gravity.CENTER
-                                setPadding(dp(context, 12f), dp(context, 24f), dp(context, 12f), dp(context, 24f))
-                            })
-                        } else {
-                            val cols = 3
-                            val tileHeightPx = dp(context, 90f)
-                            val tileGap = dp(context, 4f)
-                            val thumbTargetPx = dp(context, 160f)
-                            val chunks = items.chunked(cols)
-                            var globalIdx = 0
-                            chunks.forEach { rowItems ->
-                                val row = LinearLayout(context).apply {
-                                    orientation = LinearLayout.HORIZONTAL
-                                    layoutParams = LinearLayout.LayoutParams(
-                                        LinearLayout.LayoutParams.MATCH_PARENT,
-                                        LinearLayout.LayoutParams.WRAP_CONTENT
-                                    ).apply {
-                                        bottomMargin = tileGap
-                                    }
-                                }
-                                rowItems.forEach { item ->
-                                    val itemIdx = globalIdx++
-                                    val tile = FrameLayout(context).apply {
-                                        tag = "fw_gallery_item_$itemIdx"
-                                        layoutParams = LinearLayout.LayoutParams(0, tileHeightPx, 1f).apply {
-                                            marginEnd = tileGap / 2
-                                            marginStart = tileGap / 2
-                                        }
-                                        background = GradientDrawable().apply {
-                                            cornerRadius = dp(context, 8f).toFloat()
-                                            setColor(Color.parseColor("#1E293B"))
-                                        }
-                                        setOnClickListener { openGalleryItem(item) }
-                                    }
-                                    val thumbImg = ImageView(context).apply {
-                                        scaleType = ImageView.ScaleType.CENTER_CROP
-                                        contentDescription = item.displayName
-                                        layoutParams = FrameLayout.LayoutParams(
-                                            FrameLayout.LayoutParams.MATCH_PARENT,
-                                            FrameLayout.LayoutParams.MATCH_PARENT
-                                        )
-                                    }
-                                    tile.addView(thumbImg)
-                                    if (item.isVideo) {
-                                        val badgeText = if (item.durationMs > 0L) {
-                                            "▶ ${FloatingMediaFilesHelper.formatDurationMs(item.durationMs)}"
-                                        } else {
-                                            "▶ Video"
-                                        }
-                                        tile.addView(TextView(context).apply {
-                                            text = badgeText
-                                            textSize = 10f
-                                            setTextColor(Color.WHITE)
-                                            setPadding(dp(context, 5f), dp(context, 2f), dp(context, 5f), dp(context, 2f))
-                                            background = GradientDrawable().apply {
-                                                cornerRadius = dp(context, 5f).toFloat()
-                                                setColor(Color.argb(180, 15, 23, 42))
-                                            }
-                                            layoutParams = FrameLayout.LayoutParams(
-                                                FrameLayout.LayoutParams.WRAP_CONTENT,
-                                                FrameLayout.LayoutParams.WRAP_CONTENT,
-                                                Gravity.BOTTOM or Gravity.END
-                                            ).apply {
-                                                marginEnd = dp(context, 4f)
-                                                bottomMargin = dp(context, 4f)
-                                            }
-                                        })
-                                    }
-                                    thumbScope.launch {
-                                        val bmp = withContext(Dispatchers.IO) {
-                                            loadThumbnailBitmap(context, item, thumbTargetPx)
-                                        }
-                                        if (bmp != null && !isReleased) {
-                                            thumbImg.setImageBitmap(bmp)
-                                        }
-                                    }
-                                    row.addView(tile)
-                                }
-                                if (rowItems.size < cols) {
-                                    repeat(cols - rowItems.size) {
-                                        row.addView(View(context).apply {
-                                            layoutParams = LinearLayout.LayoutParams(0, tileHeightPx, 1f).apply {
-                                                marginEnd = tileGap / 2
-                                                marginStart = tileGap / 2
-                                            }
-                                        })
-                                    }
-                                }
-                                gridContainer.addView(row)
+                            gridRecyclerView.visibility = View.GONE
+                            tvGalleryEmpty.visibility = View.VISIBLE
+                            tvGalleryEmpty.text = if (!MediaPermissionActivity.hasImagesAndVideoPermission(context)) {
+                                "Media permission required to sync Photos & Videos.\nTap \"Grant Media Permission\" above or pick via ☰ Menu."
+                            } else {
+                                "No photos or videos indexed yet.\nTap ↻ Sync or open ☰ Menu to browse."
                             }
+                        } else {
+                            tvGalleryEmpty.visibility = View.GONE
+                            gridRecyclerView.visibility = View.VISIBLE
                         }
                     }
                 }

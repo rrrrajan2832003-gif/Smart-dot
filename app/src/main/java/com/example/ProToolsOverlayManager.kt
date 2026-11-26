@@ -38,10 +38,12 @@ class ProToolsOverlayManager(
 
     // 1. True Pure-Black OLED Pocket Mode
     private var blackScreenView: View? = null
+    private var blackScreenParams: WindowManager.LayoutParams? = null
     private var lastUnlockTapAtMs: Long = 0L
 
     // 2. Hands-Free Auto-Scroller
     private var scrollerView: View? = null
+    private var scrollerParams: WindowManager.LayoutParams? = null
     private var scrollerPlaying = false
     private var scrollerSpeed = 1
     private val scrollerRunnable = object : Runnable {
@@ -114,7 +116,7 @@ class ProToolsOverlayManager(
 
     @SuppressLint("ClickableViewAccessibility")
     fun showBlackScreenMode() {
-        if (blackScreenView != null) return
+        if (blackScreenView != null || shieldHidden) return
         val root = FrameLayout(context).apply {
             tag = "pro_black_screen_overlay"
             setBackgroundColor(Color.BLACK)
@@ -188,7 +190,7 @@ class ProToolsOverlayManager(
         runCatching {
             windowManager.addView(root, lp)
             blackScreenView = root
-            if (shieldHidden) root.visibility = View.GONE
+            blackScreenParams = lp
         }.onFailure { e ->
             Log.e(TAG, "Failed adding Pocket Mode black overlay", e)
         }
@@ -200,6 +202,7 @@ class ProToolsOverlayManager(
             runCatching { windowManager.removeView(v) }
         }
         blackScreenView = null
+        blackScreenParams = null
     }
 
     fun toggleAutoScroller() {
@@ -212,7 +215,7 @@ class ProToolsOverlayManager(
 
     @SuppressLint("ClickableViewAccessibility")
     fun showAutoScroller(accentColor: Int = Color.parseColor("#00E5FF")) {
-        if (scrollerView != null) return
+        if (scrollerView != null || shieldHidden) return
         if (SmartDotAccessibilityService.instance == null) {
             Toast.makeText(
                 context,
@@ -326,10 +329,10 @@ class ProToolsOverlayManager(
         runCatching {
             windowManager.addView(pill, lp)
             scrollerView = pill
+            scrollerParams = lp
             scrollerPlaying = true
             btnPlayPause.text = "⏸ Pause"
             mainHandler.post(scrollerRunnable)
-            if (shieldHidden) pill.visibility = View.GONE
         }.onFailure { e ->
             Log.e(TAG, "Failed adding Auto-Scroller pill", e)
         }
@@ -342,6 +345,7 @@ class ProToolsOverlayManager(
             runCatching { windowManager.removeView(v) }
         }
         scrollerView = null
+        scrollerParams = null
     }
 
     fun toggleAutoClicker(accentColor: Int = Color.parseColor("#00E5FF")) {
@@ -354,6 +358,7 @@ class ProToolsOverlayManager(
 
     @SuppressLint("ClickableViewAccessibility")
     fun addAutoClickerTarget(accentColor: Int = autoClickerAccentColor): AutoClickerTarget? {
+        if (shieldHidden) return null
         val number = autoClickerTargets.size + 1
         val metrics = context.resources.displayMetrics
         val targetSizePx = dp(48f)
@@ -446,7 +451,7 @@ class ProToolsOverlayManager(
 
     @SuppressLint("ClickableViewAccessibility")
     fun showAutoClicker(accentColor: Int = Color.parseColor("#00E5FF")) {
-        if (autoClickerTargets.isNotEmpty() || autoClickerBarView != null) return
+        if (autoClickerTargets.isNotEmpty() || autoClickerBarView != null || shieldHidden) return
         if (SmartDotAccessibilityService.instance == null) {
             Toast.makeText(
                 context,
@@ -672,17 +677,52 @@ class ProToolsOverlayManager(
         autoClickerBarParams = null
     }
 
+    private var removedForShield = false
+
     fun setShieldHidden(hidden: Boolean) {
         shieldHidden = hidden
-        val vis = if (hidden) View.GONE else View.VISIBLE
-        blackScreenView?.visibility = vis
-        scrollerView?.visibility = vis
-        autoClickerTargets.forEach { it.view.visibility = vis }
-        autoClickerBarView?.visibility = vis
         if (hidden) {
             mainHandler.removeCallbacks(scrollerRunnable)
             mainHandler.removeCallbacks(autoClickerRunnable)
+            if (!removedForShield) {
+                blackScreenView?.let {
+                    it.visibility = View.GONE
+                    runCatching { windowManager.removeView(it) }
+                }
+                scrollerView?.let {
+                    it.visibility = View.GONE
+                    runCatching { windowManager.removeView(it) }
+                }
+                autoClickerTargets.forEach { target ->
+                    target.view.visibility = View.GONE
+                    runCatching { windowManager.removeView(target.view) }
+                }
+                autoClickerBarView?.let {
+                    it.visibility = View.GONE
+                    runCatching { windowManager.removeView(it) }
+                }
+                removedForShield = true
+            }
         } else {
+            if (removedForShield) {
+                blackScreenView?.let { v ->
+                    blackScreenParams?.let { lp -> runCatching { windowManager.addView(v, lp) } }
+                }
+                scrollerView?.let { v ->
+                    scrollerParams?.let { lp -> runCatching { windowManager.addView(v, lp) } }
+                }
+                autoClickerTargets.forEach { target ->
+                    runCatching { windowManager.addView(target.view, target.params) }
+                }
+                autoClickerBarView?.let { bar ->
+                    autoClickerBarParams?.let { lp -> runCatching { windowManager.addView(bar, lp) } }
+                }
+                removedForShield = false
+            }
+            blackScreenView?.visibility = View.VISIBLE
+            scrollerView?.visibility = View.VISIBLE
+            autoClickerTargets.forEach { it.view.visibility = View.VISIBLE }
+            autoClickerBarView?.visibility = View.VISIBLE
             if (scrollerPlaying && scrollerView != null) mainHandler.post(scrollerRunnable)
             if (autoClickerPlaying && autoClickerTargets.isNotEmpty()) mainHandler.post(autoClickerRunnable)
         }

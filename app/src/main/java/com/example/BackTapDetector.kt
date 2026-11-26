@@ -17,16 +17,23 @@ import kotlin.math.max
  */
 class BackTapDetector(
     @Volatile private var zSpikeThreshold: Float = DEFAULT_SENSITIVITY,
-    private val minGapMs: Long = 100L,
-    private val maxGapMs: Long = 450L,
+    private val minGapMs: Long = 120L,
+    private val maxGapMs: Long = 380L,
     private val cooldownMs: Long = 1000L,
-    private val maxLateralAccel: Float = 6.0f,
-    private val lateralRatioLimit: Float = 0.85f,
+    private val maxLateralAccel: Float = 4.5f,
+    private val maxZSpike: Float = MAX_Z_SPIKE,
+    private val maxPeakDurationMs: Long = 60L,
+    private val shakeSuppressMs: Long = 220L,
+    private val lateralRatioLimit: Float = 0.75f,
     private val onDoubleBackTap: () -> Unit
 ) : SensorEventListener {
 
     private var firstTapTimeMs = 0L
     private var lastTriggerTimeMs = 0L
+    private var lastShakeTimeMs = 0L
+    private var zSpikeStartMs = 0L
+    private var lastHighZSampleMs = 0L
+    private var zSpikeRejected = false
 
     // High-pass filter state when reading raw TYPE_ACCELEROMETER
     private var hasGravityEstimate = false
@@ -42,7 +49,11 @@ class BackTapDetector(
 
     /**
      * Evaluates a gravity-free linear acceleration sample (m/s^2).
-     * Returns true if a valid double back-tap was detected on this sample.
+     * Strict double-tap criteria:
+     * - Sharp isolated Z-axis impulse between [zSpikeThreshold] (7.5 m/s^2) and [maxZSpike] (18.0 m/s^2)
+     * - Minimal lateral X/Y motion (|X| <= 4.5 and |Y| <= 4.5 m/s^2)
+     * - Discrete tap pulse (< 60ms continuous duration), not sustained shaking/walking
+     * - Two distinct taps separated by 120ms..380ms with 1000ms trigger cooldown
      */
     fun onLinearAccelerationSample(
         lx: Float,
@@ -50,16 +61,60 @@ class BackTapDetector(
         lz: Float,
         timestampMs: Long
     ): Boolean {
-        val absZ = abs(lz)
-        if (absZ <= zSpikeThreshold) return false
-
-        // Reject lateral walking/shaking impulses where X/Y exceeds 6.0 m/s^2 or rivals Z-axis tap
         val absX = abs(lx)
         val absY = abs(ly)
+        val absZ = abs(lz)
         val maxLateral = max(absX, absY)
-        if (absX >= maxLateralAccel || absY >= maxLateralAccel || maxLateral > absZ * lateralRatioLimit) {
+
+        // Reject walking, pocket jostling, or phone shaking where X/Y lateral motion is active
+        if (absX > maxLateralAccel || absY > maxLateralAccel ||
+            (absZ >= zSpikeThreshold && maxLateral > absZ * lateralRatioLimit)
+        ) {
+            firstTapTimeMs = 0L
+            lastShakeTimeMs = timestampMs
+            zSpikeStartMs = 0L
+            lastHighZSampleMs = 0L
+            zSpikeRejected = false
             return false
         }
+
+        if (lastShakeTimeMs != 0L && (timestampMs - lastShakeTimeMs) < shakeSuppressMs) {
+            return false
+        }
+
+        // Below threshold -> end of current impulse pulse
+        if (absZ < zSpikeThreshold) {
+            zSpikeStartMs = 0L
+            lastHighZSampleMs = 0L
+            zSpikeRejected = false
+            return false
+        }
+
+        // Reject violent drops/slams (> 18.0 m/s^2)
+        if (absZ > maxZSpike) {
+            firstTapTimeMs = 0L
+            lastShakeTimeMs = timestampMs
+            zSpikeStartMs = 0L
+            lastHighZSampleMs = 0L
+            zSpikeRejected = true
+            return false
+        }
+
+        // Enforce discrete tap peak duration (< 60ms). Continuous high-Z oscillations across adjacent
+        // samples spanning >= 60ms are treated as shaking rather than a crisp finger back-tap.
+        if (lastHighZSampleMs != 0L && (timestampMs - lastHighZSampleMs) <= 80L) {
+            if (zSpikeRejected || (timestampMs - zSpikeStartMs) >= maxPeakDurationMs) {
+                zSpikeRejected = true
+                firstTapTimeMs = 0L
+                lastShakeTimeMs = timestampMs
+                lastHighZSampleMs = timestampMs
+                return false
+            }
+        } else {
+            zSpikeStartMs = timestampMs
+            zSpikeRejected = false
+        }
+        lastHighZSampleMs = timestampMs
 
         if (lastTriggerTimeMs != 0L && (timestampMs - lastTriggerTimeMs) < cooldownMs) {
             return false
@@ -110,6 +165,10 @@ class BackTapDetector(
     fun reset() {
         firstTapTimeMs = 0L
         lastTriggerTimeMs = 0L
+        lastShakeTimeMs = 0L
+        zSpikeStartMs = 0L
+        lastHighZSampleMs = 0L
+        zSpikeRejected = false
         hasGravityEstimate = false
         gravityX = 0f
         gravityY = 0f
@@ -123,8 +182,8 @@ class BackTapDetector(
         val z = event.values.getOrNull(2) ?: return
         val nowMs = System.currentTimeMillis()
         when (event.sensor.type) {
-            Sensor.TYPE_ACCELEROMETER -> onRawAccelerometerSample(x, y, z, nowMs)
             Sensor.TYPE_LINEAR_ACCELERATION -> onLinearAccelerationSample(x, y, z, nowMs)
+            Sensor.TYPE_ACCELEROMETER -> onRawAccelerometerSample(x, y, z, nowMs)
         }
     }
 
@@ -135,6 +194,7 @@ class BackTapDetector(
     companion object {
         const val MIN_SENSITIVITY = 4f
         const val MAX_SENSITIVITY = 16f
-        const val DEFAULT_SENSITIVITY = 9.5f
+        const val DEFAULT_SENSITIVITY = 7.5f
+        const val MAX_Z_SPIKE = 18.0f
     }
 }

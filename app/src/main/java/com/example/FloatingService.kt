@@ -132,6 +132,7 @@ class FloatingService : Service() {
     private var isFlashlightOn = false
     private var isUpdateReceiverRegistered = false
     private var isFloatingViewAdded = false
+    private var isSidebarViewAdded = false
     private var popupSessionJob: Job? = null
 
     // Isolated controllers for Screen Text Copy and Screen Translate (lazily created when triggered)
@@ -141,6 +142,7 @@ class FloatingService : Service() {
     // Screen Recorder & Stop Recording Edge Pill
     private var screenRecorderManager: ScreenRecorderManager? = null
     private var stopRecordingPillView: View? = null
+    private var stopRecordingPillParams: WindowManager.LayoutParams? = null
     private var lastRecordWithAudio: Boolean = false
 
     // Multi-window floating mini-apps manager
@@ -545,14 +547,23 @@ class FloatingService : Service() {
             }
         })
 
-        return try {
-            windowManager.addView(floatingView, params)
-            isFloatingViewAdded = true
-            true
-        } catch (e: Exception) {
-            Log.e("FloatingService", "Failed rendering floating dot overlay on display.", e)
+        return if (isShieldHidden) {
+            floatingView.visibility = View.GONE
+            if (::imgFloatingDot.isInitialized) {
+                imgFloatingDot.visibility = View.GONE
+            }
             isFloatingViewAdded = false
-            false
+            true
+        } else {
+            try {
+                windowManager.addView(floatingView, params)
+                isFloatingViewAdded = true
+                true
+            } catch (e: Exception) {
+                Log.e("FloatingService", "Failed rendering floating dot overlay on display.", e)
+                isFloatingViewAdded = false
+                false
+            }
         }
     }
 
@@ -618,10 +629,11 @@ class FloatingService : Service() {
         val dialog = android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Select Shortcut")
             .setCancelable(true)
-        
-        val actionIds = ACTION_LIST.map { it.id }.toTypedArray()
-        val actionNames = ACTION_LIST.map { it.name }.toTypedArray()
-        
+
+        val allActions = getAllAvailableActions(prefs)
+        val actionIds = allActions.map { it.id }.toTypedArray()
+        val actionNames = allActions.map { it.name }.toTypedArray()
+
         dialog.setItems(actionNames) { d, which ->
             val selectedId = actionIds[which]
             onShortcutSelected(selectedId)
@@ -662,6 +674,7 @@ class FloatingService : Service() {
     }
 
     private fun showAssistantSidebarCustom(alignToEdge: Boolean) {
+        if (isShieldHidden) return
         isPopupAlignedToEdge = alignToEdge
         Log.i("FloatingService", "Popup opened.")
 
@@ -1321,18 +1334,77 @@ class FloatingService : Service() {
 
     private fun setBankingShieldHidden(hidden: Boolean) {
         isShieldHidden = hidden
-        if (hidden && activePopupWindow?.isShowing == true) {
-            activePopupWindow?.dismiss()
-        }
-        if (::floatingView.isInitialized && isFloatingViewAdded) {
+        if (hidden) {
+            if (activePopupWindow?.isShowing == true) {
+                activePopupWindow?.dismiss()
+            }
+            screenTextCopyController?.dismissOverlayIfShowing()
+            screenTranslateController?.dismissOverlayIfShowing()
+
+            if (::floatingView.isInitialized) {
+                floatingView.visibility = View.GONE
+                if (::imgFloatingDot.isInitialized) {
+                    imgFloatingDot.visibility = View.GONE
+                }
+                if (isFloatingViewAdded || floatingView.isAttachedToWindow) {
+                    runCatching { windowManager.removeView(floatingView) }
+                }
+                isFloatingViewAdded = false
+            }
+
+            sidebarView?.let { sb ->
+                sb.visibility = View.GONE
+                if (isSidebarViewAdded || sb.isAttachedToWindow) {
+                    runCatching { windowManager.removeView(sb) }
+                }
+                isSidebarViewAdded = false
+            }
+
+            stopRecordingPillView?.let { pill ->
+                pill.visibility = View.GONE
+                if (pill.isAttachedToWindow) {
+                    runCatching { windowManager.removeView(pill) }
+                }
+            }
+        } else {
             val dotEnabled = prefs.getBoolean("floating_dot_enabled", true)
-            floatingView.visibility = if (!hidden && dotEnabled) View.VISIBLE else View.GONE
-        }
-        sidebarView?.let { sb ->
+            if (dotEnabled && ::floatingView.isInitialized && ::params.isInitialized) {
+                if (!isFloatingViewAdded && !floatingView.isAttachedToWindow) {
+                    runCatching {
+                        windowManager.addView(floatingView, params)
+                        isFloatingViewAdded = true
+                    }
+                }
+                floatingView.visibility = View.VISIBLE
+                if (::imgFloatingDot.isInitialized) {
+                    imgFloatingDot.visibility = View.VISIBLE
+                }
+            }
+
             val sidebarEnabled = prefs.getBoolean("sidebar_enabled", true)
-            sb.visibility = if (!hidden && sidebarEnabled) View.VISIBLE else View.GONE
+            if (sidebarEnabled) {
+                val sb = sidebarView
+                val sp = sidebarParams
+                if (sb != null && sp != null) {
+                    if (!isSidebarViewAdded && !sb.isAttachedToWindow) {
+                        runCatching {
+                            windowManager.addView(sb, sp)
+                            isSidebarViewAdded = true
+                        }
+                    }
+                    sb.visibility = View.VISIBLE
+                }
+            }
+
+            val pill = stopRecordingPillView
+            val pillLp = stopRecordingPillParams
+            if (pill != null && pillLp != null) {
+                if (!pill.isAttachedToWindow) {
+                    runCatching { windowManager.addView(pill, pillLp) }
+                }
+                pill.visibility = View.VISIBLE
+            }
         }
-        stopRecordingPillView?.visibility = if (hidden) View.GONE else View.VISIBLE
         floatingWindowManager?.setShieldHidden(hidden)
         proToolsOverlayManager?.setShieldHidden(hidden)
     }
@@ -1591,6 +1663,7 @@ class FloatingService : Service() {
     }
 
     private fun executeAction(actionId: String) {
+        if (isShieldHidden) return
         val context = this
         val pm = packageManager
         try {
@@ -3140,8 +3213,14 @@ class FloatingService : Service() {
         }
 
         stopRecordingPillView = pill
+        stopRecordingPillParams = pillParams
+        if (isShieldHidden) {
+            pill.visibility = View.GONE
+            return
+        }
         runCatching { windowManager.addView(pill, pillParams) }.onFailure {
             stopRecordingPillView = null
+            stopRecordingPillParams = null
         }
     }
 
@@ -3152,6 +3231,7 @@ class FloatingService : Service() {
             }
         }
         stopRecordingPillView = null
+        stopRecordingPillParams = null
     }
 
     // -------------------------------------------------------------
@@ -3224,8 +3304,8 @@ class FloatingService : Service() {
             }.also { backTapDetector = it }
             detector.setThreshold(sensitivity)
             if (!isBackTapListenerRegistered) {
-                val sensor = manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-                    ?: manager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
+                val sensor = manager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
+                    ?: manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
                     ?: return
                 isBackTapListenerRegistered = manager.registerListener(
                     detector,
@@ -3617,10 +3697,13 @@ class FloatingService : Service() {
         edgeGestureDetector?.cancelAll()
         edgeGestureDetector = null
         sidebarView?.let {
-            try {
-                windowManager.removeView(it)
-            } catch (_: Exception) {}
+            if (isSidebarViewAdded || it.isAttachedToWindow) {
+                try {
+                    windowManager.removeView(it)
+                } catch (_: Exception) {}
+            }
         }
+        isSidebarViewAdded = false
         sidebarView = null
         sidebarPillView = null
         sidebarParams = null
@@ -3846,10 +3929,18 @@ class FloatingService : Service() {
         sidebarParams = sparams
         activeSidebarEdge = sidebarEdge
 
+        if (isShieldHidden) {
+            isSidebarViewAdded = false
+            handle.visibility = View.GONE
+            return
+        }
+
         try {
             windowManager.addView(handle, sparams)
+            isSidebarViewAdded = true
         } catch (e: Exception) {
             Log.e("FloatingService", "Failed rendering sidebar overlay", e)
+            isSidebarViewAdded = false
             sidebarView = null
             sidebarPillView = null
             sidebarParams = null

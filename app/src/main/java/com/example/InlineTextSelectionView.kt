@@ -150,7 +150,11 @@ class InlineTextSelectionView @JvmOverloads constructor(
             override fun onDown(e: MotionEvent): Boolean = true
 
             override fun onDoubleTap(e: MotionEvent): Boolean {
-                return selectAllScreenWords()
+                return if (mode == DisplayMode.COPY) {
+                    selectFullScreenCutout()
+                } else {
+                    selectAllScreenWords()
+                }
             }
         }
     )
@@ -305,6 +309,26 @@ class InlineTextSelectionView @JvmOverloads constructor(
         cutoutDragMode = CutoutDragMode.NONE
         invalidate()
         onCutoutChanged?.invoke(null)
+    }
+
+    fun selectFullScreenCutout(): Boolean {
+        if (mode != DisplayMode.COPY) return false
+        val viewW = width.toFloat().takeIf { it > minCutoutSizePx }
+            ?: context.resources.displayMetrics.widthPixels.toFloat().coerceAtLeast(minCutoutSizePx)
+        val viewH = height.toFloat().takeIf { it > minCutoutSizePx }
+            ?: context.resources.displayMetrics.heightPixels.toFloat().coerceAtLeast(minCutoutSizePx)
+        val fullRect = RectF(0f, 0f, viewW, viewH)
+        selectedWordIds.clear()
+        isHighlighterDragging = false
+        highlighterPath.reset()
+        strokePoints.clear()
+        cutoutDragMode = CutoutDragMode.NONE
+        cutoutRect = fullRect
+        doubleTapTriggeredThisGesture = true
+        invalidate()
+        onCopySelectionChanged?.invoke("", null)
+        onCutoutChanged?.invoke(RectF(fullRect))
+        return true
     }
 
     fun selectAllScreenWords(): Boolean {
@@ -664,9 +688,10 @@ class InlineTextSelectionView @JvmOverloads constructor(
             doubleTapTriggeredThisGesture = false
         }
         val doubleTapHandled = gestureDetector.onTouchEvent(event)
-        if (doubleTapTriggeredThisGesture && event.actionMasked != MotionEvent.ACTION_DOWN) {
+        if (doubleTapTriggeredThisGesture) {
             if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
                 doubleTapTriggeredThisGesture = false
+                cutoutDragMode = CutoutDragMode.NONE
                 strokePoints.clear()
                 isHighlighterDragging = false
                 highlighterPath.reset()

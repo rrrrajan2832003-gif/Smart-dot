@@ -409,9 +409,7 @@ fun GesturesScreen(
                         .height(340.dp)
                         .verticalScroll(listScroll)
                 ) {
-                    val gestureOptions = remember(pickingGesture) {
-                        SwipeGestureHelper.getAllGestureOptions(prefs)
-                    }
+                    val gestureOptions = SwipeGestureHelper.getAllGestureOptions(prefs)
                     gestureOptions.forEach { option ->
                         val selected = currentActionId == option.id
                         Row(

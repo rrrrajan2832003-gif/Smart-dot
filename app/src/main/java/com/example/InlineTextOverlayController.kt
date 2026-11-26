@@ -24,6 +24,7 @@ import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.Surface
 import android.view.View
+import android.view.ViewTreeObserver
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
@@ -83,6 +84,9 @@ class InlineTextOverlayController(
     private var activeCopyableText: String = ""
     private var capturedRotation: Int = Surface.ROTATION_0
     private val safeInsets = Rect()
+    private var keyboardLayoutListener: ViewTreeObserver.OnGlobalLayoutListener? = null
+    private var preKeyboardWordTopMargin: Int? = null
+    private var preKeyboardCutoutTopMargin: Int? = null
 
     fun isShowing(): Boolean = overlayView != null
 
@@ -162,12 +166,14 @@ class InlineTextOverlayController(
                 if (clean.isEmpty() || anchorRect == null) {
                     currentAnchorRect = null
                     activeCopyableText = ""
+                    preKeyboardWordTopMargin = null
                     copyBtn.visibility = View.GONE
                     wordActionBar.visibility = View.GONE
                     return@configureCopyMode
                 }
                 currentAnchorRect = RectF(anchorRect)
                 activeCopyableText = clean
+                preKeyboardWordTopMargin = null
                 copyBtn.visibility = View.VISIBLE
                 wordActionBar.visibility = View.VISIBLE
                 positionFloatingBar(root, controlsPill, wordActionBar, anchorRect, preferBelow = false, density = context.resources.displayMetrics.density)
@@ -185,10 +191,12 @@ class InlineTextOverlayController(
                 wordTranslateBubbleView?.visibility = View.GONE
                 if (cutoutRect == null) {
                     currentCutoutRect = null
+                    preKeyboardCutoutTopMargin = null
                     cutoutBar.visibility = View.GONE
                     return@configureCopyMode
                 }
                 currentCutoutRect = RectF(cutoutRect)
+                preKeyboardCutoutTopMargin = null
                 wordActionBar.visibility = View.GONE
                 copyBtn.visibility = View.GONE
                 cutoutBar.visibility = View.VISIBLE
@@ -756,14 +764,10 @@ class InlineTextOverlayController(
             val overlapping = selView.getWordsInsideCutout()
             val w = selView.width
             val h = selView.height
-            val overlapText = overlapping.joinToString(" ") { it.text }.trim()
-            val finalPrompt = if (overlapText.isNotEmpty()) {
-                SelectionToolbarHelper.buildPresetQuery(presetText, overlapText)
-            } else {
-                presetText.trim()
-            }
+            val finalPrompt = presetText.trim()
+            val handler = onCutoutGoogleAiModeClicked ?: onCutoutBrowserAiClicked ?: onCutoutSearchWithFallback
             dismissInternal()
-            onCutoutSearchWithFallback?.invoke(box, overlapping, w, h, finalPrompt)
+            handler?.invoke(box, overlapping, w, h, finalPrompt)
             onDismiss()
         }
         btnCutoutPreset1.setOnClickListener {
@@ -955,7 +959,7 @@ class InlineTextOverlayController(
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
@@ -969,6 +973,23 @@ class InlineTextOverlayController(
         }
 
         overlayView = root
+        val kbListener = ViewTreeObserver.OnGlobalLayoutListener {
+            val metrics = context.resources.displayMetrics
+            val scrH = root.height.takeIf { it > 0 } ?: metrics.heightPixels.coerceAtLeast(1)
+            val imeBottom = ViewCompat.getRootWindowInsets(root)
+                ?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
+            val visibleFrame = Rect()
+            root.getWindowVisibleDisplayFrame(visibleFrame)
+            val frameKbHeight = if (visibleFrame.bottom > 0 && visibleFrame.bottom < scrH && (scrH - visibleFrame.bottom) > scrH * 0.15f) {
+                scrH - visibleFrame.bottom
+            } else {
+                0
+            }
+            adjustActiveBarsForKeyboard(maxOf(imeBottom, frameKbHeight), scrH)
+        }
+        keyboardLayoutListener = kbListener
+        root.viewTreeObserver.addOnGlobalLayoutListener(kbListener)
+
         return try {
             windowManager.addView(root, overlayParams)
             ViewCompat.requestApplyInsets(root)
@@ -980,6 +1001,54 @@ class InlineTextOverlayController(
             onDismiss()
             null
         }
+    }
+
+    internal fun adjustActiveBarsForKeyboard(
+        keyboardHeightPx: Int,
+        rootHeightPx: Int = overlayView?.height?.takeIf { it > 0 }
+            ?: context.resources.displayMetrics.heightPixels.coerceAtLeast(1)
+    ) {
+        val density = context.resources.displayMetrics.density.coerceAtLeast(1f)
+        val marginPx = (16 * density).toInt()
+        val minTopPx = safeInsets.top + (8 * density).toInt()
+
+        fun adjustBar(
+            bar: View?,
+            savedTopGetter: () -> Int?,
+            savedTopSetter: (Int?) -> Unit
+        ) {
+            if (bar == null || bar.visibility != View.VISIBLE) return
+            val lp = bar.layoutParams as? FrameLayout.LayoutParams ?: return
+            if (keyboardHeightPx > 0) {
+                if (savedTopGetter() == null) {
+                    savedTopSetter(lp.topMargin)
+                }
+                val barH = bar.height.takeIf { it > 0 } ?: bar.measuredHeight.takeIf { it > 0 } ?: run {
+                    bar.measure(
+                        View.MeasureSpec.makeMeasureSpec(rootHeightPx, View.MeasureSpec.AT_MOST),
+                        View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+                    )
+                    bar.measuredHeight
+                }
+                val maxAllowedTop = (rootHeightPx - keyboardHeightPx - barH - marginPx).coerceAtLeast(minTopPx)
+                if (lp.topMargin > maxAllowedTop) {
+                    lp.topMargin = maxAllowedTop
+                    bar.layoutParams = lp
+                }
+            } else {
+                val restoreTop = savedTopGetter()
+                if (restoreTop != null) {
+                    savedTopSetter(null)
+                    if (lp.topMargin != restoreTop) {
+                        lp.topMargin = restoreTop
+                        bar.layoutParams = lp
+                    }
+                }
+            }
+        }
+
+        adjustBar(wordActionBarView, { preKeyboardWordTopMargin }, { preKeyboardWordTopMargin = it })
+        adjustBar(cutoutActionBarView, { preKeyboardCutoutTopMargin }, { preKeyboardCutoutTopMargin = it })
     }
 
     private fun handleWordToolbarAction(
@@ -1461,6 +1530,9 @@ class InlineTextOverlayController(
         unregisterWatchers()
         activeDismissCallback = null
         overlayView?.let { view ->
+            keyboardLayoutListener?.let { listener ->
+                runCatching { view.viewTreeObserver.removeOnGlobalLayoutListener(listener) }
+            }
             runCatching {
                 val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
                 imm?.hideSoftInputFromWindow(view.windowToken, 0)
@@ -1471,6 +1543,9 @@ class InlineTextOverlayController(
                 Log.w(TAG, "Failed removing transparent overlay", e)
             }
         }
+        keyboardLayoutListener = null
+        preKeyboardWordTopMargin = null
+        preKeyboardCutoutTopMargin = null
         overlayView = null
         selectionView = null
         controlsPillView = null

@@ -542,6 +542,8 @@ object SelectionToolbarHelper {
                 if (cleanQuestion.isNotEmpty()) {
                     putExtra(Intent.EXTRA_TEXT, cleanQuestion)
                     putExtra(Intent.EXTRA_SUBJECT, cleanQuestion)
+                    putExtra(SearchManager.QUERY, cleanQuestion)
+                    putExtra("query", cleanQuestion)
                 }
                 attachImageClipData(context, this, uri)
                 setPackage(pkg)
@@ -557,6 +559,8 @@ object SelectionToolbarHelper {
             if (cleanQuestion.isNotEmpty()) {
                 putExtra(Intent.EXTRA_TEXT, cleanQuestion)
                 putExtra(Intent.EXTRA_SUBJECT, cleanQuestion)
+                putExtra(SearchManager.QUERY, cleanQuestion)
+                putExtra("query", cleanQuestion)
             }
             attachImageClipData(context, this, uri)
             setPackage(GOOGLE_APP_PACKAGE)
@@ -577,6 +581,8 @@ object SelectionToolbarHelper {
             if (cleanQuestion.isNotEmpty()) {
                 putExtra(Intent.EXTRA_TEXT, cleanQuestion)
                 putExtra(Intent.EXTRA_SUBJECT, cleanQuestion)
+                putExtra(SearchManager.QUERY, cleanQuestion)
+                putExtra("query", cleanQuestion)
             }
             attachImageClipData(context, this, uri)
         }
