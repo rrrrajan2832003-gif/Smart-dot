@@ -430,51 +430,18 @@ class SmartDotFourFixesTest {
     }
 
     @Test
-    fun `BackTapDetector triggers on sharp Z double-tap, rejects walking motion, and MainActivity persists settings`() {
-        var triggerCount = 0
-        val detector = BackTapDetector(zSpikeThreshold = 7.5f) {
-            triggerCount++
-        }
+    fun `Back-Tap Data toggle is completely removed from MainActivity and FloatingService`() {
+        composeRule.onNodeWithTag("switch_back_tap_data").assertDoesNotExist()
+        composeRule.onNodeWithTag("slider_back_tap_sensitivity").assertDoesNotExist()
 
-        // Lateral walking/shaking spikes (high X/Y relative to Z) must NOT trigger
-        assertFalse(detector.onLinearAccelerationSample(lx = 9.5f, ly = 7.0f, lz = 8.5f, timestampMs = 1000L))
-        assertFalse(detector.onLinearAccelerationSample(lx = 8.5f, ly = 6.5f, lz = 8.2f, timestampMs = 1220L))
-        assertEquals(0, triggerCount)
+        val hasBackTapClass = runCatching {
+            Class.forName("com.example.BackTapDetector")
+        }.isSuccess
+        assertFalse("BackTapDetector class must be deleted", hasBackTapClass)
 
-        // Two taps too close (<120ms bounce) must NOT trigger
-        assertFalse(detector.onLinearAccelerationSample(lx = 0.5f, ly = 0.4f, lz = 9.2f, timestampMs = 2000L))
-        assertFalse(detector.onLinearAccelerationSample(lx = 0.3f, ly = 0.2f, lz = 9.4f, timestampMs = 2060L))
-        assertEquals(0, triggerCount)
-
-        // Two taps too far apart (>400ms) must NOT trigger
-        assertFalse(detector.onLinearAccelerationSample(lx = 0.4f, ly = 0.3f, lz = 9.2f, timestampMs = 3000L))
-        assertFalse(detector.onLinearAccelerationSample(lx = 0.4f, ly = 0.3f, lz = 9.2f, timestampMs = 3600L))
-        assertEquals(0, triggerCount)
-
-        // Valid sharp Z double-tap within 120..400ms MUST trigger once
-        assertFalse(detector.onLinearAccelerationSample(lx = 0.3f, ly = 0.2f, lz = 9.8f, timestampMs = 5000L))
-        assertTrue(detector.onLinearAccelerationSample(lx = 0.4f, ly = 0.3f, lz = -9.6f, timestampMs = 5240L))
-        assertEquals(1, triggerCount)
-
-        // Immediately following sample inside 1200ms cooldown must NOT re-trigger
-        assertFalse(detector.onLinearAccelerationSample(lx = 0.2f, ly = 0.1f, lz = 10.5f, timestampMs = 5600L))
-        assertFalse(detector.onLinearAccelerationSample(lx = 0.2f, ly = 0.1f, lz = 10.5f, timestampMs = 5820L))
-        assertEquals(1, triggerCount)
-
-        // Verify MainActivity Back-Tap switch & slider are rendered and persist preferences
-        val prefs = composeRule.activity.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
-        assertFalse(prefs.getBoolean(FloatingService.PREF_BACK_TAP_DATA_ENABLED, false))
-
-        composeRule.onNodeWithTag("switch_back_tap_data")
-            .performScrollTo()
-            .assertIsDisplayed()
-            .performClick()
-        composeRule.onNodeWithTag("slider_back_tap_sensitivity")
-            .performScrollTo()
-            .assertIsDisplayed()
-        composeRule.waitForIdle()
-
-        assertTrue(prefs.getBoolean(FloatingService.PREF_BACK_TAP_DATA_ENABLED, false))
+        val fieldNames = FloatingService::class.java.declaredFields.map { it.name }
+        assertFalse("backTapDetector field must be removed", fieldNames.contains("backTapDetector"))
+        assertFalse("backTapWakeLock field must be removed", fieldNames.contains("backTapWakeLock"))
     }
 
     private fun dispatchCircleGesture(view: View, cx: Float, cy: Float, rx: Float, ry: Float) {

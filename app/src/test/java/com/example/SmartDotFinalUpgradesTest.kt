@@ -259,7 +259,8 @@ class SmartDotFinalUpgradesTest {
         detector.setThreshold(12f)
         detector.reset()
         assertFalse(detector.onAccelerationSample(15f, 0f, 0f, 2000L))
-        assertTrue(detector.onAccelerationSample(-15f, 0f, 0f, 2180L))
+        assertFalse(detector.onAccelerationSample(-15f, 0f, 0f, 2180L))
+        assertTrue(detector.onAccelerationSample(15f, 0f, 0f, 2340L))
 
         controller.destroy()
     }

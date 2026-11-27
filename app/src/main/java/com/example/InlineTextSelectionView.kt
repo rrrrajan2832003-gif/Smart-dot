@@ -940,10 +940,33 @@ class InlineTextSelectionView @JvmOverloads constructor(
     }
 
     private fun highlightWordsIntersectingSegment(x1: Float, y1: Float, x2: Float, y2: Float) {
-        for (mapped in activeWordList()) {
-            val coreRect = computeInnerCoreRect(mapped.rect)
-            if (segmentIntersectsRect(x1, y1, x2, y2, coreRect, expandPx = 0f)) {
-                selectedWordIds.add(mapped.node.id)
+        val candidates = activeWordList()
+        if (candidates.isEmpty()) return
+
+        val density = context.resources.displayMetrics.density.coerceAtLeast(1f)
+        val capsuleRadiusPx = 10f * density
+        val dist = hypot(x2 - x1, y2 - y1)
+        val stepPx = 4f
+        val steps = (dist / stepPx).toInt().coerceAtLeast(1)
+
+        val coreRects = ArrayList<RectF>(candidates.size)
+        for (mapped in candidates) {
+            coreRects.add(computeInnerCoreRect(mapped.rect))
+        }
+
+        for (i in 0..steps) {
+            val t = i.toFloat() / steps.toFloat()
+            val px = x1 + (x2 - x1) * t
+            val py = y1 + (y2 - y1) * t
+            for (idx in candidates.indices) {
+                val id = candidates[idx].node.id
+                if (selectedWordIds.contains(id)) continue
+                val coreRect = coreRects[idx]
+                val cx = px.coerceIn(coreRect.left, coreRect.right)
+                val cy = py.coerceIn(coreRect.top, coreRect.bottom)
+                if (hypot(px - cx, py - cy) <= capsuleRadiusPx) {
+                    selectedWordIds.add(id)
+                }
             }
         }
     }

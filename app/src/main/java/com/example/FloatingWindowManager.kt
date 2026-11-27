@@ -83,6 +83,7 @@ class FloatingWindowManager(
         var bubbleParams: WindowManager.LayoutParams? = null,
         var onCloseCleanup: (() -> Unit)? = null,
         var onBackPressed: (() -> Boolean)? = null,
+        internal var menuHeaderContainer: LinearLayout? = null,
         internal var menuBackdrop: View? = null,
         internal var keyboardLayoutListener: ViewTreeObserver.OnGlobalLayoutListener? = null,
         internal var preKeyboardY: Int? = null
@@ -158,6 +159,17 @@ class FloatingWindowManager(
                     }
                 }
                 menuItemsContainer.addView(tv)
+            }
+        }
+
+        fun setMenuHeaderView(view: View?) {
+            val container = menuHeaderContainer ?: return
+            container.removeAllViews()
+            if (view != null) {
+                container.visibility = View.VISIBLE
+                container.addView(view)
+            } else {
+                container.visibility = View.GONE
             }
         }
 
@@ -277,6 +289,7 @@ class FloatingWindowManager(
             tag = "fw_window_$windowId"
             isFocusable = true
             isFocusableInTouchMode = true
+            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = 16f * density
@@ -438,12 +451,25 @@ class FloatingWindowManager(
             addView(opacitySeekBar)
         }
 
+        val menuHeaderContainer = LinearLayout(context).apply {
+            tag = "fw_menu_header_$windowId"
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = (4 * density).toInt()
+            }
+        }
+
         val menuDrawer = LinearLayout(context).apply {
             tag = "fw_menu_drawer_$windowId"
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
             isClickable = true
             isFocusable = true
+            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
             elevation = 10f * density
             setPadding((8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt(), (8 * density).toInt())
             background = GradientDrawable().apply {
@@ -460,6 +486,7 @@ class FloatingWindowManager(
             ).apply {
                 bottomMargin = (18 * density).toInt()
             }
+            addView(menuHeaderContainer)
             addView(menuItemsScroll)
             addView(opacityFooter)
         }
@@ -491,10 +518,10 @@ class FloatingWindowManager(
         bodyOverlay.addView(menuDrawer)
         bodyOverlay.addView(resizeGrip)
 
-        // Bottom Pill Handle Bar (Swipe up > 80px to close the floating window)
+        // Bottom Pill Handle Bar (Swipe up < -80px to close; Drag down > 80px to toggle 100% fullscreen)
         val bottomPillHandle = FrameLayout(context).apply {
             tag = "fw_bottom_pill_$windowId"
-            contentDescription = "Swipe up to close $title"
+            contentDescription = "Swipe up to close or drag down for fullscreen $title"
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 (20 * density).toInt()
@@ -534,6 +561,7 @@ class FloatingWindowManager(
             opacityValueLabel = opacityValueLabel,
             layoutParams = lp,
             savedBounds = WindowBounds(initialX, initialY, defaultW, defaultH),
+            menuHeaderContainer = menuHeaderContainer,
             menuBackdrop = menuBackdrop
         )
         managedRef = managed
@@ -554,6 +582,9 @@ class FloatingWindowManager(
                         if (!triggered && dy < -80f) {
                             triggered = true
                             closeWindow(managed.windowId)
+                        } else if (!triggered && dy > 80f) {
+                            triggered = true
+                            toggleFullscreen(managed)
                         }
                         return true
                     }
@@ -562,6 +593,9 @@ class FloatingWindowManager(
                         if (!triggered && dy < -80f) {
                             triggered = true
                             closeWindow(managed.windowId)
+                        } else if (!triggered && dy > 80f) {
+                            triggered = true
+                            toggleFullscreen(managed)
                         }
                         return true
                     }
@@ -790,6 +824,34 @@ class FloatingWindowManager(
             lp.y = (32 * density).toInt()
             lp.width = (metrics.widthPixels - (16 * density).toInt()).coerceAtLeast(240)
             lp.height = (metrics.heightPixels * 0.84f).toInt().coerceAtLeast(320)
+            managed.isMaximized = true
+        } else {
+            lp.x = managed.savedBounds.x
+            lp.y = managed.savedBounds.y
+            lp.width = managed.savedBounds.width
+            lp.height = managed.savedBounds.height
+            managed.isMaximized = false
+        }
+        runCatching { windowManager.updateViewLayout(managed.rootView, lp) }
+    }
+
+    fun toggleFullscreen(managed: ManagedWindow) {
+        val metrics = context.resources.displayMetrics
+        val lp = managed.layoutParams
+        val scrW = metrics.widthPixels.coerceAtLeast(240)
+        val scrH = metrics.heightPixels.coerceAtLeast(320)
+        val alreadyFull = managed.isMaximized && lp.x == 0 && lp.y == 0 && lp.width >= scrW && lp.height >= scrH
+        if (!alreadyFull) {
+            if (!managed.isMaximized) {
+                managed.savedBounds.x = lp.x
+                managed.savedBounds.y = lp.y
+                managed.savedBounds.width = lp.width
+                managed.savedBounds.height = lp.height
+            }
+            lp.x = 0
+            lp.y = 0
+            lp.width = scrW
+            lp.height = scrH
             managed.isMaximized = true
         } else {
             lp.x = managed.savedBounds.x

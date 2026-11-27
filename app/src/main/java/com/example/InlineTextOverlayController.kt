@@ -1090,15 +1090,31 @@ class InlineTextOverlayController(
                 if (chosen.isEmpty()) return
                 tvWordTranslated.text = context.getString(R.string.screen_translate_translating)
                 wordTranslateBubble.visibility = View.VISIBLE
+                wordTranslateBubble.bringToFront()
                 currentAnchorRect?.let { anchor ->
-                    positionFloatingBar(root, controlsPill, wordTranslateBubble, anchor, preferBelow = true, density = density)
+                    positionTranslateBubbleAboveBar(
+                        root = root,
+                        controlsPill = controlsPill,
+                        translateBubble = wordTranslateBubble,
+                        activeBar = wordActionBarView,
+                        anchorRect = anchor,
+                        density = density
+                    )
                 }
                 onTranslateWordRequested?.invoke(chosen) { translated ->
                     if (overlayView != null) {
                         tvWordTranslated.text = translated
                         wordTranslateBubble.visibility = View.VISIBLE
+                        wordTranslateBubble.bringToFront()
                         currentAnchorRect?.let { anchor ->
-                            positionFloatingBar(root, controlsPill, wordTranslateBubble, anchor, preferBelow = true, density = density)
+                            positionTranslateBubbleAboveBar(
+                                root = root,
+                                controlsPill = controlsPill,
+                                translateBubble = wordTranslateBubble,
+                                activeBar = wordActionBarView,
+                                anchorRect = anchor,
+                                density = density
+                            )
                         }
                     }
                 }
@@ -1203,7 +1219,15 @@ class InlineTextOverlayController(
             SelectionToolbarHelper.ToolbarAction.TRANSLATE -> {
                 tvWordTranslated.text = context.getString(R.string.screen_translate_translating)
                 wordTranslateBubble.visibility = View.VISIBLE
-                positionFloatingBar(root, controlsPill, wordTranslateBubble, box, preferBelow = false, density = density)
+                wordTranslateBubble.bringToFront()
+                positionTranslateBubbleAboveBar(
+                    root = root,
+                    controlsPill = controlsPill,
+                    translateBubble = wordTranslateBubble,
+                    activeBar = cutoutActionBarView,
+                    anchorRect = box,
+                    density = density
+                )
                 onCutoutTranslateRequested?.invoke(box, overlapping, viewW, viewH) { translated ->
                     if (overlayView != null) {
                         if (translated.isNullOrBlank()) {
@@ -1211,7 +1235,15 @@ class InlineTextOverlayController(
                         } else {
                             tvWordTranslated.text = translated
                             wordTranslateBubble.visibility = View.VISIBLE
-                            positionFloatingBar(root, controlsPill, wordTranslateBubble, box, preferBelow = false, density = density)
+                            wordTranslateBubble.bringToFront()
+                            positionTranslateBubbleAboveBar(
+                                root = root,
+                                controlsPill = controlsPill,
+                                translateBubble = wordTranslateBubble,
+                                activeBar = cutoutActionBarView,
+                                anchorRect = box,
+                                density = density
+                            )
                         }
                     }
                 }
@@ -1450,6 +1482,72 @@ class InlineTextOverlayController(
         lp.leftMargin = targetX
         lp.topMargin = targetY
         floatingBar.layoutParams = lp
+    }
+
+    private fun positionTranslateBubbleAboveBar(
+        root: View,
+        controlsPill: View,
+        translateBubble: View,
+        activeBar: View?,
+        anchorRect: RectF,
+        density: Float
+    ) {
+        val margin = (10 * density).toInt()
+        val gap = (8 * density).toInt()
+        val rootW = root.width.takeIf { it > 0 } ?: context.resources.displayMetrics.widthPixels
+        val rootH = root.height.takeIf { it > 0 } ?: context.resources.displayMetrics.heightPixels
+        val maxW = (rootW - safeInsets.left - safeInsets.right - margin * 2).coerceAtLeast(100)
+
+        translateBubble.measure(
+            View.MeasureSpec.makeMeasureSpec(maxW, View.MeasureSpec.AT_MOST),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        )
+        val bubbleW = translateBubble.measuredWidth.coerceAtLeast((80 * density).toInt())
+        val bubbleH = translateBubble.measuredHeight.coerceAtLeast((44 * density).toInt())
+
+        val minX = safeInsets.left + margin
+        val maxX = (rootW - safeInsets.right - bubbleW - margin).coerceAtLeast(minX)
+        val minY = safeInsets.top + margin
+        val maxY = (rootH - safeInsets.bottom - bubbleH - margin).coerceAtLeast(minY)
+
+        if (activeBar != null && activeBar.visibility == View.VISIBLE) {
+            activeBar.measure(
+                View.MeasureSpec.makeMeasureSpec(maxW, View.MeasureSpec.AT_MOST),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            )
+            val barLp = (activeBar.layoutParams as? FrameLayout.LayoutParams)
+            val barH = activeBar.measuredHeight.coerceAtLeast((48 * density).toInt())
+            var barTop = barLp?.topMargin?.takeIf { it > 0 } ?: activeBar.top
+            if (barTop <= 0) {
+                barTop = (anchorRect.bottom + gap).toInt()
+            }
+            val requiredBarTop = minY + bubbleH + gap
+            val maxBarTop = (rootH - safeInsets.bottom - barH - margin).coerceAtLeast(minY)
+            if (barTop < requiredBarTop && requiredBarTop <= maxBarTop) {
+                barTop = requiredBarTop
+                if (barLp != null) {
+                    barLp.topMargin = barTop
+                    activeBar.layoutParams = barLp
+                }
+            }
+            val barLeft = barLp?.leftMargin ?: activeBar.left
+            val barW = activeBar.measuredWidth.coerceAtLeast((100 * density).toInt())
+            val bubbleX = (barLeft + barW / 2 - bubbleW / 2).coerceIn(minX, maxX)
+            val bubbleY = (barTop - bubbleH - gap).coerceIn(minY, maxY)
+            val lp = (translateBubble.layoutParams as? FrameLayout.LayoutParams)
+                ?: FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP or Gravity.START
+                )
+            lp.gravity = Gravity.TOP or Gravity.START
+            lp.leftMargin = bubbleX
+            lp.topMargin = bubbleY
+            translateBubble.layoutParams = lp
+            return
+        }
+
+        positionFloatingBar(root, controlsPill, translateBubble, anchorRect, preferBelow = false, density = density)
     }
 
     private fun readCurrentDisplayRotation(): Int {

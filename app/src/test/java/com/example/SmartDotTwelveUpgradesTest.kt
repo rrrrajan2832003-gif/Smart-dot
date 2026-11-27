@@ -323,61 +323,45 @@ class SmartDotTwelveUpgradesTest {
     }
 
     @Test
-    fun `Upgrade 4 - Realme raw Accelerometer high-pass BackTapDetector + TYPE_ACCELEROMETER and WakeLock lifecycle`() {
-        var triggers = 0
-        val detector = BackTapDetector(zSpikeThreshold = 9.5f) {
-            triggers++
-        }
-
-        // Prime gravity baseline at ~9.8 m/s^2 on Z-axis (phone lying flat or held upright)
-        detector.onRawAccelerometerSample(0f, 0f, 9.81f, 1000L)
-        detector.onRawAccelerometerSample(0f, 0f, 9.81f, 1020L)
-        detector.onRawAccelerometerSample(0f, 0f, 9.81f, 1040L)
-
-        // Two sharp back-taps on Z axis within 100..450ms -> high-pass removes gravity and detects double tap
-        assertFalse(detector.onRawAccelerometerSample(0.2f, 0.2f, 26.0f, 1500L))
-        assertTrue(detector.onRawAccelerometerSample(0.2f, 0.2f, 28.0f, 1720L))
-        assertEquals(1, triggers)
-
-        // Verify FloatingService registers TYPE_ACCELEROMETER and acquires PARTIAL_WAKE_LOCK when enabled
-        val pm = appContext.getSystemService(Context.POWER_SERVICE) as PowerManager
-        Shadows.shadowOf(pm).setIsInteractive(true)
+    fun `Upgrade 4 - Triple-shake torch suppresses accidental trigger on fingerprint unlock and BackTap is removed`() {
         val sensorManager = appContext.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         Shadows.shadowOf(sensorManager).addSensor(ShadowSensor.newInstance(Sensor.TYPE_ACCELEROMETER))
 
         appContext.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putBoolean(FloatingService.PREF_BACK_TAP_DATA_ENABLED, true)
+            .putBoolean(FloatingService.PREF_SHAKE_TORCH_ENABLED, true)
             .commit()
 
         val controller = Robolectric.buildService(FloatingService::class.java).create()
         val service = controller.get()
         try {
-            val regField = FloatingService::class.java.getDeclaredField("isBackTapListenerRegistered")
+            val shakeRegField = FloatingService::class.java.getDeclaredField("isShakeListenerRegistered")
                 .apply { isAccessible = true }
-            assertTrue("Back-tap accelerometer listener must register", regField.getBoolean(service))
+            assertTrue("Shake torch accelerometer listener must register", shakeRegField.getBoolean(service))
 
-            val wakeField = FloatingService::class.java.getDeclaredField("backTapWakeLock")
+            val detectorField = FloatingService::class.java.getDeclaredField("shakeDetector")
                 .apply { isAccessible = true }
-            val wakeLock = wakeField.get(service) as? PowerManager.WakeLock
-            assertNotNull("Partial wake lock must be created when back-tap enabled", wakeLock)
-            assertTrue("WakeLock must be held while screen is on", wakeLock!!.isHeld)
+            val detector = detectorField.get(service) as ShakeDetector
 
-            // Screen OFF releases WakeLock; Screen ON re-acquires it
             val receiverField = FloatingService::class.java.getDeclaredField("screenStateReceiver")
                 .apply { isAccessible = true }
             val receiver = receiverField.get(service) as android.content.BroadcastReceiver
-            receiver.onReceive(appContext, Intent(Intent.ACTION_SCREEN_OFF))
-            assertFalse("WakeLock must release when screen turns OFF", wakeLock.isHeld)
 
-            receiver.onReceive(appContext, Intent(Intent.ACTION_SCREEN_ON))
-            assertTrue("WakeLock must re-acquire when screen turns ON", wakeLock.isHeld)
+            // Simulate fingerprint unlock (ACTION_USER_PRESENT) -> suppresses shake for 2000ms
+            receiver.onReceive(appContext, Intent(Intent.ACTION_USER_PRESENT))
+            val suppressedUntilField = ShakeDetector::class.java.getDeclaredField("suppressUntilMs")
+                .apply { isAccessible = true }
+            assertTrue(
+                "Unlock event must arm ShakeDetector suppression window",
+                suppressedUntilField.getLong(detector) > 0L
+            )
+
+            // BackTapDetector and its fields must no longer exist
+            val fieldNames = FloatingService::class.java.declaredFields.map { it.name }
+            assertFalse(fieldNames.contains("isBackTapListenerRegistered"))
+            assertFalse(fieldNames.contains("backTapWakeLock"))
         } finally {
             controller.destroy()
-            val wakeLock = ShadowPowerManager.getLatestWakeLock()
-            if (wakeLock != null) {
-                assertFalse("WakeLock must be released on service destroy", wakeLock.isHeld)
-            }
         }
     }
 

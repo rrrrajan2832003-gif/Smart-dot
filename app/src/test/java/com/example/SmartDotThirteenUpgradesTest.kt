@@ -1,11 +1,18 @@
 package com.example
 
-import android.accessibilityservice.AccessibilityService
 import android.app.Application
 import android.app.SearchManager
+import android.content.ComponentName
+import android.content.ContentProvider
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.pm.ProviderInfo
+import android.content.pm.ResolveInfo
+import android.database.Cursor
 import android.database.MatrixCursor
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.RectF
@@ -18,7 +25,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.EditText
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.Switch
@@ -41,9 +48,6 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import org.robolectric.annotation.Config
-import org.robolectric.annotation.Implementation
-import org.robolectric.annotation.Implements
-import org.robolectric.fakes.RoboCursor
 import org.robolectric.shadows.ShadowContentResolver
 import org.robolectric.shadows.ShadowLooper
 import org.robolectric.shadows.ShadowSensor
@@ -58,6 +62,12 @@ class SmartDotThirteenUpgradesTest {
     @Before
     fun setup() {
         appContext = ApplicationProvider.getApplicationContext()
+        clearFileProviderCache()
+        org.robolectric.shadows.ShadowSettings.setCanDrawOverlays(true)
+        SmartDotAccessibilityService.isShieldActive = false
+        FloatingGalleryMusicHelper.cachedAudioTracks = null
+        FloatingGalleryMusicHelper.cachedGalleryMedia = null
+        FloatingGalleryMusicHelper.cachedAllFiles = null
         appContext.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .clear()
@@ -66,7 +76,39 @@ class SmartDotThirteenUpgradesTest {
 
     @After
     fun tearDown() {
-        SmartDotAccessibilityService.instance = null
+        SmartDotAccessibilityService.isShieldActive = false
+        SmartDotAccessibilityService.setInstanceForTest(null)
+        clearFileProviderCache()
+    }
+
+    private fun clearFileProviderCache() {
+        runCatching {
+            val field = androidx.core.content.FileProvider::class.java.getDeclaredField("sCache").apply {
+                isAccessible = true
+            }
+            (field.get(null) as? MutableMap<*, *>)?.clear()
+        }
+    }
+
+    private fun registerResolveActivity(action: String, pkg: String, mimeType: String? = null) {
+        val spm = Shadows.shadowOf(appContext.packageManager)
+        val intent = Intent(action).apply {
+            setPackage(pkg)
+            if (mimeType != null) type = mimeType
+        }
+        val resolveInfo = ResolveInfo().apply {
+            activityInfo = ActivityInfo().apply {
+                packageName = pkg
+                name = "$pkg.StubActivity"
+            }
+        }
+        spm.addResolveInfoForIntent(intent, resolveInfo)
+        val launchIntent = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_LAUNCHER)
+            setPackage(pkg)
+            component = ComponentName(pkg, "$pkg.MainActivity")
+        }
+        spm.addResolveInfoForIntent(launchIntent, resolveInfo)
     }
 
     @Test
@@ -141,68 +183,97 @@ class SmartDotThirteenUpgradesTest {
         }
     }
 
+    private fun registerMediaStoreProvider(
+        tables: Map<Uri, Pair<Array<String>, List<Array<Any?>>>>
+    ) {
+        val provider = object : ContentProvider() {
+            override fun onCreate(): Boolean = true
+            override fun query(
+                uri: Uri,
+                projection: Array<out String>?,
+                selection: String?,
+                selectionArgs: Array<out String>?,
+                sortOrder: String?
+            ): Cursor {
+                val matched = tables[uri] ?: return MatrixCursor(projection ?: arrayOf("_id"))
+                val (cols, rows) = matched
+                return MatrixCursor(cols, rows.size).apply {
+                    rows.forEach { addRow(it) }
+                }
+            }
+            override fun getType(uri: Uri): String? = null
+            override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+            override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
+            override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
+        }
+        provider.attachInfo(appContext, ProviderInfo().apply { authority = MediaStore.AUTHORITY })
+        ShadowContentResolver.registerProviderInternal(MediaStore.AUTHORITY, provider)
+    }
+
     @Test
     fun `Fix 2 - Zero-limit device media queries, RecyclerView containers, and Hide under 1 Min Audio toggle`() {
-        val shadowCr = Shadows.shadowOf(appContext.contentResolver)
+        val audioRows = buildList<Array<Any?>> {
+            for (i in 1..170) {
+                add(arrayOf(i.toLong(), "Song_$i.mp3", 185_000L, 4_200_000L, (5000 + i).toLong(), "Music/"))
+            }
+            for (i in 171..220) {
+                add(arrayOf(i.toLong(), "Call_Recording_$i.m4a", 24_000L, 280_000L, (4000 + i).toLong(), "Recordings/Call/"))
+            }
+        }
+        val imageRows = List<Array<Any?>>(180) { idx ->
+            arrayOf((idx + 1).toLong(), "IMG_${idx + 1}.jpg", (1000 + idx).toLong(), 250_000L, "Pictures/")
+        }
+        val downloadsRows = List<Array<Any?>>(110) { idx ->
+            arrayOf((idx + 1).toLong(), "Doc_${idx + 1}.pdf", "application/pdf", 50_000L, (3000 + idx).toLong(), "Download/")
+        }
+        val filesRows = List<Array<Any?>>(110) { idx ->
+            arrayOf((1000 + idx + 1).toLong(), "Doc_${idx + 1}.pdf", "application/pdf", 50_000L, (3000 + idx).toLong(), "Download/")
+        }
 
-        // Populate 220 audio tracks (170 full songs >= 60s, 50 voice notes < 60s)
-        val audioCursor = RoboCursor().apply {
-            setColumnNames(
-                listOf(
+        val tables = mutableMapOf<Uri, Pair<Array<String>, List<Array<Any?>>>>(
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI to (
+                arrayOf(
                     MediaStore.Audio.Media._ID,
                     MediaStore.Audio.Media.DISPLAY_NAME,
                     MediaStore.Audio.Media.DURATION,
                     MediaStore.Audio.Media.SIZE,
+                    MediaStore.Audio.Media.DATE_ADDED,
                     MediaStore.Audio.Media.RELATIVE_PATH
-                )
-            )
-            val rows = ArrayList<Array<Any>>()
-            for (i in 1..170) {
-                rows.add(arrayOf(i.toLong(), "Song_$i.mp3", 185_000L, 4_200_000L, "Music/"))
-            }
-            for (i in 171..220) {
-                rows.add(arrayOf(i.toLong(), "VoiceNote_$i.m4a", 24_000L, 280_000L, "Recordings/"))
-            }
-            setResults(rows.toTypedArray())
-        }
-        shadowCr.setCursor(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, audioCursor)
-
-        // Populate 180 photos + 110 downloads files (all above old 120 / 80 caps)
-        val imageCursor = RoboCursor().apply {
-            setColumnNames(
-                listOf(
+                ) to audioRows
+            ),
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI to (
+                arrayOf(
                     MediaStore.Images.Media._ID,
                     MediaStore.Images.Media.DISPLAY_NAME,
                     MediaStore.Images.Media.DATE_ADDED,
+                    MediaStore.Images.Media.SIZE,
                     MediaStore.Images.Media.RELATIVE_PATH
-                )
+                ) to imageRows
+            ),
+            MediaStore.Files.getContentUri("external") to (
+                arrayOf(
+                    MediaStore.Files.FileColumns._ID,
+                    MediaStore.Files.FileColumns.DISPLAY_NAME,
+                    MediaStore.Files.FileColumns.MIME_TYPE,
+                    MediaStore.Files.FileColumns.SIZE,
+                    MediaStore.Files.FileColumns.DATE_ADDED,
+                    MediaStore.Files.FileColumns.RELATIVE_PATH
+                ) to filesRows
             )
-            val rows = Array(180) { idx ->
-                arrayOf<Any>((idx + 1).toLong(), "IMG_${idx + 1}.jpg", (1000 + idx).toLong(), "Pictures/")
-            }
-            setResults(rows)
-        }
-        shadowCr.setCursor(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, imageCursor)
-
-        val downloadsCursor = RoboCursor().apply {
-            setColumnNames(
-                listOf(
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            tables[MediaStore.Downloads.EXTERNAL_CONTENT_URI] = (
+                arrayOf(
                     MediaStore.MediaColumns._ID,
                     MediaStore.MediaColumns.DISPLAY_NAME,
                     MediaStore.MediaColumns.MIME_TYPE,
                     MediaStore.MediaColumns.SIZE,
+                    MediaStore.MediaColumns.DATE_MODIFIED,
                     MediaStore.MediaColumns.RELATIVE_PATH
-                )
+                ) to downloadsRows
             )
-            val rows = Array(110) { idx ->
-                arrayOf<Any>((idx + 1).toLong(), "Doc_${idx + 1}.pdf", "application/pdf", 50_000L, "Download/")
-            }
-            setResults(rows)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            shadowCr.setCursor(MediaStore.Downloads.EXTERNAL_CONTENT_URI, downloadsCursor)
-        }
-        shadowCr.setCursor(MediaStore.Files.getContentUri("external"), downloadsCursor)
+        registerMediaStoreProvider(tables)
 
         val queriedAudio = FloatingGalleryMusicHelper.queryAudioLibrary(appContext)
         assertEquals("Must load all 220 audio files without 150 cap", 220, queriedAudio.size)
@@ -219,7 +290,7 @@ class SmartDotThirteenUpgradesTest {
         )
         assertEquals("Must load all 110 downloads without 80 cap", 110, queriedDownloads.size)
 
-        // Open UI windows and verify RecyclerView + Hide < 1 Min Audio live filtering
+        // Open UI windows and verify RecyclerView + Hide Call Recordings live filtering inside ☰ Menu
         val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val fwm = FloatingWindowManager(appContext, wm)
         try {
@@ -228,27 +299,35 @@ class SmartDotThirteenUpgradesTest {
 
             val rvMusic = musicWin.rootView.findViewWithTag<View>("fw_music_list")
             assertTrue("Music list must use RecyclerView", rvMusic is RecyclerView)
-            val hideToggle = musicWin.rootView.findViewWithTag<Switch>("fw_music_hide_short_toggle")
+            val hideToggle = musicWin.rootView.findViewWithTag<Switch>("fw_music_hide_call_rec_toggle")
             assertNotNull(hideToggle)
-            assertTrue("Hide < 1 Min Audio defaults ON", hideToggle.isChecked)
+            assertTrue("Hide Call Recordings defaults ON", hideToggle.isChecked)
 
             val adapter = (rvMusic as RecyclerView).adapter!!
-            assertEquals("With Hide < 1 Min Audio ON, 170 full songs shown", 170, adapter.itemCount)
+            assertEquals("With Hide Call Recordings ON, 170 music tracks shown", 170, adapter.itemCount)
 
             hideToggle.isChecked = false
-            assertEquals("With Hide < 1 Min Audio OFF, all 220 tracks shown", 220, adapter.itemCount)
+            assertEquals("With Hide Call Recordings OFF, all 220 tracks shown", 220, adapter.itemCount)
 
             val galleryWin = FloatingGalleryMusicHelper.openFloatingPhotosVideosGallery(appContext, fwm, Color.CYAN)!!
-            ShadowLooper.idleMainLooper(200L, TimeUnit.MILLISECONDS)
-            val rvGallery = galleryWin.rootView.findViewWithTag<View>("fw_gallery_grid")
-            assertTrue("Gallery grid must use RecyclerView", rvGallery is RecyclerView)
-            assertEquals(180, (rvGallery as RecyclerView).adapter!!.itemCount)
+            val rvGallery = galleryWin.rootView.findViewWithTag<View>("fw_gallery_grid") as RecyclerView
+            repeat(20) {
+                ShadowLooper.idleMainLooper()
+                if (rvGallery.adapter!!.itemCount >= 510) return@repeat
+                Thread.sleep(25)
+            }
+            assertEquals(510, rvGallery.adapter!!.itemCount)
+            galleryWin.rootView.findViewWithTag<View>("fw_gallery_filter_photos").performClick()
+            assertEquals(180, rvGallery.adapter!!.itemCount)
 
             val mediaWin = FloatingMediaFilesHelper.openFloatingMediaFiles(appContext, fwm, Color.CYAN)!!
-            ShadowLooper.idleMainLooper(200L, TimeUnit.MILLISECONDS)
-            val rvMedia = mediaWin.rootView.findViewWithTag<View>("fw_media_file_list")
-            assertTrue("Media file list must use RecyclerView", rvMedia is RecyclerView)
-            assertEquals(110, (rvMedia as RecyclerView).adapter!!.itemCount)
+            val rvMedia = mediaWin.rootView.findViewWithTag<View>("fw_media_file_list") as RecyclerView
+            repeat(20) {
+                ShadowLooper.idleMainLooper()
+                if (rvMedia.adapter!!.itemCount >= 110) return@repeat
+                Thread.sleep(25)
+            }
+            assertEquals(110, rvMedia.adapter!!.itemCount)
         } finally {
             fwm.closeAllWindows()
         }
@@ -270,11 +349,11 @@ class SmartDotThirteenUpgradesTest {
                 accentColor = Color.CYAN,
                 onCopyClicked = {},
                 onRescanRequested = {},
-                onCutoutSearchClicked = { rect, _ -> capturedBox = rect },
+                onCutoutSearchWithFallback = { rect, _, _, _, _ -> capturedBox = rect },
                 onDismiss = {}
             )
 
-            val rootField = InlineTextOverlayController::class.java.getDeclaredField("rootView")
+            val rootField = InlineTextOverlayController::class.java.getDeclaredField("overlayView")
                 .apply { isAccessible = true }
             val root = rootField.get(controller) as View
             root.measure(
@@ -286,7 +365,7 @@ class SmartDotThirteenUpgradesTest {
             val selView = root.findViewById<InlineTextSelectionView>(R.id.inline_ocr_selection_view)
             assertTrue(selView.selectFullScreenCutout())
 
-            val cutoutRect = selView.getCutoutRectViewCoords()
+            val cutoutRect = selView.getActiveCutoutRect()
             assertNotNull("Full-screen double-tap must create cutout rect", cutoutRect)
             assertEquals(0f, cutoutRect!!.left, 0.5f)
             assertEquals(0f, cutoutRect.top, 0.5f)
@@ -315,12 +394,12 @@ class SmartDotThirteenUpgradesTest {
             val restoredMargin = (cutoutBar.layoutParams as android.widget.FrameLayout.LayoutParams).topMargin
             assertEquals(1750, restoredMargin)
 
-            // Trigger search with preset verifies capturedBox works
-            val sendBtn = root.findViewById<ImageButton>(R.id.btn_cutout_ai_send)
-            sendBtn.performClick()
+            // Trigger search confirms capturedBox is wired
+            val searchBtn = cutoutBar.findViewWithTag<View>("toolbar_action_search")
+            searchBtn.performClick()
             assertNotNull(capturedBox)
         } finally {
-            controller.release()
+            controller.dismiss()
         }
     }
 
@@ -333,81 +412,54 @@ class SmartDotThirteenUpgradesTest {
         val allActions = getAllAvailableActions(prefs)
         assertTrue(
             "Saved Meta AI shortcut must appear in getAllAvailableActions",
-            allActions.any { it.id == saved!!.actionId && it.label.contains("Meta AI") }
+            allActions.any { it.id == saved!!.id && it.name.contains("Meta AI") }
         )
 
         val gestureOptions = SwipeGestureHelper.getAllGestureOptions(prefs)
         assertTrue(
             "Saved Meta AI shortcut must appear in 22-gesture picker options",
-            gestureOptions.any { it.id == saved!!.actionId && it.label.contains("Meta AI") }
+            gestureOptions.any { it.id == saved!!.id && it.name.contains("Meta AI") }
         )
     }
 
     @Test
-    fun `Fix 6 - BackTapDetector enforces strict Z-axis isolation and prefers TYPE_LINEAR_ACCELERATION`() {
+    fun `Fix 6 - ShakeDetector requires 3 firm shakes and suppresses accidental unlock jolt`() {
         var triggers = 0
-        val detector = BackTapDetector(zSpikeThreshold = 7.5f) {
+        val detector = ShakeDetector(thresholdAccel = 16.0f, requiredShakes = 3) {
             triggers++
         }
 
-        // 1. Rejects lateral shake (X or Y > 4.5) even when Z spike is in range
-        assertFalse(detector.onLinearAccelerationSample(5.2f, 0.3f, 10.0f, 1000L))
-        assertFalse(detector.onLinearAccelerationSample(0.2f, 0.1f, 10.0f, 1250L))
-        assertEquals("Lateral tilt/shake must never trigger back-tap", 0, triggers)
+        // Single or double jolt (like picking up phone / fingerprint unlock) must NOT trigger torch
+        assertFalse(detector.onAccelerationSample(15f, 10f, 2f, 1000L))
+        assertFalse(detector.onAccelerationSample(-15f, 10f, 2f, 1180L))
+        assertEquals("Double jolt must not trigger when 3 shakes required", 0, triggers)
 
-        // 2. Rejects extreme slam > 18.0 m/s^2
-        assertFalse(detector.onLinearAccelerationSample(0.2f, 0.2f, 22.0f, 2000L))
-        assertFalse(detector.onLinearAccelerationSample(0.2f, 0.2f, 10.0f, 2220L))
-        assertEquals("Excessive slam > 18.0 must not trigger", 0, triggers)
-
-        // 3. Rejects sustained shake pulse >= 60ms
-        assertFalse(detector.onLinearAccelerationSample(0.2f, 0.2f, 9.0f, 3000L))
-        assertFalse(detector.onLinearAccelerationSample(0.2f, 0.2f, 9.5f, 3035L))
-        assertFalse(detector.onLinearAccelerationSample(0.2f, 0.2f, 9.2f, 3075L)) // duration 75ms >= 60ms -> invalidated
-        assertFalse(detector.onLinearAccelerationSample(0.2f, 0.2f, 9.8f, 3260L))
-        assertEquals("Sustained pulse >= 60ms must be rejected", 0, triggers)
-
-        // 4. Rejects gap < 120ms or > 380ms
-        assertFalse(detector.onLinearAccelerationSample(0.1f, 0.1f, 9.5f, 4000L))
-        assertFalse(detector.onLinearAccelerationSample(0.1f, 0.1f, 9.5f, 4080L)) // 80ms < 120ms -> ignored
-        assertFalse(detector.onLinearAccelerationSample(0.1f, 0.1f, 9.5f, 4450L)) // 450ms > 380ms -> resets first tap
-        assertEquals(0, triggers)
-
-        // 5. Two crisp isolated Z-axis taps 7.5..18.0 spaced 200ms trigger cleanly
-        assertFalse(detector.onLinearAccelerationSample(0.2f, 0.3f, 9.5f, 5000L))
-        assertTrue(detector.onLinearAccelerationSample(0.2f, 0.3f, 10.5f, 5200L))
+        // Third shake inside 800ms window triggers once
+        assertTrue(detector.onAccelerationSample(16f, 9f, 2f, 1340L))
         assertEquals(1, triggers)
 
-        // 6. FloatingService prefers TYPE_LINEAR_ACCELERATION over TYPE_ACCELEROMETER
-        val sensorManager = appContext.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        Shadows.shadowOf(sensorManager).addSensor(ShadowSensor.newInstance(Sensor.TYPE_ACCELEROMETER))
-        Shadows.shadowOf(sensorManager).addSensor(ShadowSensor.newInstance(Sensor.TYPE_LINEAR_ACCELERATION))
+        // 2000ms unlock suppression rejects even 3 firm shakes
+        detector.suppressFor(2000L, nowMs = 3000L)
+        assertFalse(detector.onAccelerationSample(18f, 0f, 0f, 3200L))
+        assertFalse(detector.onAccelerationSample(-18f, 0f, 0f, 3380L))
+        assertFalse(detector.onAccelerationSample(18f, 0f, 0f, 3550L))
+        assertEquals(1, triggers)
 
-        appContext.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(FloatingService.PREF_BACK_TAP_DATA_ENABLED, true)
-            .commit()
-
-        val controller = Robolectric.buildService(FloatingService::class.java).create()
-        val service = controller.get()
-        try {
-            val isLinearField = FloatingService::class.java.getDeclaredField("isBackTapLinearSensor")
-                .apply { isAccessible = true }
-            assertTrue(
-                "FloatingService must choose TYPE_LINEAR_ACCELERATION when available",
-                isLinearField.getBoolean(service)
-            )
-        } finally {
-            controller.destroy()
-        }
+        // BackTapDetector was completely removed
+        assertFalse(runCatching { Class.forName("com.example.BackTapDetector") }.isSuccess)
     }
 
     @Test
     fun `Fix 7 - Cutout Box 1 Preset buttons attach saved prompt text with cropped image`() {
+        registerResolveActivity(
+            action = Intent.ACTION_SEND,
+            pkg = SelectionToolbarHelper.GOOGLE_APP_PACKAGE,
+            mimeType = "image/png"
+        )
         val prefs = appContext.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit()
-            .putString(SelectionToolbarHelper.PREF_TOOLBAR_PRESET_1, "Explain this diagram")
-            .putString(SelectionToolbarHelper.PREF_TOOLBAR_PRESET_2, "Solve step by step")
+            .putString(SelectionToolbarHelper.PREF_QUICK_PROMPT_1, "Explain this diagram")
+            .putString(SelectionToolbarHelper.PREF_QUICK_PROMPT_2, "Solve step by step")
             .commit()
 
         val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -421,14 +473,14 @@ class SmartDotThirteenUpgradesTest {
                 accentColor = Color.CYAN,
                 onCopyClicked = {},
                 onRescanRequested = {},
-                onCutoutGoogleAiModeClicked = { rect, prompt ->
+                onCutoutGoogleAiModeClicked = { rect, _, _, _, question ->
                     receivedRect = rect
-                    receivedPrompt = prompt
+                    receivedPrompt = question
                 },
                 onDismiss = {}
             )
 
-            val rootField = InlineTextOverlayController::class.java.getDeclaredField("rootView")
+            val rootField = InlineTextOverlayController::class.java.getDeclaredField("overlayView")
                 .apply { isAccessible = true }
             val root = rootField.get(controller) as View
             root.measure(
@@ -450,17 +502,19 @@ class SmartDotThirteenUpgradesTest {
             assertEquals("Explain this diagram", receivedPrompt)
 
             // Also verify SelectionToolbarHelper attaches both image stream & text query extras
+            val bmp = Bitmap.createBitmap(120, 120, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.RED) }
             val intent = SelectionToolbarHelper.createGoogleSearchImageAndTextIntent(
                 context = appContext,
-                imageUri = Uri.parse("content://com.example.fileprovider/cutout.png"),
+                croppedBitmap = bmp,
                 question = "Explain this diagram"
-            )
+            )!!
+            bmp.recycle()
             assertEquals("Explain this diagram", intent.getStringExtra(Intent.EXTRA_TEXT))
             assertEquals("Explain this diagram", intent.getStringExtra(SearchManager.QUERY))
             assertEquals("Explain this diagram", intent.getStringExtra("query"))
             assertNotNull(intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))
         } finally {
-            controller.release()
+            controller.dismiss()
         }
     }
 
@@ -469,9 +523,12 @@ class SmartDotThirteenUpgradesTest {
         val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val fwm = FloatingWindowManager(appContext, wm)
         val proTools = ProToolsOverlayManager(appContext, wm)
-        val serviceCtrl = Robolectric.buildService(FloatingService::class.java).create()
+        val serviceCtrl = Robolectric.buildService(FloatingService::class.java).create().startCommand(0, 1)
         val service = serviceCtrl.get()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+        val a11yService = Robolectric.buildService(SmartDotAccessibilityService::class.java).create().get()
+        SmartDotAccessibilityService.setInstanceForTest(a11yService)
 
         try {
             // Confirm banking package detection
@@ -487,9 +544,10 @@ class SmartDotThirteenUpgradesTest {
             assertTrue("Floating dot should be attached to WindowManager initially", dotView.isAttachedToWindow)
 
             val noteWin = FloatingMiniApps.openFloatingNotes(appContext, fwm, scope, Color.CYAN)!!
+            ShadowLooper.idleMainLooper()
             assertTrue(noteWin.rootView.isAttachedToWindow)
 
-            proTools.toggleAutoScroller(Color.CYAN) {}
+            proTools.toggleAutoScroller()
             assertTrue(proTools.isAutoScrollerActive())
 
             // Activate UPI Payment Shield
@@ -498,6 +556,7 @@ class SmartDotThirteenUpgradesTest {
             shieldMethod.invoke(service, true)
             fwm.setShieldHidden(true)
             proTools.setShieldHidden(true)
+            ShadowLooper.idleMainLooper()
 
             assertFalse("Dot view must be detached from WindowManager during UPI shield", dotView.isAttachedToWindow)
             assertFalse("Floating window must be detached from WindowManager during UPI shield", noteWin.rootView.isAttachedToWindow)
@@ -507,6 +566,7 @@ class SmartDotThirteenUpgradesTest {
             shieldMethod.invoke(service, false)
             fwm.setShieldHidden(false)
             proTools.setShieldHidden(false)
+            ShadowLooper.idleMainLooper()
 
             assertTrue("Dot view must re-attach after exiting UPI app", dotView.isAttachedToWindow)
             assertTrue("Floating window must re-attach after exiting UPI app", noteWin.rootView.isAttachedToWindow)
@@ -514,6 +574,7 @@ class SmartDotThirteenUpgradesTest {
             fwm.closeAllWindows()
             proTools.releaseAll()
             serviceCtrl.destroy()
+            SmartDotAccessibilityService.setInstanceForTest(null)
             scope.cancel()
         }
     }
@@ -522,44 +583,55 @@ class SmartDotThirteenUpgradesTest {
     fun `Fix 9 - Pop Current App into Floating Window opens matching SmartDot window for foreground app`() {
         val serviceCtrl = Robolectric.buildService(FloatingService::class.java).create()
         val service = serviceCtrl.get()
-        val fakeA11y = TestPopOutAccessibilityService("com.whatsapp", null)
-        SmartDotAccessibilityService.instance = fakeA11y
+        val a11yService = Robolectric.buildService(SmartDotAccessibilityService::class.java).create().get()
+        SmartDotAccessibilityService.setInstanceForTest(a11yService)
 
         try {
             val popMethod = FloatingService::class.java.getDeclaredMethod("triggerPopOutActiveAppWindow")
                 .apply { isAccessible = true }
-            popMethod.invoke(service)
-
             val fwmField = FloatingService::class.java.getDeclaredField("floatingWindowManager")
                 .apply { isAccessible = true }
+
+            // 1. WhatsApp foreground root -> Floating WhatsApp
+            a11yService.activeRootTestHook = AccessibilityNodeInfo.obtain().apply {
+                packageName = "com.whatsapp"
+                isVisibleToUser = true
+            }
+            popMethod.invoke(service)
             val fwm = fwmField.get(service) as? FloatingWindowManager
             assertNotNull(fwm)
             assertTrue(
                 "Pop Current App on WhatsApp must open Floating WhatsApp window",
-                fwm!!.hasWindow("floating_social_whatsapp")
+                fwm!!.hasWindow("floating_whatsapp")
             )
 
-            // Also verify YouTube -> Floating YouTube
-            fakeA11y.mockPkg = "com.google.android.youtube"
+            // 2. YouTube foreground root -> Floating YouTube
+            a11yService.activeRootTestHook = AccessibilityNodeInfo.obtain().apply {
+                packageName = "com.google.android.youtube"
+                isVisibleToUser = true
+            }
             popMethod.invoke(service)
             assertTrue(fwm.hasWindow("floating_youtube"))
 
-            // Also verify Chrome + URL -> Floating Browser at that URL
-            fakeA11y.mockPkg = "com.android.chrome"
-            fakeA11y.mockUrl = "https://kotlinlang.org"
+            // 3. Chrome foreground root with URL -> Floating Browser
+            val urlNode = AccessibilityNodeInfo.obtain().apply {
+                packageName = "com.android.chrome"
+                viewIdResourceName = "com.android.chrome:id/url_bar"
+                text = "https://kotlinlang.org"
+                isVisibleToUser = true
+            }
+            val chromeRoot = AccessibilityNodeInfo.obtain().apply {
+                packageName = "com.android.chrome"
+                isVisibleToUser = true
+            }
+            Shadows.shadowOf(chromeRoot).addChild(urlNode)
+            a11yService.activeRootTestHook = chromeRoot
             popMethod.invoke(service)
             assertTrue(fwm.hasWindow("floating_browser"))
         } finally {
+            a11yService.activeRootTestHook = null
+            SmartDotAccessibilityService.setInstanceForTest(null)
             serviceCtrl.destroy()
-            SmartDotAccessibilityService.instance = null
         }
-    }
-
-    private class TestPopOutAccessibilityService(
-        var mockPkg: String,
-        var mockUrl: String?
-    ) : SmartDotAccessibilityService() {
-        override fun getActiveForegroundPackageName(excludedPackage: String?): String? = mockPkg
-        override fun extractActiveBrowserUrl(): String? = mockUrl
     }
 }

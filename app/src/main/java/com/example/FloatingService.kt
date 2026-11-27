@@ -34,7 +34,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
@@ -150,20 +149,26 @@ class FloatingService : Service() {
     private var proToolsOverlayManager: ProToolsOverlayManager? = null
     private var isShieldHidden = false
 
-    // Accelerometer Shake-to-Torch & Back-Tap Gesture detectors (zero vibration)
+    // Accelerometer Triple-Shake-to-Torch detector (zero vibration, unlock-suppressed)
     private var sensorManager: SensorManager? = null
     private var shakeDetector: ShakeDetector? = null
     private var isShakeListenerRegistered = false
-    private var backTapDetector: BackTapDetector? = null
-    private var isBackTapListenerRegistered = false
-    private var backTapWakeLock: PowerManager.WakeLock? = null
     private var isScreenStateReceiverRegistered = false
+
+    // Background Music Mini-Pill overlay when music continues playing after closing Floating Music
+    private var musicMiniPillView: View? = null
+    private var musicMiniPillParams: WindowManager.LayoutParams? = null
+    private var musicMiniTitleView: TextView? = null
+    private var musicMiniPlayBtn: TextView? = null
+    private var lastNotificationTrackTitle: String? = null
+    private var lastNotificationPlaying: Boolean = false
 
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
-                Intent.ACTION_SCREEN_ON -> updateBackTapWakeLock(shouldHold = true)
-                Intent.ACTION_SCREEN_OFF -> updateBackTapWakeLock(shouldHold = false)
+                Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
+                    shakeDetector?.suppressFor(2000L)
+                }
             }
         }
     }
@@ -171,13 +176,13 @@ class FloatingService : Service() {
     companion object {
         const val ACTION_UPDATE_SETTINGS = "com.example.UPDATE_SETTINGS"
         const val ACTION_SCREEN_RECORD_RESULT = "com.example.ACTION_SCREEN_RECORD_RESULT"
+        const val ACTION_MUSIC_PLAY_PAUSE = "com.example.ACTION_MUSIC_PLAY_PAUSE"
+        const val ACTION_MUSIC_STOP = "com.example.ACTION_MUSIC_STOP"
         const val EXTRA_RECORD_RESULT_CODE = "extra_record_result_code"
         const val EXTRA_RECORD_DATA = "extra_record_data"
         const val EXTRA_RECORD_WITH_AUDIO = "extra_record_with_audio"
         const val PREF_SHAKE_TORCH_ENABLED = "shake_torch_enabled"
         const val PREF_SHAKE_SENSITIVITY = "shake_sensitivity_threshold"
-        const val PREF_BACK_TAP_DATA_ENABLED = "back_tap_data_enabled"
-        const val PREF_BACK_TAP_SENSITIVITY = "back_tap_sensitivity_threshold"
         const val PREF_HIDE_SHORTCUT_LABELS = "hide_shortcut_labels"
         var isRunning = false
             private set
@@ -200,13 +205,14 @@ class FloatingService : Service() {
         super.onCreate()
         prefs = getSharedPreferences("smart_dot_prefs", Context.MODE_PRIVATE)
         density = resources.displayMetrics.density
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboardManager.addPrimaryClipChangedListener(clipListener)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         if (!isScreenStateReceiverRegistered) {
             val screenFilter = IntentFilter().apply {
                 addAction(Intent.ACTION_SCREEN_ON)
-                addAction(Intent.ACTION_SCREEN_OFF)
+                addAction(Intent.ACTION_USER_PRESENT)
             }
             runCatching {
                 ContextCompat.registerReceiver(
@@ -219,7 +225,12 @@ class FloatingService : Service() {
             }
         }
         syncShakeTorchListener()
-        syncBackTapListener()
+        FloatingGalleryMusicHelper.preloadAllMediaAsync(this, serviceScope)
+        FloatingGalleryMusicHelper.onBackgroundPlaybackChanged = { isPlaying, trackTitle, windowOpen ->
+            Handler(Looper.getMainLooper()).post {
+                updateMusicMiniPillAndNotification(isPlaying, trackTitle, windowOpen)
+            }
+        }
         SmartDotAccessibilityService.syncUserPausedFromPrefs(this)
         isShieldHidden = SmartDotAccessibilityService.isShieldActive
         SmartDotAccessibilityService.onShieldStateChangedListener = { shieldActive ->
@@ -260,6 +271,13 @@ class FloatingService : Service() {
             isRunning = false
             stopSelf()
             return START_NOT_STICKY
+        }
+
+        if (intent?.action == ACTION_MUSIC_PLAY_PAUSE) {
+            FloatingGalleryMusicHelper.toggleBackgroundPlayPause()
+        } else if (intent?.action == ACTION_MUSIC_STOP) {
+            FloatingGalleryMusicHelper.stopBackgroundPlayback()
+            removeMusicMiniPill()
         }
 
         if (isScreenRecordResult) {
@@ -351,14 +369,37 @@ class FloatingService : Service() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
         )
 
-        return NotificationCompat.Builder(this, "smart_dot_channel")
-            .setContentTitle("Floating Shortcuts Active")
-            .setContentText("Tap to configure themes and sidebar utility layers.")
+        val builder = NotificationCompat.Builder(this, "smart_dot_channel")
             .setSmallIcon(android.R.drawable.ic_menu_info_details)
             .setContentIntent(pendingIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
-            .build()
+
+        val track = lastNotificationTrackTitle
+        if (!track.isNullOrBlank()) {
+            builder.setContentTitle(if (lastNotificationPlaying) "Playing: $track" else "Paused: $track")
+            builder.setContentText("Tap Mini-Pill to reopen Floating Music")
+            val toggleIntent = Intent(this, FloatingService::class.java).apply { action = ACTION_MUSIC_PLAY_PAUSE }
+            val togglePi = PendingIntent.getService(
+                this, 21, toggleIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val stopIntent = Intent(this, FloatingService::class.java).apply { action = ACTION_MUSIC_STOP }
+            val stopPi = PendingIntent.getService(
+                this, 22, stopIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(
+                if (lastNotificationPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                if (lastNotificationPlaying) "Pause" else "Play",
+                togglePi
+            )
+            builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPi)
+        } else {
+            builder.setContentTitle("Floating Shortcuts Active")
+            builder.setContentText("Tap to configure themes and sidebar utility layers.")
+        }
+        return builder.build()
     }
 
     private fun setupFloatingWidget(): Boolean {
@@ -3235,7 +3276,7 @@ class FloatingService : Service() {
     }
 
     // -------------------------------------------------------------
-    // Shake Phone to Toggle Flashlight (Zero Vibration)
+    // Triple-Shake Phone to Toggle Flashlight (Zero Vibration, Unlock-Suppressed)
     // -------------------------------------------------------------
     private fun syncShakeTorchListener() {
         val manager = sensorManager ?: (getSystemService(Context.SENSOR_SERVICE) as? SensorManager)?.also {
@@ -3244,7 +3285,10 @@ class FloatingService : Service() {
         val sensitivity = prefs.getFloat(PREF_SHAKE_SENSITIVITY, 16f).coerceIn(12f, 26f)
         val enabled = prefs.getBoolean(PREF_SHAKE_TORCH_ENABLED, false)
         if (enabled) {
-            val detector = shakeDetector ?: ShakeDetector(thresholdAccel = sensitivity) {
+            val detector = shakeDetector ?: ShakeDetector(
+                thresholdAccel = sensitivity,
+                requiredShakes = 3
+            ) {
                 Handler(Looper.getMainLooper()).post {
                     toggleFlashlight()
                 }
@@ -3262,66 +3306,129 @@ class FloatingService : Service() {
     }
 
     // -------------------------------------------------------------
-    // Double-Tap Back of Phone to Toggle Mobile Data (Zero Vibration)
+    // Background Music Mini-Pill & Notification Sync
     // -------------------------------------------------------------
-    private fun updateBackTapWakeLock(shouldHold: Boolean) {
-        val enabled = prefs.getBoolean(PREF_BACK_TAP_DATA_ENABLED, false)
-        val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
-        val screenInteractive = powerManager?.isInteractive ?: true
-        if (enabled && shouldHold && screenInteractive && powerManager != null) {
-            val lock = backTapWakeLock ?: powerManager.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "SmartDot::BackTapWakeLock"
-            ).apply {
-                setReferenceCounted(false)
-            }.also { backTapWakeLock = it }
-            if (!lock.isHeld) {
-                runCatching { lock.acquire(60 * 60 * 1000L) }
+    private fun updateMusicMiniPillAndNotification(
+        isPlaying: Boolean,
+        trackTitle: String?,
+        isMusicWindowOpen: Boolean
+    ) {
+        lastNotificationPlaying = isPlaying
+        lastNotificationTrackTitle = if (trackTitle.isNullOrBlank()) null else trackTitle
+        runCatching {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            nm?.notify(1001, getForegroundNotification())
+        }
+
+        if (!isPlaying || trackTitle.isNullOrBlank() || isMusicWindowOpen || isShieldHidden) {
+            removeMusicMiniPill()
+            return
+        }
+
+        if (!::windowManager.isInitialized || !Settings.canDrawOverlays(this)) return
+
+        val existingPill = musicMiniPillView
+        if (existingPill != null) {
+            musicMiniTitleView?.text = trackTitle
+            musicMiniPlayBtn?.text = if (isPlaying) "⏸" else "▶"
+            return
+        }
+
+        val accentColor = getConfiguredAccentColor()
+        val pill = LinearLayout(this).apply {
+            tag = "fw_music_mini_pill"
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding((10 * density).toInt(), (6 * density).toInt(), (6 * density).toInt(), (6 * density).toInt())
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = 22f * density
+                setColor(Color.parseColor("#EE0F172A"))
+                setStroke((1.5f * density).toInt().coerceAtLeast(1), accentColor)
             }
-        } else {
-            backTapWakeLock?.let { lock ->
-                if (lock.isHeld) {
-                    runCatching { lock.release() }
-                }
+            elevation = 10f * density
+        }
+
+        val tvTitle = TextView(this).apply {
+            tag = "fw_music_mini_title"
+            text = "🎵 $trackTitle"
+            textSize = 11.5f
+            setTextColor(Color.parseColor("#F8FAFC"))
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(
+                (110 * density).toInt(),
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            setOnClickListener {
+                FloatingGalleryMusicHelper.openFloatingMusicPlayer(
+                    context = this@FloatingService,
+                    manager = getOrCreateFloatingWindowManager(),
+                    accentColor = getConfiguredAccentColor()
+                )
             }
+        }
+        val btnPlayPause = TextView(this).apply {
+            tag = "fw_music_mini_play_pause"
+            text = if (isPlaying) "⏸" else "▶"
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setTextColor(accentColor)
+            layoutParams = LinearLayout.LayoutParams((32 * density).toInt(), (32 * density).toInt())
+            setOnClickListener { FloatingGalleryMusicHelper.toggleBackgroundPlayPause() }
+        }
+        val btnStop = TextView(this).apply {
+            tag = "fw_music_mini_stop"
+            text = "✕"
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#94A3B8"))
+            layoutParams = LinearLayout.LayoutParams((28 * density).toInt(), (32 * density).toInt())
+            setOnClickListener {
+                FloatingGalleryMusicHelper.stopBackgroundPlayback()
+                removeMusicMiniPill()
+            }
+        }
+        pill.addView(tvTitle)
+        pill.addView(btnPlayPause)
+        pill.addView(btnStop)
+
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE
+            },
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = (16 * density).toInt()
+            y = (140 * density).toInt()
+        }
+
+        musicMiniTitleView = tvTitle
+        musicMiniPlayBtn = btnPlayPause
+        musicMiniPillView = pill
+        musicMiniPillParams = lp
+        runCatching { windowManager.addView(pill, lp) }.onFailure {
+            removeMusicMiniPill()
         }
     }
 
-    private fun syncBackTapListener() {
-        val manager = sensorManager ?: (getSystemService(Context.SENSOR_SERVICE) as? SensorManager)?.also {
-            sensorManager = it
-        } ?: return
-        val sensitivity = prefs.getFloat(
-            PREF_BACK_TAP_SENSITIVITY,
-            BackTapDetector.DEFAULT_SENSITIVITY
-        ).coerceIn(BackTapDetector.MIN_SENSITIVITY, BackTapDetector.MAX_SENSITIVITY)
-        val enabled = prefs.getBoolean(PREF_BACK_TAP_DATA_ENABLED, false)
-        if (enabled) {
-            val detector = backTapDetector ?: BackTapDetector(zSpikeThreshold = sensitivity) {
-                Handler(Looper.getMainLooper()).post {
-                    triggerOneTapQuickTileToggle(QuickTileAutomation.QuickTileTarget.MOBILE_DATA)
-                }
-            }.also { backTapDetector = it }
-            detector.setThreshold(sensitivity)
-            if (!isBackTapListenerRegistered) {
-                val sensor = manager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
-                    ?: manager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-                    ?: return
-                isBackTapListenerRegistered = manager.registerListener(
-                    detector,
-                    sensor,
-                    SensorManager.SENSOR_DELAY_FASTEST
-                )
+    private fun removeMusicMiniPill() {
+        musicMiniPillView?.let { v ->
+            if (::windowManager.isInitialized) {
+                runCatching { windowManager.removeView(v) }
             }
-            updateBackTapWakeLock(shouldHold = true)
-        } else {
-            if (isBackTapListenerRegistered) {
-                backTapDetector?.let { manager.unregisterListener(it) }
-                backTapDetector?.reset()
-                isBackTapListenerRegistered = false
-            }
-            updateBackTapWakeLock(shouldHold = false)
         }
+        musicMiniPillView = null
+        musicMiniPillParams = null
+        musicMiniTitleView = null
+        musicMiniPlayBtn = null
     }
 
     // -------------------------------------------------------------
@@ -3665,7 +3772,6 @@ class FloatingService : Service() {
         }
         setupSidebarWidget()
         syncShakeTorchListener()
-        syncBackTapListener()
     }
 
     private fun buildSidebarPillBackground(
@@ -3986,17 +4092,9 @@ class FloatingService : Service() {
             shakeDetector?.let { sensorManager?.unregisterListener(it) }
             isShakeListenerRegistered = false
         }
-        if (isBackTapListenerRegistered) {
-            backTapDetector?.let { sensorManager?.unregisterListener(it) }
-            backTapDetector?.reset()
-            isBackTapListenerRegistered = false
-        }
-        backTapWakeLock?.let { lock ->
-            if (lock.isHeld) {
-                runCatching { lock.release() }
-            }
-        }
-        backTapWakeLock = null
+        FloatingGalleryMusicHelper.onBackgroundPlaybackChanged = null
+        FloatingGalleryMusicHelper.stopBackgroundPlayback()
+        removeMusicMiniPill()
         removeStopRecordingPill()
         if (screenRecorderManager?.isRecording == true) {
             screenRecorderManager?.stopRecording()

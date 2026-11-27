@@ -6,20 +6,25 @@ import android.hardware.SensorEventListener
 import kotlin.math.sqrt
 
 /**
- * Lightweight accelerometer double-shake detector (zero vibration / haptic feedback).
- * Triggers [onDoubleShake] when total acceleration exceeds [thresholdAccel] twice within [windowMs],
+ * Lightweight accelerometer shake detector (zero vibration / haptic feedback).
+ * Requires [requiredShakes] firm peaks above [thresholdAccel] within [windowMs],
  * separated by at least [minPeakGapMs] and debounced by [cooldownMs].
+ * Supports [suppressFor] so phone unlock / screen-on / fingerprint vibration does not false-trigger.
  */
 class ShakeDetector(
     @Volatile private var thresholdAccel: Float = 16f,
-    private val windowMs: Long = 500L,
+    private val windowMs: Long = 800L,
     private val minPeakGapMs: Long = 100L,
     private val cooldownMs: Long = 900L,
+    private val requiredShakes: Int = 3,
     private val onDoubleShake: () -> Unit
 ) : SensorEventListener {
 
-    private var firstShakeTimeMs = 0L
+    private val peakTimestamps = ArrayDeque<Long>()
     private var lastTriggerTimeMs = 0L
+
+    @Volatile
+    private var suppressUntilMs = 0L
 
     fun setThreshold(accelThreshold: Float) {
         thresholdAccel = accelThreshold.coerceIn(10f, 30f)
@@ -27,7 +32,20 @@ class ShakeDetector(
 
     fun getThreshold(): Float = thresholdAccel
 
+    fun suppressFor(durationMs: Long, nowMs: Long = System.currentTimeMillis()) {
+        val target = nowMs + durationMs.coerceAtLeast(0L)
+        if (target > suppressUntilMs) {
+            suppressUntilMs = target
+        }
+        peakTimestamps.clear()
+    }
+
     fun onAccelerationSample(x: Float, y: Float, z: Float, timestampMs: Long): Boolean {
+        if (timestampMs < suppressUntilMs) {
+            peakTimestamps.clear()
+            return false
+        }
+
         val magnitude = sqrt((x * x + y * y + z * z).toDouble()).toFloat()
         if (magnitude <= thresholdAccel) return false
 
@@ -35,13 +53,19 @@ class ShakeDetector(
             return false
         }
 
-        if (firstShakeTimeMs == 0L || (timestampMs - firstShakeTimeMs) > windowMs) {
-            firstShakeTimeMs = timestampMs
+        val lastPeak = peakTimestamps.lastOrNull()
+        if (lastPeak != null && (timestampMs - lastPeak) < minPeakGapMs) {
             return false
         }
 
-        if ((timestampMs - firstShakeTimeMs) >= minPeakGapMs) {
-            firstShakeTimeMs = 0L
+        while (peakTimestamps.isNotEmpty() && (timestampMs - peakTimestamps.first()) > windowMs) {
+            peakTimestamps.removeFirst()
+        }
+        peakTimestamps.addLast(timestampMs)
+
+        val targetCount = requiredShakes.coerceAtLeast(2)
+        if (peakTimestamps.size >= targetCount) {
+            peakTimestamps.clear()
             lastTriggerTimeMs = timestampMs
             onDoubleShake()
             return true
@@ -50,8 +74,9 @@ class ShakeDetector(
     }
 
     fun reset() {
-        firstShakeTimeMs = 0L
+        peakTimestamps.clear()
         lastTriggerTimeMs = 0L
+        suppressUntilMs = 0L
     }
 
     override fun onSensorChanged(event: SensorEvent?) {

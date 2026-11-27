@@ -76,7 +76,8 @@ object FloatingMediaFilesHelper {
         val mimeType: String,
         val sizeBytes: Long,
         val fileType: MediaFileType,
-        val folderLabel: String
+        val folderLabel: String,
+        val dateAddedSec: Long = 0L
     )
 
     private const val PREF_SAF_TREES = "media_saf_folder_uris"
@@ -138,7 +139,7 @@ object FloatingMediaFilesHelper {
         val seenUris = HashSet<String>()
 
         fun addUnique(item: MediaItem) {
-            val key = "${item.displayName.lowercase(Locale.ROOT)}|${item.sizeBytes}|${item.uri}"
+            val key = "${item.displayName.lowercase(Locale.ROOT)}|${item.sizeBytes}"
             if (seenUris.add(key)) {
                 items.add(item)
             }
@@ -163,7 +164,8 @@ object FloatingMediaFilesHelper {
                             mimeType = guessMimeForType(type, file.name),
                             sizeBytes = file.length(),
                             fileType = type,
-                            folderLabel = file.parentFile?.name ?: category.label
+                            folderLabel = file.parentFile?.name ?: category.label,
+                            dateAddedSec = file.lastModified() / 1000L
                         )
                     )
                 }
@@ -183,7 +185,11 @@ object FloatingMediaFilesHelper {
             }
         }
 
-        return items.sortedWith(compareBy<MediaItem> { it.fileType.ordinal }.thenBy { it.displayName.lowercase(Locale.ROOT) })
+        return items.sortedWith(
+            compareByDescending<MediaItem> { it.dateAddedSec }
+                .thenBy { it.fileType.ordinal }
+                .thenBy { it.displayName.lowercase(Locale.ROOT) }
+        )
     }
 
     private fun guessMimeForType(type: MediaFileType, name: String): String {
@@ -221,6 +227,7 @@ object FloatingMediaFilesHelper {
                     add(MediaStore.MediaColumns.DISPLAY_NAME)
                     add(MediaStore.MediaColumns.MIME_TYPE)
                     add(MediaStore.MediaColumns.SIZE)
+                    add(MediaStore.MediaColumns.DATE_MODIFIED)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         add(MediaStore.MediaColumns.RELATIVE_PATH)
                     } else {
@@ -240,6 +247,7 @@ object FloatingMediaFilesHelper {
                     val nameIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
                     val mimeIdx = cursor.getColumnIndex(MediaStore.MediaColumns.MIME_TYPE)
                     val sizeIdx = cursor.getColumnIndex(MediaStore.MediaColumns.SIZE)
+                    val dateIdx = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
                     val pathIdx = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
                     } else {
@@ -253,6 +261,7 @@ object FloatingMediaFilesHelper {
                         if (name.isBlank()) continue
                         val mime = if (mimeIdx >= 0) cursor.getString(mimeIdx).orEmpty() else ""
                         val size = if (sizeIdx >= 0) cursor.getLong(sizeIdx) else 0L
+                        val dateMod = if (dateIdx >= 0) cursor.getLong(dateIdx) else 0L
                         val relOrPath = if (pathIdx >= 0) cursor.getString(pathIdx).orEmpty().lowercase(Locale.ROOT) else ""
                         if (relOrPath.isNotEmpty() && !relOrPath.contains(segmentLower)) {
                             continue
@@ -266,7 +275,8 @@ object FloatingMediaFilesHelper {
                                 mimeType = mime.ifBlank { guessMimeForType(type, name) },
                                 sizeBytes = size,
                                 fileType = type,
-                                folderLabel = category.label
+                                folderLabel = category.label,
+                                dateAddedSec = dateMod
                             )
                         )
                     }
@@ -328,6 +338,8 @@ object FloatingMediaFilesHelper {
         private var lastY = 0f
         private var isDragging = false
 
+        var onHorizontalSwipeListener: ((isSwipeLeftNext: Boolean) -> Unit)? = null
+
         private val scaleDetector = ScaleGestureDetector(
             context,
             object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -366,6 +378,26 @@ object FloatingMediaFilesHelper {
                         currentScale = 2.2f
                     }
                     return true
+                }
+
+                override fun onFling(
+                    e1: MotionEvent?,
+                    e2: MotionEvent,
+                    velocityX: Float,
+                    velocityY: Float
+                ): Boolean {
+                    if (currentScale <= 1.05f && e1 != null) {
+                        val dx = e2.x - e1.x
+                        val dy = e2.y - e1.y
+                        if (kotlin.math.abs(dx) > 60f &&
+                            kotlin.math.abs(dx) > kotlin.math.abs(dy) &&
+                            kotlin.math.abs(velocityX) > kotlin.math.abs(velocityY)
+                        ) {
+                            onHorizontalSwipeListener?.invoke(dx < 0f)
+                            return true
+                        }
+                    }
+                    return false
                 }
             }
         )
@@ -437,6 +469,7 @@ object FloatingMediaFilesHelper {
             val mediaScope = CoroutineScope(Dispatchers.Main.immediate + mediaJob)
             var currentCategory = MediaFolderCategory.DOWNLOADS
             var currentFolderItems: List<MediaItem> = emptyList()
+            var activeVisualIndex = -1
             var audioQueue: List<MediaItem> = emptyList()
             var currentAudioIndex = -1
             var mediaPlayer: MediaPlayer? = null
@@ -1028,6 +1061,10 @@ object FloatingMediaFilesHelper {
             }
 
             fun openMediaItem(item: MediaItem) {
+                val foundIdx = currentFolderItems.indexOfFirst { it.uri == item.uri }
+                if (foundIdx >= 0) {
+                    activeVisualIndex = foundIdx
+                }
                 when (item.fileType) {
                     MediaFileType.IMAGE -> {
                         showMode(imageViewerView)
@@ -1085,6 +1122,50 @@ object FloatingMediaFilesHelper {
                         tvDocBody.text = textContent
                     }
                 }
+            }
+
+            fun navigateVisualSwipe(next: Boolean) {
+                val visualIndices = currentFolderItems.indices.filter { idx ->
+                    val t = currentFolderItems[idx].fileType
+                    t == MediaFileType.IMAGE || t == MediaFileType.VIDEO
+                }
+                if (visualIndices.size <= 1) return
+                val posInVisual = visualIndices.indexOf(activeVisualIndex).let { if (it < 0) 0 else it }
+                val nextPos = if (next) {
+                    (posInVisual + 1) % visualIndices.size
+                } else {
+                    if (posInVisual - 1 < 0) visualIndices.lastIndex else posInVisual - 1
+                }
+                openMediaItem(currentFolderItems[visualIndices[nextPos]])
+            }
+
+            zoomImageView.onHorizontalSwipeListener = { swipeLeftNext ->
+                navigateVisualSwipe(swipeLeftNext)
+            }
+            val videoSwipeDetector = GestureDetector(
+                context,
+                object : GestureDetector.SimpleOnGestureListener() {
+                    override fun onFling(
+                        e1: MotionEvent?,
+                        e2: MotionEvent,
+                        velocityX: Float,
+                        velocityY: Float
+                    ): Boolean {
+                        if (e1 != null) {
+                            val dx = e2.x - e1.x
+                            val dy = e2.y - e1.y
+                            if (kotlin.math.abs(dx) > 60f && kotlin.math.abs(dx) > kotlin.math.abs(dy)) {
+                                navigateVisualSwipe(dx < 0f)
+                                return true
+                            }
+                        }
+                        return false
+                    }
+                }
+            )
+            videoHost.setOnTouchListener { _, event ->
+                videoSwipeDetector.onTouchEvent(event)
+                true
             }
 
             lateinit var renderFolderView: () -> Unit

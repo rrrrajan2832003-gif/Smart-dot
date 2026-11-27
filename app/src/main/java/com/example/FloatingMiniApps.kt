@@ -25,6 +25,8 @@ import android.webkit.PermissionRequest
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -84,11 +86,88 @@ object FloatingMiniApps {
     const val PREF_BROWSER_BOOKMARKS = "floating_browser_bookmarks"
     const val PREF_BROWSER_HISTORY = "floating_browser_history"
     const val PREF_BROWSER_DOWNLOADS = "floating_browser_downloads"
+    const val PREF_BROWSER_ADBLOCK = "floating_browser_adblock_enabled"
+    const val PREF_BROWSER_PROXY = "floating_browser_proxy_enabled"
+    const val PREF_YOUTUBE_ADBLOCK = "floating_youtube_adblock_enabled"
+    const val PREF_CALC_HISTORY = "floating_calc_history"
 
     private const val MOBILE_USER_AGENT =
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
     private const val DESKTOP_USER_AGENT =
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+    private val AD_HOST_PATTERNS = listOf(
+        "doubleclick.net",
+        "googlesyndication.com",
+        "googleadservices.com",
+        "adservice.google.com",
+        "pagead2.googlesyndication.com",
+        "googleads.g.doubleclick.net",
+        "adnxs.com",
+        "taboola.com",
+        "outbrain.com",
+        "scorecardresearch.com",
+        "pubmatic.com",
+        "criteo.com",
+        "rubiconproject.com",
+        "amazon-adsystem.com",
+        "ads.yahoo.com",
+        "moatads.com"
+    )
+
+    internal val YOUTUBE_AD_SKIP_JS = """
+        (function() {
+            if (!window.__smartDotYtAdStyle) {
+                var st = document.createElement('style');
+                st.id = '__smartDotYtAdStyle';
+                st.textContent = '.ytp-ad-module, .ytp-ad-overlay-container, ytd-ad-slot-renderer, ytd-promoted-sparkles-web-renderer, ytm-promoted-sparkles-web-renderer, #player-ads, .ad-showing .ytp-ad-player-overlay { display: none !important; visibility: hidden !important; }';
+                (document.head || document.documentElement).appendChild(st);
+                window.__smartDotYtAdStyle = true;
+            }
+            function skipYtAds() {
+                var skipBtns = document.querySelectorAll('.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, button[aria-label*="Skip ad" i]');
+                skipBtns.forEach(function(b) { try { b.click(); } catch(e) {} });
+                var video = document.querySelector('video');
+                var adOverlay = document.querySelector('.ad-showing, .ad-interrupting');
+                if (video && adOverlay && isFinite(video.duration) && video.duration > 0) {
+                    video.muted = true;
+                    video.currentTime = video.duration;
+                }
+            }
+            skipYtAds();
+            if (!window.__smartDotYtAdInterval) {
+                window.__smartDotYtAdInterval = setInterval(skipYtAds, 600);
+            }
+        })();
+    """.trimIndent()
+
+    internal fun isAdDomainUrl(url: String): Boolean {
+        val lower = url.lowercase(Locale.ROOT)
+        if (lower.contains("youtube.com/api/stats/ads") ||
+            lower.contains("youtube.com/pagead") ||
+            lower.contains("youtube.com/ptracking") ||
+            lower.contains("/pagead/")
+        ) {
+            return true
+        }
+        val host = runCatching { Uri.parse(lower).host.orEmpty() }.getOrDefault("")
+        return AD_HOST_PATTERNS.any { pattern ->
+            host == pattern || host.endsWith(".$pattern") || lower.contains(pattern)
+        }
+    }
+
+    internal fun emptyAdWebResourceResponse(): WebResourceResponse =
+        WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
+
+    internal fun wrapUrlWithWebProxy(rawUrl: String): String {
+        val trimmed = rawUrl.trim()
+        if (trimmed.isEmpty()) return trimmed
+        if (trimmed.contains("translate.google.com/translate") || trimmed.contains(".translate.goog")) {
+            return trimmed
+        }
+        val encoded = runCatching { URLEncoder.encode(trimmed, "UTF-8") }.getOrDefault(trimmed)
+        return "https://translate.google.com/translate?sl=auto&tl=en&u=$encoded"
+    }
 
     @Volatile
     internal var pendingBrowserUploadImageUri: Uri? = null
@@ -246,6 +325,37 @@ object FloatingMiniApps {
     fun clearBrowserDownloads(context: Context) {
         context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
             .edit().remove(PREF_BROWSER_DOWNLOADS).apply()
+    }
+
+    // --- Calculator History Persistence ---
+    fun getCalcHistory(context: Context): List<String> {
+        val prefs = context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
+        val raw = prefs.getString(PREF_CALC_HISTORY, null).orEmpty()
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            val list = ArrayList<String>(arr.length())
+            for (i in 0 until arr.length()) {
+                val entry = arr.optString(i).trim()
+                if (entry.isNotEmpty()) list.add(entry)
+            }
+            list
+        }.getOrElse { emptyList() }
+    }
+
+    fun addCalcHistoryEntry(context: Context, entry: String) {
+        val clean = entry.trim()
+        if (clean.isEmpty()) return
+        val updated = (listOf(clean) + getCalcHistory(context).filterNot { it == clean }).take(30)
+        val arr = JSONArray()
+        updated.forEach { arr.put(it) }
+        context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putString(PREF_CALC_HISTORY, arr.toString()).apply()
+    }
+
+    fun clearCalcHistory(context: Context) {
+        context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().remove(PREF_CALC_HISTORY).apply()
     }
 
     private class KeepAliveWebView(context: Context) : WebView(context) {
@@ -406,7 +516,10 @@ object FloatingMiniApps {
                 setPadding(dp(context, 4f), dp(context, 4f), dp(context, 4f), dp(context, 4f))
             }
 
+            val prefs = context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
             var isDesktopMode = false
+            var isAdBlockEnabled = prefs.getBoolean(PREF_BROWSER_ADBLOCK, true)
+            var isProxyModeEnabled = prefs.getBoolean(PREF_BROWSER_PROXY, false)
 
             val webHost = FrameLayout(context).apply {
                 layoutParams = LinearLayout.LayoutParams(
@@ -559,12 +672,13 @@ object FloatingMiniApps {
             lateinit var refreshMenuItems: () -> Unit
 
             fun loadUrlInActiveTab(rawUrl: String) {
-                val dest = normalizeBrowserInput(rawUrl)
+                val normalized = normalizeBrowserInput(rawUrl)
+                val dest = if (isProxyModeEnabled) wrapUrlWithWebProxy(normalized) else normalized
                 val activeTab = tabs.getOrNull(activeTabIdx) ?: return
-                activeTab.lastUrl = dest
-                etUrl.setText(dest)
+                activeTab.lastUrl = normalized
+                etUrl.setText(normalized)
                 activeTab.webView.loadUrl(dest)
-                addBrowserHistory(context, activeTab.title, dest)
+                addBrowserHistory(context, activeTab.title, normalized)
                 refreshMenuItems()
             }
 
@@ -748,6 +862,7 @@ object FloatingMiniApps {
                     context = context,
                     etUrl = etUrl,
                     desktopMode = isDesktopMode,
+                    isAdBlockEnabled = { isAdBlockEnabled },
                     onTitleChanged = { title ->
                         if (newIdx < tabs.size) {
                             tabs[newIdx].title = title.ifBlank { "Tab ${newIdx + 1}" }
@@ -774,7 +889,8 @@ object FloatingMiniApps {
                 tabs.forEachIndexed { j, t ->
                     t.webView.visibility = if (j == activeTabIdx) View.VISIBLE else View.GONE
                 }
-                wv.loadUrl(url)
+                val dest = if (isProxyModeEnabled) wrapUrlWithWebProxy(url) else url
+                wv.loadUrl(dest)
                 etUrl.setText(url)
                 tabsScroll.visibility = if (tabs.size > 1) View.VISIBLE else View.GONE
                 renderTabsStrip()
@@ -838,9 +954,15 @@ object FloatingMiniApps {
                 val starLabel = if (isBookmarkedNow) "★ Bookmarked" else "☆ Bookmark Page"
                 val starColor = if (isBookmarkedNow) Color.parseColor("#FBBF24") else Color.parseColor("#F8FAFC")
                 val modeLabel = if (isDesktopMode) "📱 Mobile View" else "🖥 Desktop View"
+                val adLabel = if (isAdBlockEnabled) "🛡 Ad-Block: ON" else "🛡 Ad-Block: OFF"
+                val adColor = if (isAdBlockEnabled) Color.parseColor("#34D399") else Color.parseColor("#94A3B8")
+                val proxyLabel = if (isProxyModeEnabled) "🌐 Web Proxy: ON" else "🌐 Web Proxy: OFF"
+                val proxyColor = if (isProxyModeEnabled) Color.parseColor("#38BDF8") else Color.parseColor("#94A3B8")
                 if (browserMenuInitialized) {
                     managed.updateMenuItemLabel("fw_browser_bookmark_star", starLabel, starColor)
                     managed.updateMenuItemLabel("fw_browser_mode_toggle", modeLabel, accentColor)
+                    managed.updateMenuItemLabel("fw_browser_adblock_toggle", adLabel, adColor)
+                    managed.updateMenuItemLabel("fw_browser_proxy_toggle", proxyLabel, proxyColor)
                 } else {
                     browserMenuInitialized = true
                     managed.setMenuItems(
@@ -935,6 +1057,31 @@ object FloatingMiniApps {
                                 }
                                 tabs.getOrNull(activeTabIdx)?.webView?.reload()
                                 refreshMenuItems()
+                            },
+                            FloatingWindowManager.WindowMenuItem(
+                                id = "adblock_toggle",
+                                label = adLabel,
+                                tag = "fw_browser_adblock_toggle",
+                                closeOnTap = false,
+                                textColor = adColor
+                            ) {
+                                isAdBlockEnabled = !isAdBlockEnabled
+                                prefs.edit().putBoolean(PREF_BROWSER_ADBLOCK, isAdBlockEnabled).apply()
+                                tabs.getOrNull(activeTabIdx)?.webView?.reload()
+                                refreshMenuItems()
+                            },
+                            FloatingWindowManager.WindowMenuItem(
+                                id = "proxy_toggle",
+                                label = proxyLabel,
+                                tag = "fw_browser_proxy_toggle",
+                                closeOnTap = false,
+                                textColor = proxyColor
+                            ) {
+                                isProxyModeEnabled = !isProxyModeEnabled
+                                prefs.edit().putBoolean(PREF_BROWSER_PROXY, isProxyModeEnabled).apply()
+                                val currentUrl = activeCurrentUrl().ifBlank { "https://www.google.com" }
+                                loadUrlInActiveTab(currentUrl)
+                                refreshMenuItems()
                             }
                         )
                     )
@@ -960,6 +1107,7 @@ object FloatingMiniApps {
                 context = context,
                 etUrl = etUrl,
                 desktopMode = isDesktopMode,
+                isAdBlockEnabled = { isAdBlockEnabled },
                 onTitleChanged = { title ->
                     if (tabs.isNotEmpty()) {
                         tabs[0].title = title.ifBlank { "Google" }
@@ -982,7 +1130,7 @@ object FloatingMiniApps {
                     FrameLayout.LayoutParams.MATCH_PARENT
                 )
             )
-            firstWebView.loadUrl(startUrl)
+            firstWebView.loadUrl(if (isProxyModeEnabled) wrapUrlWithWebProxy(startUrl) else startUrl)
             etUrl.setText(startUrl)
             addBrowserHistory(context, "Tab 1", startUrl)
             renderTabsStrip()
@@ -1120,6 +1268,14 @@ object FloatingMiniApps {
             val webView = KeepAliveWebView(context).apply {
                 tag = "fw_social_webview_$appId"
                 configureWebViewCommon(context, this, desktopMode = isDesktopMode)
+                if (appId == "whatsapp") {
+                    settings.useWideViewPort = true
+                    settings.loadWithOverviewMode = true
+                    settings.setSupportZoom(true)
+                    settings.builtInZoomControls = true
+                    settings.displayZoomControls = false
+                    setInitialScale(65)
+                }
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
@@ -1453,12 +1609,33 @@ object FloatingMiniApps {
         context: Context,
         etUrl: EditText,
         desktopMode: Boolean = false,
+        isAdBlockEnabled: () -> Boolean = { true },
         onTitleChanged: (String) -> Unit,
         onUrlFinished: (String) -> Unit = {}
     ): WebView {
         return WebView(context).apply {
             configureWebViewCommon(context, this, desktopMode = desktopMode)
             webViewClient = object : WebViewClient() {
+                @Deprecated("Deprecated in Java")
+                override fun shouldInterceptRequest(view: WebView?, url: String?): WebResourceResponse? {
+                    if (isAdBlockEnabled() && !url.isNullOrBlank() && isAdDomainUrl(url)) {
+                        return emptyAdWebResourceResponse()
+                    }
+                    @Suppress("DEPRECATION")
+                    return super.shouldInterceptRequest(view, url)
+                }
+
+                override fun shouldInterceptRequest(
+                    view: WebView?,
+                    request: WebResourceRequest?
+                ): WebResourceResponse? {
+                    val reqUrl = request?.url?.toString()
+                    if (isAdBlockEnabled() && !reqUrl.isNullOrBlank() && isAdDomainUrl(reqUrl)) {
+                        return emptyAdWebResourceResponse()
+                    }
+                    return super.shouldInterceptRequest(view, request)
+                }
+
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
                     if (!url.isNullOrBlank()) {
@@ -1467,6 +1644,9 @@ object FloatingMiniApps {
                     }
                     onTitleChanged(view?.title.orEmpty())
                     runCatching { CookieManager.getInstance().flush() }
+                    if (isAdBlockEnabled() && view != null && url?.contains("youtube.com", ignoreCase = true) == true) {
+                        view.evaluateJavascript(YOUTUBE_AD_SKIP_JS, null)
+                    }
                     val b64 = pendingBrowserUploadImageBase64
                     val prompt = pendingBrowserUploadPromptText.orEmpty()
                     if (!b64.isNullOrEmpty() && view != null) {
@@ -1523,7 +1703,7 @@ object FloatingMiniApps {
 
     /**
      * Clean clutter-free Floating YouTube with full-bleed WebView, background playback when minimized,
-     * and Left Hamburger (☰) Menu for Back, Forward, Reload, Desktop/Mobile View, and Opacity Slider.
+     * built-in Ad-Blocker, Voice & Hum Song Search, and Left Hamburger (☰) Menu.
      */
     @SuppressLint("SetJavaScriptEnabled")
     fun openFloatingYouTube(
@@ -1538,12 +1718,71 @@ object FloatingMiniApps {
             iconRes = android.R.drawable.ic_menu_slideshow,
             requiresTextInput = true
         ) { managed ->
+            val prefs = context.getSharedPreferences(SelectionToolbarHelper.PREFS_NAME, Context.MODE_PRIVATE)
             var isDesktopMode = false
+            var isYtAdBlockEnabled = prefs.getBoolean(PREF_YOUTUBE_ADBLOCK, true)
             val webView = KeepAliveWebView(context).apply {
                 tag = "fw_youtube_webview"
                 configureWebViewCommon(context, this, desktopMode = false)
-                webViewClient = WebViewClient()
-                webChromeClient = WebChromeClient()
+                webViewClient = object : WebViewClient() {
+                    @Deprecated("Deprecated in Java")
+                    override fun shouldInterceptRequest(view: WebView?, url: String?): WebResourceResponse? {
+                        if (isYtAdBlockEnabled && !url.isNullOrBlank() && isAdDomainUrl(url)) {
+                            return emptyAdWebResourceResponse()
+                        }
+                        @Suppress("DEPRECATION")
+                        return super.shouldInterceptRequest(view, url)
+                    }
+
+                    override fun shouldInterceptRequest(
+                        view: WebView?,
+                        request: WebResourceRequest?
+                    ): WebResourceResponse? {
+                        val reqUrl = request?.url?.toString()
+                        if (isYtAdBlockEnabled && !reqUrl.isNullOrBlank() && isAdDomainUrl(reqUrl)) {
+                            return emptyAdWebResourceResponse()
+                        }
+                        return super.shouldInterceptRequest(view, request)
+                    }
+
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        super.onPageFinished(view, url)
+                        if (isYtAdBlockEnabled && view != null) {
+                            view.evaluateJavascript(YOUTUBE_AD_SKIP_JS, null)
+                        }
+                    }
+                }
+                webChromeClient = object : WebChromeClient() {
+                    override fun onPermissionRequest(request: PermissionRequest?) {
+                        if (request == null) return
+                        val hasMic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                            PackageManager.PERMISSION_GRANTED
+                        val granted = ArrayList<String>()
+                        request.resources.forEach { res ->
+                            when (res) {
+                                PermissionRequest.RESOURCE_AUDIO_CAPTURE -> {
+                                    // Grant audio capture for YouTube in-page voice mic search
+                                    if (hasMic || res == PermissionRequest.RESOURCE_AUDIO_CAPTURE) {
+                                        granted.add(res)
+                                    }
+                                }
+                                PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID -> granted.add(res)
+                                PermissionRequest.RESOURCE_VIDEO_CAPTURE -> {
+                                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                                        PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        granted.add(res)
+                                    }
+                                }
+                            }
+                        }
+                        if (granted.isNotEmpty()) {
+                            request.grant(granted.toTypedArray())
+                        } else {
+                            request.deny()
+                        }
+                    }
+                }
                 layoutParams = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.MATCH_PARENT
@@ -1554,8 +1793,11 @@ object FloatingMiniApps {
             var ytMenuInitialized = false
             refreshYtMenu = {
                 val modeLabel = if (isDesktopMode) "Mode: Desktop" else "Mode: Mobile"
+                val adLabel = if (isYtAdBlockEnabled) "🛡 Ad-Block: ON" else "🛡 Ad-Block: OFF"
+                val adColor = if (isYtAdBlockEnabled) Color.parseColor("#34D399") else Color.parseColor("#94A3B8")
                 if (ytMenuInitialized) {
                     managed.updateMenuItemLabel("fw_youtube_mode_toggle", modeLabel, accentColor)
+                    managed.updateMenuItemLabel("fw_youtube_adblock_toggle", adLabel, adColor)
                 } else {
                     ytMenuInitialized = true
                     managed.setMenuItems(
@@ -1568,6 +1810,56 @@ object FloatingMiniApps {
                             },
                             FloatingWindowManager.WindowMenuItem("reload", "↻ Reload", "fw_youtube_reload") {
                                 webView.reload()
+                            },
+                            FloatingWindowManager.WindowMenuItem(
+                                id = "voice_song_search",
+                                label = "🎤 Voice / Hum Song Search",
+                                tag = "fw_youtube_voice_song_search",
+                                textColor = accentColor
+                            ) {
+                                ViewerPickerActivity.pendingVoiceCallback = { spoken ->
+                                    if (!spoken.isNullOrBlank()) {
+                                        val encoded = runCatching { URLEncoder.encode(spoken, "UTF-8") }.getOrDefault(spoken)
+                                        webView.post {
+                                            webView.loadUrl("https://m.youtube.com/results?search_query=$encoded")
+                                        }
+                                    }
+                                }
+                                val musicSearchIntent = Intent("com.google.android.googlequicksearchbox.MUSIC_SEARCH").apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                val hasGoogleMusicSearch = runCatching {
+                                    context.packageManager.resolveActivity(musicSearchIntent, 0) != null
+                                }.getOrDefault(false)
+                                if (hasGoogleMusicSearch) {
+                                    runCatching { context.startActivity(musicSearchIntent) }.onFailure {
+                                        context.startActivity(
+                                            Intent(context, ViewerPickerActivity::class.java).apply {
+                                                putExtra(ViewerPickerActivity.EXTRA_PICK_MODE, ViewerPickerActivity.MODE_VOICE_SEARCH)
+                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            }
+                                        )
+                                    }
+                                } else {
+                                    context.startActivity(
+                                        Intent(context, ViewerPickerActivity::class.java).apply {
+                                            putExtra(ViewerPickerActivity.EXTRA_PICK_MODE, ViewerPickerActivity.MODE_VOICE_SEARCH)
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        }
+                                    )
+                                }
+                            },
+                            FloatingWindowManager.WindowMenuItem(
+                                id = "yt_adblock_toggle",
+                                label = adLabel,
+                                tag = "fw_youtube_adblock_toggle",
+                                closeOnTap = false,
+                                textColor = adColor
+                            ) {
+                                isYtAdBlockEnabled = !isYtAdBlockEnabled
+                                prefs.edit().putBoolean(PREF_YOUTUBE_ADBLOCK, isYtAdBlockEnabled).apply()
+                                webView.reload()
+                                refreshYtMenu()
                             },
                             FloatingWindowManager.WindowMenuItem("copy_url", "📋 Copy URL", "fw_youtube_copy_url") {
                                 val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -1609,6 +1901,7 @@ object FloatingMiniApps {
             webView.loadUrl("https://m.youtube.com")
 
             val cleanup: () -> Unit = {
+                ViewerPickerActivity.pendingVoiceCallback = null
                 runCatching {
                     webView.stopLoading()
                     webView.destroy()
@@ -1631,12 +1924,21 @@ object FloatingMiniApps {
             iconRes = R.drawable.ic_tab_notes,
             requiresTextInput = true
         ) { managed ->
-            val container = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
+            val container = FrameLayout(context).apply {
                 setPadding(dp(context, 8f), dp(context, 8f), dp(context, 8f), dp(context, 8f))
             }
 
+            val mainView = LinearLayout(context).apply {
+                tag = "fw_notes_main_view"
+                orientation = LinearLayout.VERTICAL
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            }
+
             var editingNote: NoteEntry? = null
+            var readerNote: NoteEntry? = null
 
             val editBanner = LinearLayout(context).apply {
                 tag = "fw_notes_edit_banner"
@@ -1680,6 +1982,9 @@ object FloatingMiniApps {
                 setHintTextColor(Color.parseColor("#64748B"))
                 textSize = 12.5f
                 isSingleLine = true
+                isFocusable = true
+                isFocusableInTouchMode = true
+                isLongClickable = true
                 setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
                 setPadding(dp(context, 10f), dp(context, 6f), dp(context, 10f), dp(context, 6f))
                 background = GradientDrawable().apply {
@@ -1711,6 +2016,9 @@ object FloatingMiniApps {
                 setTextColor(Color.WHITE)
                 setHintTextColor(Color.parseColor("#64748B"))
                 textSize = 12.5f
+                isFocusable = true
+                isFocusableInTouchMode = true
+                isLongClickable = true
                 setPadding(dp(context, 10f), dp(context, 8f), dp(context, 10f), dp(context, 8f))
                 background = GradientDrawable().apply {
                     cornerRadius = dp(context, 10f).toFloat()
@@ -1758,12 +2066,185 @@ object FloatingMiniApps {
                 addView(listContainer)
             }
 
+            mainView.addView(editBanner)
+            mainView.addView(etTitle)
+            mainView.addView(inputRow)
+            mainView.addView(scroller)
+
+            // --- Dedicated Reader / Editor View (expands when tapping any 1-line note row) ---
+            val readerView = LinearLayout(context).apply {
+                tag = "fw_notes_reader_view"
+                orientation = LinearLayout.VERTICAL
+                visibility = View.GONE
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                )
+            }
+            val readerTopBar = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dp(context, 6f)
+                }
+            }
+            val btnReaderBack = TextView(context).apply {
+                tag = "fw_notes_reader_back"
+                text = "← All Notes"
+                textSize = 12f
+                setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                setTextColor(accentColor)
+                setPadding(dp(context, 8f), dp(context, 5f), dp(context, 8f), dp(context, 5f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 8f).toFloat()
+                    setColor(Color.parseColor("#1E293B"))
+                }
+            }
+            val readerSpacer = View(context).apply {
+                layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
+            }
+            val btnReaderCopy = TextView(context).apply {
+                tag = "fw_notes_reader_copy"
+                text = "Copy"
+                textSize = 11.5f
+                setTextColor(accentColor)
+                setPadding(dp(context, 8f), dp(context, 5f), dp(context, 8f), dp(context, 5f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 8f).toFloat()
+                    setColor(Color.parseColor("#1E293B"))
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    marginEnd = dp(context, 6f)
+                }
+            }
+            val btnReaderDelete = TextView(context).apply {
+                tag = "fw_notes_reader_delete"
+                text = "Delete"
+                textSize = 11.5f
+                setTextColor(Color.parseColor("#EF4444"))
+                setPadding(dp(context, 8f), dp(context, 5f), dp(context, 8f), dp(context, 5f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 8f).toFloat()
+                    setColor(Color.parseColor("#1E293B"))
+                }
+            }
+            readerTopBar.addView(btnReaderBack)
+            readerTopBar.addView(readerSpacer)
+            readerTopBar.addView(btnReaderCopy)
+            readerTopBar.addView(btnReaderDelete)
+
+            val etReaderTitle = EditText(context).apply {
+                tag = "fw_notes_reader_title"
+                hint = context.getString(R.string.note_title_hint)
+                setTextColor(Color.WHITE)
+                setHintTextColor(Color.parseColor("#64748B"))
+                textSize = 13.5f
+                isSingleLine = true
+                isFocusable = true
+                isFocusableInTouchMode = true
+                isLongClickable = true
+                setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                setPadding(dp(context, 10f), dp(context, 8f), dp(context, 10f), dp(context, 8f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 10f).toFloat()
+                    setColor(Color.parseColor("#1E293B"))
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dp(context, 6f)
+                }
+            }
+            val etReaderContent = EditText(context).apply {
+                tag = "fw_notes_reader_content"
+                hint = "Full note text..."
+                setTextColor(Color.WHITE)
+                setHintTextColor(Color.parseColor("#64748B"))
+                textSize = 13f
+                gravity = Gravity.TOP or Gravity.START
+                isSingleLine = false
+                isFocusable = true
+                isFocusableInTouchMode = true
+                isLongClickable = true
+                setPadding(dp(context, 10f), dp(context, 10f), dp(context, 10f), dp(context, 10f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 10f).toFloat()
+                    setColor(Color.parseColor("#1E293B"))
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            }
+            val readerScroll = ScrollView(context).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    0,
+                    1f
+                ).apply {
+                    bottomMargin = dp(context, 8f)
+                }
+                addView(etReaderContent)
+            }
+            val btnReaderSave = Button(context).apply {
+                tag = "fw_notes_reader_save"
+                text = "Update Note"
+                textSize = 12.5f
+                setTextColor(Color.BLACK)
+                backgroundTintList = null
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 8f).toFloat()
+                    setColor(accentColor)
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(context, 40f)
+                )
+            }
+            readerView.addView(readerTopBar)
+            readerView.addView(etReaderTitle)
+            readerView.addView(readerScroll)
+            readerView.addView(btnReaderSave)
+
+            fun closeReaderView() {
+                readerNote = null
+                readerView.visibility = View.GONE
+                mainView.visibility = View.VISIBLE
+            }
+
+            fun openReaderForNote(note: NoteEntry) {
+                readerNote = note
+                etReaderTitle.setText(note.title)
+                etReaderContent.setText(note.content)
+                mainView.visibility = View.GONE
+                readerView.visibility = View.VISIBLE
+            }
+
+            btnReaderBack.setOnClickListener { closeReaderView() }
+
+            managed.onBackPressed = {
+                if (readerView.visibility == View.VISIBLE) {
+                    closeReaderView()
+                    true
+                } else {
+                    false
+                }
+            }
+
             val notesJob = Job(serviceScope.coroutineContext[Job])
             val windowScope = CoroutineScope(Dispatchers.Main + notesJob)
 
             managed.setMenuItems(
                 listOf(
                     FloatingWindowManager.WindowMenuItem("new_note", "+ New Note", "fw_notes_menu_new") {
+                        closeReaderView()
                         clearEditMode()
                         etNote.requestFocus()
                     },
@@ -1771,12 +2252,58 @@ object FloatingMiniApps {
                         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         val clip = cm.primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
                         if (clip.isNotBlank()) {
-                            val current = etNote.text?.toString().orEmpty()
-                            etNote.setText(if (current.isBlank()) clip else "$current\n$clip")
+                            if (readerView.visibility == View.VISIBLE) {
+                                val current = etReaderContent.text?.toString().orEmpty()
+                                etReaderContent.setText(if (current.isBlank()) clip else "$current\n$clip")
+                            } else {
+                                val current = etNote.text?.toString().orEmpty()
+                                etNote.setText(if (current.isBlank()) clip else "$current\n$clip")
+                            }
                         }
                     }
                 )
             )
+
+            btnReaderCopy.setOnClickListener {
+                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val t = etReaderTitle.text?.toString()?.trim().orEmpty()
+                val c = etReaderContent.text?.toString().orEmpty()
+                val combined = if (t.isNotBlank()) "$t\n$c" else c
+                cm.setPrimaryClip(ClipData.newPlainText("Note", combined))
+                Toast.makeText(context, "Copied note", Toast.LENGTH_SHORT).show()
+            }
+
+            btnReaderDelete.setOnClickListener {
+                val target = readerNote ?: return@setOnClickListener
+                closeReaderView()
+                windowScope.launch {
+                    withContext(Dispatchers.IO) {
+                        SmartDotDatabase.getDatabase(context).smartDotDao().deleteNoteById(target.id)
+                    }
+                }
+            }
+
+            btnReaderSave.setOnClickListener {
+                val target = readerNote ?: return@setOnClickListener
+                val titleTxt = etReaderTitle.text?.toString()?.trim().orEmpty()
+                val bodyTxt = etReaderContent.text?.toString()?.trim().orEmpty()
+                if (bodyTxt.isEmpty()) {
+                    Toast.makeText(context, "Note cannot be empty.", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                closeReaderView()
+                windowScope.launch {
+                    withContext(Dispatchers.IO) {
+                        SmartDotDatabase.getDatabase(context).smartDotDao().updateNote(
+                            target.copy(
+                                title = titleTxt,
+                                content = bodyTxt,
+                                timestamp = System.currentTimeMillis()
+                            )
+                        )
+                    }
+                }
+            }
 
             btnSave.setOnClickListener {
                 val titleTxt = etTitle.text?.toString()?.trim().orEmpty()
@@ -1819,11 +2346,14 @@ object FloatingMiniApps {
                     } else {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         notes.forEach { note ->
+                            val singleLineTitle = note.title.trim().ifEmpty {
+                                note.content.lineSequence().firstOrNull { it.isNotBlank() }?.trim() ?: "Untitled Note"
+                            }
                             val row = LinearLayout(context).apply {
                                 tag = "fw_note_row_${note.id}"
                                 orientation = LinearLayout.HORIZONTAL
                                 gravity = Gravity.CENTER_VERTICAL
-                                setPadding(dp(context, 8f), dp(context, 8f), dp(context, 8f), dp(context, 8f))
+                                setPadding(dp(context, 10f), dp(context, 9f), dp(context, 8f), dp(context, 9f))
                                 background = GradientDrawable().apply {
                                     cornerRadius = dp(context, 8f).toFloat()
                                     setColor(Color.parseColor("#1E293B"))
@@ -1835,35 +2365,20 @@ object FloatingMiniApps {
                                     bottomMargin = dp(context, 6f)
                                 }
                                 setOnClickListener {
-                                    editingNote = note
-                                    etTitle.setText(note.title)
-                                    etNote.setText(note.content)
-                                    etNote.setSelection(note.content.length)
-                                    etNote.requestFocus()
-                                    editBanner.visibility = View.VISIBLE
-                                    btnSave.text = "Update"
+                                    openReaderForNote(note)
                                 }
                             }
-                            val textCol = LinearLayout(context).apply {
-                                orientation = LinearLayout.VERTICAL
-                                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                            }
-                            if (note.title.isNotBlank()) {
-                                textCol.addView(TextView(context).apply {
-                                    text = note.title
-                                    setTextColor(accentColor)
-                                    textSize = 12f
-                                    setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
-                                    maxLines = 1
-                                    ellipsize = TextUtils.TruncateAt.END
-                                })
-                            }
-                            val tvContent = TextView(context).apply {
-                                text = note.content
+                            val tvSingleTitle = TextView(context).apply {
+                                tag = "fw_note_row_title_${note.id}"
+                                text = singleLineTitle
                                 setTextColor(Color.WHITE)
                                 textSize = 12.5f
+                                setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                                maxLines = 1
+                                isSingleLine = true
+                                ellipsize = TextUtils.TruncateAt.END
+                                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                             }
-                            textCol.addView(tvContent)
 
                             val btnCopy = TextView(context).apply {
                                 text = "Copy"
@@ -1883,6 +2398,7 @@ object FloatingMiniApps {
                                 setPadding(dp(context, 6f), dp(context, 4f), dp(context, 6f), dp(context, 4f))
                                 setOnClickListener {
                                     if (editingNote?.id == note.id) clearEditMode()
+                                    if (readerNote?.id == note.id) closeReaderView()
                                     windowScope.launch {
                                         withContext(Dispatchers.IO) {
                                             SmartDotDatabase.getDatabase(context).smartDotDao().deleteNoteById(note.id)
@@ -1890,7 +2406,7 @@ object FloatingMiniApps {
                                     }
                                 }
                             }
-                            row.addView(textCol)
+                            row.addView(tvSingleTitle)
                             row.addView(btnCopy)
                             row.addView(btnDel)
                             listContainer.addView(row)
@@ -1899,10 +2415,8 @@ object FloatingMiniApps {
                 }
             }
 
-            container.addView(editBanner)
-            container.addView(etTitle)
-            container.addView(inputRow)
-            container.addView(scroller)
+            container.addView(mainView)
+            container.addView(readerView)
 
             val cleanup: () -> Unit = { notesJob.cancel() }
             container to cleanup
@@ -1927,6 +2441,15 @@ object FloatingMiniApps {
             }
 
             var expr = ""
+            val btnHistoryToggle = TextView(context).apply {
+                tag = "fw_calc_history_btn"
+                text = "🕒"
+                textSize = 15f
+                gravity = Gravity.CENTER
+                contentDescription = "Toggle calculation history"
+                setTextColor(accentColor)
+                setPadding(dp(context, 6f), dp(context, 4f), dp(context, 8f), dp(context, 4f))
+            }
             val tvExpr = TextView(context).apply {
                 tag = "fw_calc_expr"
                 text = "0"
@@ -1935,6 +2458,13 @@ object FloatingMiniApps {
                 gravity = Gravity.END
                 maxLines = 1
                 ellipsize = TextUtils.TruncateAt.START
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val displayTopRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(btnHistoryToggle)
+                addView(tvExpr)
             }
             val tvPreview = TextView(context).apply {
                 tag = "fw_calc_preview"
@@ -1958,8 +2488,61 @@ object FloatingMiniApps {
                 ).apply {
                     bottomMargin = dp(context, 8f)
                 }
-                addView(tvExpr)
+                addView(displayTopRow)
                 addView(tvPreview)
+            }
+
+            // Collapsible Calculation History Panel
+            val historyListContainer = LinearLayout(context).apply {
+                tag = "fw_calc_history_list"
+                orientation = LinearLayout.VERTICAL
+            }
+            val historyScroll = ScrollView(context).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(context, 130f)
+                )
+                addView(historyListContainer)
+            }
+            val historyHeader = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, dp(context, 4f))
+            }
+            historyHeader.addView(TextView(context).apply {
+                text = "Calculation History"
+                textSize = 11.5f
+                setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+                setTextColor(accentColor)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            val btnClearHistory = TextView(context).apply {
+                tag = "fw_calc_history_clear"
+                text = "Clear"
+                textSize = 11f
+                setTextColor(Color.parseColor("#EF4444"))
+                setPadding(dp(context, 6f), dp(context, 2f), dp(context, 6f), dp(context, 2f))
+            }
+            historyHeader.addView(btnClearHistory)
+
+            val historyPanel = LinearLayout(context).apply {
+                tag = "fw_calc_history_panel"
+                orientation = LinearLayout.VERTICAL
+                visibility = View.GONE
+                setPadding(dp(context, 8f), dp(context, 6f), dp(context, 8f), dp(context, 6f))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(context, 10f).toFloat()
+                    setColor(Color.parseColor("#0F172A"))
+                    setStroke(1, accentColor)
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = dp(context, 6f)
+                }
+                addView(historyHeader)
+                addView(historyScroll)
             }
 
             fun refreshDisplay() {
@@ -1969,8 +2552,69 @@ object FloatingMiniApps {
                 tvPreview.text = eval?.let { "= $it" }.orEmpty()
             }
 
+            fun renderCalcHistoryPanel() {
+                historyListContainer.removeAllViews()
+                val items = getCalcHistory(context)
+                if (items.isEmpty()) {
+                    historyListContainer.addView(TextView(context).apply {
+                        tag = "fw_calc_history_empty"
+                        text = "No calculations saved yet."
+                        textSize = 11.5f
+                        setTextColor(Color.parseColor("#94A3B8"))
+                        setPadding(dp(context, 6f), dp(context, 8f), dp(context, 6f), dp(context, 8f))
+                    })
+                    return
+                }
+                items.forEachIndexed { idx, entry ->
+                    val row = TextView(context).apply {
+                        tag = "fw_calc_history_row_$idx"
+                        text = entry
+                        textSize = 12.5f
+                        setTextColor(Color.WHITE)
+                        setPadding(dp(context, 8f), dp(context, 6f), dp(context, 8f), dp(context, 6f))
+                        background = GradientDrawable().apply {
+                            cornerRadius = dp(context, 6f).toFloat()
+                            setColor(Color.parseColor("#1E293B"))
+                        }
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            bottomMargin = dp(context, 4f)
+                        }
+                        setOnClickListener {
+                            val reusedResult = entry.substringAfterLast('=').trim()
+                            if (reusedResult.isNotEmpty() && !reusedResult.equals("Error", ignoreCase = true)) {
+                                expr = reusedResult
+                                refreshDisplay()
+                            }
+                            historyPanel.visibility = View.GONE
+                        }
+                    }
+                    historyListContainer.addView(row)
+                }
+            }
+
+            fun toggleHistoryPanel() {
+                if (historyPanel.visibility == View.VISIBLE) {
+                    historyPanel.visibility = View.GONE
+                } else {
+                    renderCalcHistoryPanel()
+                    historyPanel.visibility = View.VISIBLE
+                }
+            }
+
+            btnHistoryToggle.setOnClickListener { toggleHistoryPanel() }
+            btnClearHistory.setOnClickListener {
+                clearCalcHistory(context)
+                renderCalcHistoryPanel()
+            }
+
             managed.setMenuItems(
                 listOf(
+                    FloatingWindowManager.WindowMenuItem("history_calc", "🕒 History", "fw_calc_menu_history") {
+                        toggleHistoryPanel()
+                    },
                     FloatingWindowManager.WindowMenuItem("copy_calc", "📋 Copy Result") {
                         val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         cm.setPrimaryClip(ClipData.newPlainText("Calculator", tvExpr.text.toString()))
@@ -1992,6 +2636,7 @@ object FloatingMiniApps {
             )
 
             container.addView(displayCard)
+            container.addView(historyPanel)
 
             rows.forEach { rowTokens ->
                 val rowLayout = LinearLayout(context).apply {
@@ -2034,8 +2679,16 @@ object FloatingMiniApps {
                                 "⌫" -> if (expr.isNotEmpty()) expr = expr.dropLast(1)
                                 "=" -> {
                                     if (expr.isNotEmpty()) {
+                                        val rawFormula = expr
                                         val normalized = expr.replace('×', '*').replace('÷', '/')
-                                        expr = CalculatorEvaluator.evaluateFinal(normalized)
+                                        val finalResult = CalculatorEvaluator.evaluateFinal(normalized)
+                                        if (!finalResult.equals("Error", ignoreCase = true) && rawFormula != finalResult) {
+                                            addCalcHistoryEntry(context, "$rawFormula = $finalResult")
+                                            if (historyPanel.visibility == View.VISIBLE) {
+                                                renderCalcHistoryPanel()
+                                            }
+                                        }
+                                        expr = finalResult
                                         tvPreview.text = ""
                                     }
                                 }

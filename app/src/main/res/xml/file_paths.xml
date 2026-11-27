@@ -3,4 +3,7 @@
     <cache-path
         name="shared_cutouts"
         path="cutouts/" />
+    <cache-path
+        name="shared_cache"
+        path="." />
 </paths>

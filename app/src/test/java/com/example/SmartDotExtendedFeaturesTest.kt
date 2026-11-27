@@ -93,7 +93,7 @@ class SmartDotExtendedFeaturesTest {
     }
 
     @Test
-    fun `ShakeDetector triggers strictly on double shake gt 16f within 500ms with cooldown and zero haptics`() {
+    fun `ShakeDetector triggers strictly on triple shake gt 16f within 800ms with cooldown, unlock suppression, and zero haptics`() {
         var triggerCount = 0
         val detector = ShakeDetector { triggerCount++ }
 
@@ -101,20 +101,33 @@ class SmartDotExtendedFeaturesTest {
         assertFalse(detector.onAccelerationSample(0f, 9.8f, 0f, 100L))
         assertEquals(0, triggerCount)
 
-        // Two rapid peaks > 16f separated by 180ms (within 500ms) -> triggers once
-        assertFalse(detector.onAccelerationSample(14f, 10f, 2f, 1000L)) // magnitude ~17.3
-        assertTrue(detector.onAccelerationSample(-15f, 9f, 1f, 1180L)) // magnitude ~17.5
+        // Two rapid peaks only -> must NOT trigger (requires 3 consecutive firm shakes)
+        assertFalse(detector.onAccelerationSample(14f, 10f, 2f, 1000L))
+        assertFalse(detector.onAccelerationSample(-15f, 9f, 1f, 1180L))
+        assertEquals(0, triggerCount)
+
+        // Third peak within 800ms -> triggers once
+        assertTrue(detector.onAccelerationSample(16f, 8f, 1f, 1360L))
         assertEquals(1, triggerCount)
 
         // Cooldown suppresses immediate extra peaks
-        assertFalse(detector.onAccelerationSample(18f, 5f, 0f, 1300L))
-        assertFalse(detector.onAccelerationSample(-18f, 5f, 0f, 1500L))
+        assertFalse(detector.onAccelerationSample(18f, 5f, 0f, 1500L))
+        assertFalse(detector.onAccelerationSample(-18f, 5f, 0f, 1650L))
+        assertFalse(detector.onAccelerationSample(18f, 5f, 0f, 1800L))
         assertEquals(1, triggerCount)
 
-        // Two peaks > 500ms apart do NOT count as one double shake
-        assertFalse(detector.onAccelerationSample(18f, 0f, 0f, 2500L))
-        assertFalse(detector.onAccelerationSample(-18f, 0f, 0f, 3200L))
+        // Unlock suppression (2000ms) ignores even 3 strong shakes right after fingerprint unlock
+        detector.suppressFor(2000L, nowMs = 3000L)
+        assertFalse(detector.onAccelerationSample(18f, 0f, 0f, 3200L))
+        assertFalse(detector.onAccelerationSample(-18f, 0f, 0f, 3380L))
+        assertFalse(detector.onAccelerationSample(18f, 0f, 0f, 3560L))
         assertEquals(1, triggerCount)
+
+        // After 2000ms suppression expires, 3 shakes trigger cleanly again
+        assertFalse(detector.onAccelerationSample(18f, 0f, 0f, 5200L))
+        assertFalse(detector.onAccelerationSample(-18f, 0f, 0f, 5360L))
+        assertTrue(detector.onAccelerationSample(18f, 0f, 0f, 5520L))
+        assertEquals(2, triggerCount)
     }
 
     @Test
